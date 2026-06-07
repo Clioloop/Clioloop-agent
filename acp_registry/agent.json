@@ -1,0 +1,16 @@
+{
+  "id": "clio-agent",
+  "name": "Clio Agent",
+  "version": "0.1.0",
+  "description": "Self-improving open-source AI agent by Omni Loop Labs with ACP editor integration, persistent memory, skills, and rich tool support.",
+  "repository": "https://github.com/Clioloop/Clioloop-agent",
+  "website": "https://github.com/Clioloop/Clioloop-agent/blob/main/website/docs/user-guide/features/acp.md",
+  "authors": ["Omni Loop Labs"],
+  "license": "MIT",
+  "distribution": {
+    "uvx": {
+      "package": "clioloop-agent[acp]==0.1.0",
+      "args": ["clio-acp"]
+    }
+  }
+}

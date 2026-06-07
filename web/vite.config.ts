@@ -1,0 +1,108 @@
+import { defineConfig, type Plugin } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "path";
+
+const BACKEND = process.env.CLIO_DASHBOARD_URL ?? "http://127.0.0.1:10119";
+
+/**
+ * In production the Python `clio dashboard` server injects a one-shot
+ * session token into `index.html` (see `clio_cli/web_server.py`). The
+ * Vite dev server serves its own `index.html`, so unless we forward that
+ * token, every protected `/api/*` call 401s.
+ *
+ * This plugin fetches the running dashboard's `index.html` on each dev page
+ * load, scrapes the `window.__CLIO_SESSION_TOKEN__` assignment, and
+ * re-injects it into the dev HTML. No-op in production builds.
+ */
+function clioDevToken(): Plugin {
+  const TOKEN_RE = /window\.__CLIO_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
+  const EMBEDDED_RE =
+    /window\.__CLIO_DASHBOARD_EMBEDDED_CHAT__\s*=\s*(true|false)/;
+
+  return {
+    name: "clio:dev-session-token",
+    apply: "serve",
+    async transformIndexHtml() {
+      try {
+        const res = await fetch(BACKEND, { headers: { accept: "text/html" } });
+        const html = await res.text();
+        const match = html.match(TOKEN_RE);
+        if (!match) {
+          console.warn(
+            `[clio] Could not find session token in ${BACKEND} — ` +
+              `is \`clio dashboard\` running? /api calls will 401.`,
+          );
+          return;
+        }
+        const embeddedMatch = html.match(EMBEDDED_RE);
+        const embeddedJs = embeddedMatch ? embeddedMatch[1] : "true";
+        return [
+          {
+            tag: "script",
+            injectTo: "head",
+            children:
+              `window.__CLIO_SESSION_TOKEN__="${match[1]}";` +
+              `window.__CLIO_DASHBOARD_EMBEDDED_CHAT__=${embeddedJs};`,
+          },
+        ];
+      } catch (err) {
+        console.warn(
+          `[clio] Dashboard at ${BACKEND} unreachable — ` +
+            `start it with \`clio dashboard\` or set CLIO_DASHBOARD_URL. ` +
+            `(${(err as Error).message})`,
+        );
+      }
+    },
+  };
+}
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), clioDevToken()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+      // First-party Clioloop UI package.
+      // Stored at packages/clioloop-ui/ — fully self-contained, no network needed.
+      // Point to the dist/ directory (not index.js) so sub-path imports resolve.
+      "@clioloop-agent/ui": path.resolve(
+        __dirname,
+        "./../packages/clioloop-ui/dist",
+      ),
+    },
+    // When the UI package is symlinked via a workspace dependency,
+    // Node's module resolution would pick up shared deps from
+    // design-language/node_modules/*, giving us two copies + breaking
+    // hooks (useRef-of-null), webgl contexts, etc. Force everything that
+    // exists in BOTH places to use the dashboard's copy.
+    //
+    // Don't list packages here that only exist in the DS (nanostores,
+    // @nanostores/react) — Vite dedupe errors out when it can't find
+    // them at the project root.
+    dedupe: [
+      "react",
+      "react-dom",
+      "@react-three/fiber",
+      "@observablehq/plot",
+      "three",
+      "leva",
+      "gsap",
+    ],
+  },
+  build: {
+    outDir: "../clio_cli/web_dist",
+    emptyOutDir: true,
+  },
+  server: {
+    proxy: {
+      "/api": {
+        target: BACKEND,
+        ws: true,
+      },
+      // Same host as `clio dashboard` must serve these; Vite has no
+      // dashboard-plugins/* files, so without this, plugin scripts 404
+      // or receive index.html in dev.
+      "/dashboard-plugins": BACKEND,
+    },
+  },
+});

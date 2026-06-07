@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@clio/ink": ["src/types/clio-ink.d.ts"]
+    }
+  }
+}
