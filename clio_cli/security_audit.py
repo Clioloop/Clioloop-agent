@@ -1,4 +1,4 @@
-"""On-demand supply-chain audit for Clio Agent installs.
+"""On-demand supply-chain audit for Clioloop installs.
 
 Scans three surfaces a Clio user actually controls and we can map to
 upstream advisories without auth or extra binaries:

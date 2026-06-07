@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 /**
  * DesktopInstallOverlay
  *
- * Renders the first-launch install progress for Clio Agent. Mounted always;
+ * Renders the first-launch install progress for Clioloop. Mounted always;
  * shows itself only when main.cjs reports an in-flight bootstrap (state.active)
  * OR an error from a completed-failed bootstrap (state.error). When the
  * bootstrap finishes successfully the overlay fades out and the rest of the
@@ -340,7 +340,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   }
 
   // Unsupported-platform branch: macOS/Linux packaged builds hit this when
-  // there's no Clio Agent installed yet and we can't drive install.sh
+  // there's no Clioloop installed yet and we can't drive install.sh
   // (no stage protocol equivalent yet). Show a copy-paste install command
   // and the docs URL; user runs it from Terminal and relaunches the app.
   if (state.unsupportedPlatform) {
@@ -415,12 +415,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
           <h2 className="text-2xl font-semibold tracking-tight">
-            {failed ? 'Installation failed' : state.active ? 'Setting up Clio Agent' : 'Finishing up'}
+            {failed ? 'Installation failed' : state.active ? 'Setting up Clioloop' : 'Finishing up'}
           </h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
             {failed
-              ? 'One of the install steps failed. On Windows, this can happen if another Clio CLI or desktop instance is running. Stop any running Clio instances, then retry. Check the details below or the desktop log for the full transcript.'
-              : 'This is a one-time setup. The Clio installer is downloading dependencies and configuring your machine. ' +
+              ? 'One of the install steps failed. On Windows, this can happen if another Clioloop CLI or desktop instance is running. Stop any running Clioloop instances, then retry. Check the details below or the desktop log for the full transcript.'
+              : 'This is a one-time setup. The Clioloop installer is downloading dependencies and configuring your machine. ' +
                 'Subsequent launches will skip this step.'}
           </p>
         </div>

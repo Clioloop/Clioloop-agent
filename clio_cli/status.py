@@ -1,7 +1,7 @@
 """
 Status command for clio CLI.
 
-Shows the status of all Clio Agent components.
+Shows the status of all Clioloop components.
 """
 
 import os
@@ -84,13 +84,13 @@ from clio_constants import is_termux as _is_termux
 
 
 def show_status(args):
-    """Show status of all Clio Agent components."""
+    """Show status of all Clioloop components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 ∞ Clio Agent Status                  │", Colors.CYAN))
+    print(color("│                   ∞ Clioloop Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
     # =========================================================================

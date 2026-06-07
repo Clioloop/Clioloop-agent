@@ -1,5 +1,5 @@
 """
-Skills configuration for Clio Agent.
+Skills configuration for Clioloop.
 `clio skills` enters this module.
 
 Toggle individual skills or categories on/off, globally or per-platform.

@@ -1,5 +1,5 @@
 """
-Multi-provider authentication system for Clio Agent.
+Multi-provider authentication system for Clioloop.
 
 Supports OAuth device code flows (managed provider, future: OpenAI Codex) and
 traditional API key providers (OpenRouter, custom endpoints). Auth state

@@ -1,5 +1,5 @@
 """
-Clio CLI - Unified command-line interface for Clio Agent.
+Clioloop CLI - Unified command-line interface for Clioloop.
 
 Provides subcommands for:
 - clio chat          - Interactive chat (same as ./clio)

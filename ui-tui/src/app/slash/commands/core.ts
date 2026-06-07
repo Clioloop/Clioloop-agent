@@ -117,7 +117,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'update Clio Agent to the latest version (exits TUI)',
+    help: 'update Clioloop to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
       ctx.transcript.sys('exiting TUI to run update...')

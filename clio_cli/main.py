@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Clio CLI - Main entry point.
+Clioloop CLI - Main entry point.
 
 Usage:
     clio                     # Interactive chat (default)
@@ -36,7 +36,7 @@ Usage:
     clio honcho migrate                  # Step-by-step migration guide: OpenClaw native → Clio + Honcho
     clio version             Show version
     clio update              Update to latest version
-    clio uninstall           Uninstall Clio Agent
+    clio uninstall           Uninstall Clioloop
     clio acp                 Run as an ACP server for editor integration
     clio sessions browse     Interactive session picker with search
 
@@ -228,7 +228,7 @@ def _print_fast_version_info() -> None:
     from clio_cli import __release_date__, __version__
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-    print(f"Clio Agent v{__version__} ({__release_date__})")
+    print(f"Clioloop v{__version__} ({__release_date__})")
     print(f"Project: {project_root}")
     print(f"Python: {sys.version.split()[0]}")
 
@@ -2388,14 +2388,14 @@ def cmd_whatsapp(args):
             print("    2. Send a message to the bot's WhatsApp number")
             print("    3. The agent will reply automatically")
             print()
-            print("  Tip: Agent responses are prefixed with '∞ Clio Agent'")
+            print("  Tip: Agent responses are prefixed with '∞ Clioloop'")
         else:
             print("  Next steps:")
             print("    1. Start the gateway:  clio gateway")
             print("    2. Open WhatsApp → Message Yourself")
             print("    3. Type a message — the agent will reply")
             print()
-            print("  Tip: Agent responses are prefixed with '∞ Clio Agent'")
+            print("  Tip: Agent responses are prefixed with '∞ Clioloop'")
             print("  so you can tell them apart from your own messages.")
         print()
         print("  Or install as a service: clio gateway install")
@@ -6289,7 +6289,7 @@ def _model_flow_anthropic(config, current_model=""):
 
 
 def cmd_login(args):
-    """Authenticate Clio CLI with a provider."""
+    """Authenticate Clioloop CLI with a provider."""
     from clio_cli.auth import login_command
 
     login_command(args)
@@ -6436,7 +6436,7 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    print(f"Clio Agent v{__version__} ({__release_date__})")
+    print(f"Clioloop v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
 
     # Show Python version
@@ -6482,7 +6482,7 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Clio Agent."""
+    """Uninstall Clioloop."""
     _require_tty("uninstall")
     from clio_cli.uninstall import run_uninstall
 
@@ -7794,7 +7794,7 @@ _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
 def _update_via_zip(args):
-    """Update Clio Agent by downloading a ZIP archive.
+    """Update Clioloop by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
@@ -9725,7 +9725,7 @@ def _ensure_fhs_path_guard() -> None:
 
     path_line = 'export PATH="/usr/local/bin:$PATH"'
     path_comment = (
-        "# Clio Agent — ensure /usr/local/bin is on PATH " "(RHEL non-login shells)"
+        "# Clioloop — ensure /usr/local/bin is on PATH " "(RHEL non-login shells)"
     )
     wrote_any = False
     for candidate in (".bashrc", ".bash_profile"):
@@ -9892,7 +9892,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
 
 
 def cmd_update(args):
-    """Update Clio Agent to the latest version.
+    """Update Clioloop to the latest version.
 
     Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
     runs the update, then restores stdio on the way out (even on
@@ -9906,7 +9906,7 @@ def cmd_update(args):
     )
 
     if is_managed():
-        managed_error("update Clio Agent")
+        managed_error("update Clioloop")
         return
 
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
@@ -10037,7 +10037,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
             discard_local_changes = False
 
-    print("∞ Updating Clio Agent...")
+    print("∞ Updating Clioloop...")
     print()
 
     # On Windows, abort early if another clio.exe is holding the venv shim
@@ -12984,7 +12984,7 @@ def main():
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
-        description="Configure Clio Agent with an interactive wizard. "
+        description="Configure Clioloop with an interactive wizard. "
         "Run a specific section: clio setup model|tts|terminal|gateway|tools|agent",
     )
     setup_parser.add_argument(
@@ -13098,7 +13098,7 @@ def main():
     login_parser = subparsers.add_parser(
         "login",
         help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Clio CLI",
+        description="Run OAuth device authorization flow for Clioloop CLI",
     )
     login_parser.add_argument(
         "--provider",
@@ -13219,7 +13219,7 @@ def main():
     status_parser = subparsers.add_parser(
         "status",
         help="Show status of all components",
-        description="Display status of Clio Agent components",
+        description="Display status of Clioloop components",
     )
     status_parser.add_argument(
         "--all", action="store_true", help="Show all details (redacted for sharing)"
@@ -13533,7 +13533,7 @@ def main():
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Check configuration and dependencies",
-        description="Diagnose issues with Clio Agent setup",
+        description="Diagnose issues with Clioloop setup",
     )
     doctor_parser.add_argument(
         "--fix", action="store_true", help="Attempt to fix issues automatically"
@@ -13624,7 +13624,7 @@ def main():
     debug_parser = subparsers.add_parser(
         "debug",
         help="Debug tools — upload logs and system info for support",
-        description="Debug utilities for Clio Agent. Use 'clio debug share' to "
+        description="Debug utilities for Clioloop. Use 'clio debug share' to "
         "upload a debug report (system info + recent logs) to a paste "
         "service and get a shareable URL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -13747,7 +13747,7 @@ Examples:
     config_parser = subparsers.add_parser(
         "config",
         help="View and edit configuration",
-        description="Manage Clio Agent configuration",
+        description="Manage Clioloop configuration",
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
@@ -15014,7 +15014,7 @@ Examples:
     # =========================================================================
     update_parser = subparsers.add_parser(
         "update",
-        help="Update Clio Agent to the latest version",
+        help="Update Clioloop to the latest version",
         description="Pull the latest changes from git and reinstall dependencies",
     )
     update_parser.add_argument(
@@ -15072,8 +15072,8 @@ Examples:
     # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
-        help="Uninstall Clio Agent",
-        description="Remove Clio Agent from your system. Can keep configs/data for reinstall.",
+        help="Uninstall Clioloop",
+        description="Remove Clioloop from your system. Can keep configs/data for reinstall.",
     )
     uninstall_parser.add_argument(
         "--full",
@@ -15090,8 +15090,8 @@ Examples:
     # =========================================================================
     acp_parser = subparsers.add_parser(
         "acp",
-        help="Run Clio Agent as an ACP (Agent Client Protocol) server",
-        description="Start Clio Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
+        help="Run Clioloop as an ACP (Agent Client Protocol) server",
+        description="Start Clioloop in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
     _add_accept_hooks_flag(acp_parser)
     acp_parser.add_argument(
@@ -15126,7 +15126,7 @@ Examples:
     )
 
     def cmd_acp(args):
-        """Launch Clio Agent as an ACP server."""
+        """Launch Clioloop as an ACP server."""
         try:
             from acp_adapter.entry import main as acp_main
 
@@ -15362,7 +15362,7 @@ Examples:
     dashboard_parser = subparsers.add_parser(
         "dashboard",
         help="Start the web UI dashboard",
-        description="Launch the Clio Agent web dashboard for managing config, API keys, and sessions",
+        description="Launch the Clioloop web dashboard for managing config, API keys, and sessions",
     )
     dashboard_parser.add_argument(
         "--port", type=int, default=10119, help="Port (default 10119)"

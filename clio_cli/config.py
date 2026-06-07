@@ -1,5 +1,5 @@
 """
-Configuration management for Clio Agent.
+Configuration management for Clioloop.
 
 Config files are stored in ~/.clio/ for easy access:
 - ~/.clio/config.yaml  - All settings (model, toolsets, terminal, etc.)
@@ -467,7 +467,7 @@ def recommended_update_command() -> str:
 _DOCKER_UPDATE_MESSAGE = """\
 ✗ ``clio update`` doesn't apply inside the Docker container.
 
-Clio Agent runs as a published image (clioloop/clioloop-agent), not a
+Clioloop runs as a published image (clioloop/clioloop-agent), not a
 git checkout — the container has no working tree to pull into.  Update by
 pulling a fresh image and restarting your container instead:
 
@@ -1868,7 +1868,7 @@ DEFAULT_CONFIG = {
     # WhatsApp platform settings (gateway mode)
     "whatsapp": {
         # Reply prefix prepended to every outgoing WhatsApp message.
-        # Default (None) uses the built-in "∞ *Clio Agent*" header.
+        # Default (None) uses the built-in "∞ *Clioloop*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
     },

@@ -1,5 +1,5 @@
 """
-Unified tool configuration for Clio Agent.
+Unified tool configuration for Clioloop.
 
 `clio tools` and `clio setup tools` both enter this module.
 Select a platform → toggle toolsets on/off → for newly enabled tools

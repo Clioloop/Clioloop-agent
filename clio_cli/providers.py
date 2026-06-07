@@ -1,5 +1,5 @@
 """
-Single source of truth for provider identity in Clio Agent.
+Single source of truth for provider identity in Clioloop.
 
 Two data sources, merged at runtime:
 

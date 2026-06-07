@@ -6430,7 +6430,7 @@ def _rotate_worker_log(
 
 
 def _module_clio_argv() -> list[str]:
-    """Return the interpreter-bound Clio CLI invocation."""
+    """Return the interpreter-bound Clioloop CLI invocation."""
     # ``clio_cli.main`` is the console-script target declared in
     # pyproject.toml, NOT a top-level ``clio`` package — there is no
     # ``clio`` package to import.
@@ -6774,7 +6774,7 @@ def _default_spawn(
         log_f.close()
         raise RuntimeError(
             "`clio` executable not found on PATH. "
-            "Install Clio Agent or activate its venv before running the kanban dispatcher."
+            "Install Clioloop or activate its venv before running the kanban dispatcher."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The

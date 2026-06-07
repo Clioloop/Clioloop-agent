@@ -76,7 +76,7 @@ CLIO_INFINITY = """[#A78BFA]      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄�
 [#7C3AED]  ▀█▄  ▀▀▀▀▀  ▄█  █▀▀▀▀▀  ▀▀▀▀█  ▄▀▀▀▀▀  ▄█▀[/]
 [#7C3AED]    ▀█▄▄▄▄▄▄█▀   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀  ▀█▄▄▄▄▄▄█▀[/]
 [#A78BFA]      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀[/]
-[#A78BFA]                ∞  Clio Agent  ∞[/]
+[#A78BFA]                 ∞  Clioloop  ∞[/]
 [#7C3AED]            ── Omni Loop Labs ──[/]"""
 
 _TERMINAL_ART_CACHE: Optional[List[str]] = None
@@ -473,7 +473,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
-    base = f"Clio Agent v{VERSION} ({RELEASE_DATE})"
+    base = f"Clioloop v{VERSION} ({RELEASE_DATE})"
     state = get_git_banner_state()
     if not state:
         return base

@@ -1,5 +1,5 @@
 """
-Clio Agent Uninstaller.
+Clioloop Uninstaller.
 
 Provides options for:
 - Full uninstall: Remove everything including configs and data
@@ -65,8 +65,8 @@ def remove_path_from_shell_configs():
             skip_next = False
             
             for line in content.split('\n'):
-                # Skip the "# Clio Agent" comment and following line
-                if '# Clio Agent' in line or '# clio-agent' in line:
+                # Skip the "# Clioloop" comment and following line
+                if '# Clioloop' in line or '# clio-agent' in line:
                     skip_next = True
                     continue
                 if skip_next and ('clio' in line.lower() and 'PATH' in line):
@@ -511,7 +511,7 @@ def run_uninstall(args):
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│            ∞ Clio Agent Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
+    print(color("│            ∞ Clioloop Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
     print()
     
@@ -746,5 +746,5 @@ def run_uninstall(args):
         print(color("Reload your shell to complete the process:", Colors.YELLOW))
         print("  source ~/.bashrc  # or ~/.zshrc")
     print()
-    print("Thank you for using Clio Agent! ∞")
+    print("Thank you for using Clioloop! ∞")
     print()

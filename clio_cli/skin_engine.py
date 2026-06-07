@@ -1,4 +1,4 @@
-"""Clio CLI skin/theme engine.
+"""Clioloop CLI skin/theme engine.
 
 A data-driven skin system that lets users customize the CLI's visual appearance.
 Skins are defined as YAML files in ~/.clio/skins/ or as built-in presets.
@@ -65,7 +65,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
 
     # Branding: text strings used throughout the CLI
     branding:
-      agent_name: "Clio Agent"          # Banner title, status display
+      agent_name: "Clioloop"          # Banner title, status display
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ∞"              # Shown on exit
       response_label: " ∞ Clio "       # Response box header label
@@ -90,7 +90,7 @@ USAGE
 
     skin = get_active_skin()
     print(skin.colors["banner_title"])    # "#A78BFA"
-    print(skin.get_branding("agent_name"))  # "Clio Agent"
+    print(skin.get_branding("agent_name"))  # "Clioloop"
 
     set_active_skin("ares")               # Switch to built-in ares skin
     set_active_skin("mytheme")            # Switch to user skin from ~/.clio/skins/
@@ -187,8 +187,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             # Empty = use hardcoded defaults in display.py
         },
         "branding": {
-            "agent_name": "Clio Agent",
-            "welcome": "Welcome to Clio Agent! Type your message or /help for commands.",
+            "agent_name": "Clioloop",
+            "welcome": "Welcome to Clioloop! Type your message or /help for commands.",
             "goodbye": "Goodbye! ∞",
             "response_label": " ∞ Clio ",
             "prompt_symbol": "❯",
@@ -318,8 +318,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Clio Agent",
-            "welcome": "Welcome to Clio Agent! Type your message or /help for commands.",
+            "agent_name": "Clioloop",
+            "welcome": "Welcome to Clioloop! Type your message or /help for commands.",
             "goodbye": "Goodbye! ∞",
             "response_label": " ∞ Clio ",
             "prompt_symbol": "❯",
@@ -357,8 +357,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Clio Agent",
-            "welcome": "Welcome to Clio Agent! Type your message or /help for commands.",
+            "agent_name": "Clioloop",
+            "welcome": "Welcome to Clioloop! Type your message or /help for commands.",
             "goodbye": "Goodbye! ∞",
             "response_label": " ∞ Clio ",
             "prompt_symbol": "❯",
@@ -394,8 +394,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Clio Agent",
-            "welcome": "Welcome to Clio Agent! Type your message or /help for commands.",
+            "agent_name": "Clioloop",
+            "welcome": "Welcome to Clioloop! Type your message or /help for commands.",
             "goodbye": "Goodbye! ∞",
             "response_label": " ∞ Clio ",
             "prompt_symbol": "❯",
@@ -431,8 +431,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "spinner": {},
         "branding": {
-            "agent_name": "Clio Agent",
-            "welcome": "Welcome to Clio Agent! Type your message or /help for commands.",
+            "agent_name": "Clioloop",
+            "welcome": "Welcome to Clioloop! Type your message or /help for commands.",
             "goodbye": "Goodbye! \u2695",
             "response_label": " \u2695 Clio ",
             "prompt_symbol": "\u276f",

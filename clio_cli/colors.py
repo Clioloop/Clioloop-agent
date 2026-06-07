@@ -1,4 +1,4 @@
-"""Shared ANSI color utilities for Clio CLI modules."""
+"""Shared ANSI color utilities for Clioloop CLI modules."""
 
 import os
 import sys

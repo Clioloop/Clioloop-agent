@@ -1,7 +1,7 @@
 """
 Doctor command for clio CLI.
 
-Diagnoses issues with Clio Agent setup.
+Diagnoses issues with Clioloop setup.
 """
 
 import os
@@ -491,7 +491,7 @@ def run_doctor(args):
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 🩺 Clio Doctor                        │", Colors.CYAN))
+    print(color("│                 🩺 Clioloop Doctor                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
     _section("Security Advisories")
@@ -1101,7 +1101,7 @@ def run_doctor(args):
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
-                "# Clio Agent Persona\n\n"
+                "# Clioloop Persona\n\n"
                 "<!-- Edit this file to customize how Clio communicates. -->\n\n"
                 "You are Clio, a helpful AI assistant.\n",
                 encoding="utf-8",

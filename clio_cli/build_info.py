@@ -1,5 +1,5 @@
 """
-Baked-in build metadata for Clio Agent.
+Baked-in build metadata for Clioloop.
 
 Source installs report their git revision live via ``git rev-parse`` (see
 ``clio_cli/dump.py`` and ``clio_cli/banner.py``).  That doesn't work inside

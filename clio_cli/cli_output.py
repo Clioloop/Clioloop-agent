@@ -1,4 +1,4 @@
-"""Shared CLI output helpers for Clio CLI modules.
+"""Shared CLI output helpers for Clioloop CLI modules.
 
 Extracts the identical ``print_info/success/warning/error`` and ``prompt()``
 functions previously duplicated across setup.py, tools_config.py,

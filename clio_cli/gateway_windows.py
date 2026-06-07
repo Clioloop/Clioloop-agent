@@ -50,7 +50,7 @@ _FALLBACK_PATTERNS = re.compile(
 _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
 
 _TASK_NAME_DEFAULT = "Clio_Gateway"
-_TASK_DESCRIPTION = "Clio Agent Gateway - Messaging Platform Integration"
+_TASK_DESCRIPTION = "Clioloop Gateway - Messaging Platform Integration"
 
 
 def _schtasks_encoding() -> str:

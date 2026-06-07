@@ -129,7 +129,7 @@ class PtyBridge:
             if sys.platform.startswith("win"):
                 raise PtyUnavailableError(
                     "Pseudo-terminals are unavailable on this platform. "
-                    "Clio Agent supports Windows only via WSL."
+                    "Clioloop supports Windows only via WSL."
                 )
             if ptyprocess is None:
                 raise PtyUnavailableError(

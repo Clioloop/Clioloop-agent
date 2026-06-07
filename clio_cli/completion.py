@@ -97,7 +97,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
 
     cases_str = "\n".join(cases)
 
-    return f"""# Clio Agent bash completion
+    return f"""# Clioloop bash completion
 # Add to ~/.bashrc:
 #   eval "$(clio completion bash)"
 
@@ -200,7 +200,7 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
     sub_cases_str = "\n".join(sub_cases)
 
     return f"""#compdef clio
-# Clio Agent zsh completion
+# Clioloop zsh completion
 # Add to ~/.zshrc:
 #   eval "$(clio completion zsh)"
 
@@ -254,7 +254,7 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
     top_cmds_str = " ".join(top_cmds)
 
     lines: list[str] = [
-        "# Clio Agent fish completion",
+        "# Clioloop fish completion",
         "# Add to your config:",
         "#   clio completion fish | source",
         "",

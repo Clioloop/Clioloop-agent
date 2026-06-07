@@ -1,5 +1,5 @@
 """
-Unified self-relaunch for Clio CLI.
+Unified self-relaunch for Clioloop CLI.
 
 Preserves critical flags (--tui, --dev, --profile, --model, etc.) across
 process replacement so that ``clio sessions browse`` or post-setup relaunch

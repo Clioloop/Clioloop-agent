@@ -182,7 +182,7 @@ async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessRes
 }
 
 function notifyReady(provider: string) {
-  notify({ kind: 'success', title: 'Clio is ready', message: `${provider} connected.` })
+  notify({ kind: 'success', title: 'Clioloop is ready', message: `${provider} connected.` })
 }
 
 const RETIRED_PROVIDER_IDS = new Set(['managed', 'managed-provider', 'managed_provider'])

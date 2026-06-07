@@ -1,4 +1,4 @@
-"""Shared curses-based UI components for Clio CLI.
+"""Shared curses-based UI components for Clioloop CLI.
 
 Used by `clio tools` and `clio skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a

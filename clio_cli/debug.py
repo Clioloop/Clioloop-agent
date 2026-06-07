@@ -1,4 +1,4 @@
-"""``clio debug`` debug tools for Clio Agent.
+"""``clio debug`` debug tools for Clioloop.
 
 Currently supports:
     clio debug share    Upload debug report (system info + logs) to a

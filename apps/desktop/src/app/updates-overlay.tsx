@@ -192,7 +192,7 @@ function IdleView({
 
         <DialogTitle className="text-center text-xl">New update available</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          A new version of Clio is ready to install.
+          A new version of Clioloop is ready to install.
         </DialogDescription>
       </div>
 

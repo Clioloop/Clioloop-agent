@@ -371,7 +371,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 &app,
                 None,
                 LogStream::Stderr,
-                &format!("[update] could not auto-launch desktop: {err}. Launch Clio manually."),
+                &format!("[update] could not auto-launch desktop: {err}. Launch Clioloop manually."),
             );
         }
     } else if let Err(err) =
@@ -384,7 +384,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             &app,
             None,
             LogStream::Stdout,
-            &format!("[update] could not auto-launch desktop: {err}. Launch Clio manually."),
+            &format!("[update] could not auto-launch desktop: {err}. Launch Clioloop manually."),
         );
     }
 

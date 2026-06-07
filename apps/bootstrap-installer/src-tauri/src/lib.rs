@@ -1,4 +1,4 @@
-//! Clio Setup — Tauri entrypoint.
+//! Clioloop Setup — Tauri entrypoint.
 //!
 //! Spawns a single window pointed at the React frontend (apps/bootstrap-installer/src/).
 //! All install-time work lives in `bootstrap.rs` and is invoked through the Tauri
@@ -215,7 +215,7 @@ pub fn run() {
             paths::open_log_dir,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Clio Setup");
+        .expect("error while running Clioloop Setup");
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ import { launchClioDesktop } from '../store'
 import { Rocket, AlertCircle } from 'lucide-react'
 
 /*
- * Success screen. CLIO AGENT wordmark stays as the visual anchor
+ * Success screen. Clioloop wordmark stays as the visual anchor
  * (same Collapse Bold treatment as Welcome + the desktop chat intro),
  * with a status line below.
  *
@@ -36,7 +36,7 @@ export default function Success() {
     <div className="clio-fade-in flex h-full flex-col items-center justify-center gap-8 px-12 py-10">
       <div className="w-full max-w-2xl min-w-0 text-center">
         <p
-          className="fit-text mx-auto mb-4 w-full font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          className="fit-text mx-auto mb-4 w-full font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-primary"
           style={
             {
               '--fit-text-line-height': '0.9',
@@ -46,12 +46,12 @@ export default function Success() {
           }
         >
           <span>
-            <span>Clio is ready</span>
+            <span>Clioloop is ready</span>
           </span>
-          <span aria-hidden="true">Clio is ready</span>
+          <span aria-hidden="true">Clioloop is ready</span>
         </p>
 
-        <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
+        <p className="m-0 text-center text-base leading-normal tracking-tight text-foreground/75">
           You can launch from here, or any time from your terminal with{' '}
           <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-sm">
             clio desktop
@@ -67,7 +67,7 @@ export default function Success() {
         className="inline-flex items-center gap-2 px-6"
       >
         <Rocket size={18} />
-        {launching ? 'Launching…' : 'Launch Clio'}
+        {launching ? 'Launching…' : 'Launch Clioloop'}
       </Button>
 
       {error && (

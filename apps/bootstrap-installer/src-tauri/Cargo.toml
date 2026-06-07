@@ -1,7 +1,7 @@
 [package]
 name = "clio-bootstrap"
 version = "0.0.1"
-description = "Clio Setup — signed installer that drives scripts/install.ps1"
+description = "Clioloop Setup — signed installer that drives scripts/install.ps1"
 authors = ["Omni Loop Labs <info@>"]
 edition = "2021"
 rust-version = "1.77"

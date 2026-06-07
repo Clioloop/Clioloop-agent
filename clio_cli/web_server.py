@@ -1,5 +1,5 @@
 """
-Clio Agent — Web UI server.
+Clioloop — Web UI server.
 
 Provides a FastAPI backend serving the Vite/React frontend and REST API
 endpoints for managing configuration, environment variables, and sessions.
@@ -126,7 +126,7 @@ def _get_event_state(app: "FastAPI"):
         return app.state.event_channels, app.state.event_lock
 
 
-app = FastAPI(title="Clio Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Clioloop", version=__version__, lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -3326,7 +3326,7 @@ async def _telegram_onboarding_request(
 
 @app.post("/api/messaging/telegram/onboarding/start")
 async def start_telegram_onboarding(body: TelegramOnboardingStart):
-    bot_name = (body.bot_name or "Clio Agent").strip() or "Clio Agent"
+    bot_name = (body.bot_name or "Clioloop").strip() or "Clioloop"
     payload = await _telegram_onboarding_request(
         "POST",
         "/v1/telegram/pairings",
@@ -9272,7 +9272,7 @@ def start_server(
         if not list_providers():
             # Surface the *specific* reason any bundled provider declined
             # to register (e.g. missing CLIO_DASHBOARD_OAUTH_CLIENT_ID).
-            # Each provider plugin that ships with Clio Agent exposes a
+            # Each provider plugin that ships with Clioloop exposes a
             # module-level ``LAST_SKIP_REASON`` string for this purpose;
             # without it the operator would only see "no providers" which
             # is misleading when the provider IS installed but unconfigured.

@@ -1357,7 +1357,7 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
 # =============================================================================
 
 _SERVICE_BASE = "clio-gateway"
-SERVICE_DESCRIPTION = "Clio Agent Gateway - Messaging Platform Integration"
+SERVICE_DESCRIPTION = "Clioloop Gateway - Messaging Platform Integration"
 
 
 def _profile_suffix() -> str:

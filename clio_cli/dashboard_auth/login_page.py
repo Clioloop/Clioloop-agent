@@ -38,7 +38,7 @@ _LOGIN_HTML_TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Clio Agent</title>
+<title>Sign in — Clioloop</title>
 <style>
   /* Brand fonts shipped by @clioloop-agent/ui — same files the SPA loads. */
   @font-face {{
@@ -305,7 +305,7 @@ _LOGIN_HTML_TEMPLATE = """\
   <div class="brand">Clio<span class="dot"></span>Agent</div>
   <div class="card">
     <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Clio Agent dashboard.</p>
+    <p class="subtitle">Choose a sign-in method to continue to the Clioloop dashboard.</p>
     <div class="provider-list">
 {provider_buttons}
     </div>
@@ -325,7 +325,7 @@ _EMPTY_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Clio Agent</title>
+<title>Sign-in unavailable — Clioloop</title>
 <style>
   @font-face {
     font-family: 'Collapse';
