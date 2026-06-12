@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(timeout 15 npm ping)",
+      "Bash(awk -F: '$1 > 160 && $1 < 460')"
+    ]
+  }
+}

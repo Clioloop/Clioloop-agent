@@ -1,0 +1,30 @@
+{
+  "name": "omni-loop-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Omni Loop Portal — accounts, billing, and managed model access for Clioloop",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "next dev -p 4280",
+    "build": "next build",
+    "start": "next start -p 4280",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.8.0",
+    "jose": "^5.9.6",
+    "next": "^15.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "stripe": "^17.5.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

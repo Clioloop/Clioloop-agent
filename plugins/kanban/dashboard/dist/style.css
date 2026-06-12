@@ -1,0 +1,379 @@
+.clio-kanban-plugin {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  min-width: 0;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.clio-kanban-toolbar,
+.clio-kanban-create,
+.clio-kanban-actions,
+.clio-kanban-meta,
+.clio-kanban-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.clio-kanban-toolbar {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.clio-kanban-toolbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.clio-kanban-toolbar p {
+  margin: 0.2rem 0 0;
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.85rem;
+}
+
+.clio-kanban-create input,
+.clio-kanban-actions input,
+.clio-kanban-actions select {
+  box-sizing: border-box;
+  height: 2.25rem;
+  min-width: 0;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  background: var(--color-background, transparent);
+  color: inherit;
+  line-height: 1.2;
+}
+
+.clio-kanban-actions {
+  justify-content: flex-end;
+  max-width: min(100%, 46rem);
+}
+
+.clio-kanban-actions input {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+}
+
+.clio-kanban-actions select {
+  flex: 0 1 10rem;
+  max-width: 12rem;
+}
+
+.clio-kanban-create {
+  max-width: 46rem;
+}
+
+.clio-kanban-create input {
+  flex: 1 1 18rem;
+  max-width: 34rem;
+}
+
+.clio-kanban-tabs,
+.clio-kanban-detail-actions,
+.clio-kanban-comment-form,
+.clio-kanban-settings-grid,
+.clio-kanban-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.clio-kanban-tabs button,
+.clio-kanban-panel button,
+.clio-kanban-detail-actions button,
+.clio-kanban-detail-actions select,
+.clio-kanban-comment-form button,
+.clio-kanban-settings-grid button,
+.clio-kanban-settings-grid select,
+.clio-kanban-settings-grid input {
+  box-sizing: border-box;
+  min-height: 2rem;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 5px;
+  padding: 0.3rem 0.6rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.clio-kanban-tabs .is-active {
+  border-color: var(--color-primary, #4f80ff);
+  color: var(--color-primary, #4f80ff);
+}
+
+.clio-kanban-panel {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: color-mix(in srgb, var(--color-card, #111) 72%, transparent);
+}
+
+.clio-kanban-panel h2,
+.clio-kanban-drawer h2,
+.clio-kanban-drawer h3 {
+  margin: 0;
+}
+
+.clio-kanban-row {
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.2));
+  padding-top: 0.6rem;
+}
+
+.clio-kanban-row p,
+.clio-kanban-profile p,
+.clio-kanban-drawer p {
+  margin: 0.2rem 0 0;
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.82rem;
+}
+
+.clio-kanban-settings-grid {
+  align-items: end;
+}
+
+.clio-kanban-settings-grid label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--color-muted-foreground, #777);
+}
+
+.clio-kanban-settings-grid .clio-kanban-check {
+  display: flex;
+  align-items: center;
+  min-height: 2rem;
+}
+
+.clio-kanban-profile-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: 0.75rem;
+}
+
+.clio-kanban-profile {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 7px;
+  padding: 0.65rem;
+}
+
+.clio-kanban-profile textarea,
+.clio-kanban-comment-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 4rem;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  background: var(--color-background, transparent);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.clio-kanban-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.clio-kanban-column {
+  min-height: 12rem;
+  min-width: 0;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-card, #111) 82%, transparent);
+  padding: 0.6rem;
+  box-sizing: border-box;
+}
+
+.clio-kanban-column header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  font-weight: 700;
+}
+
+.clio-kanban-card {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.55rem;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 7px;
+  padding: 0.65rem;
+  background: var(--color-background, rgba(255, 255, 255, 0.04));
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.clio-kanban-card--failed {
+  outline: 2px solid var(--clio-danger, #d33);
+}
+
+.clio-kanban-card-title {
+  font-weight: 700;
+}
+
+.clio-kanban-card p {
+  margin: 0;
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.82rem;
+}
+
+.clio-kanban-summary {
+  border-left: 2px solid var(--color-primary, #4f80ff);
+  padding-left: 0.45rem;
+}
+
+.clio-kanban-warning {
+  color: var(--color-warning, #c88b00) !important;
+}
+
+.clio-kanban-meta span,
+.clio-kanban-count,
+.clio-kanban-bulk {
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.74rem;
+}
+
+.clio-kanban-priority {
+  color: var(--color-warning, #c88b00);
+}
+
+.clio-kanban-priority-high {
+  color: var(--color-destructive, #d33);
+}
+
+.clio-kanban-priority-low {
+  color: var(--color-muted-foreground, #777);
+}
+
+.clio-kanban-card-actions button,
+.clio-kanban-actions button,
+.clio-kanban-create button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  max-width: 100%;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 5px;
+  padding: 0.35rem 0.65rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clio-kanban-card-actions button {
+  min-height: 1.8rem;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+.clio-kanban-card-actions .clio-kanban-danger-action {
+  border-color: color-mix(in srgb, var(--color-destructive, #d33) 55%, var(--color-border, #333));
+  color: var(--color-destructive, #d33);
+}
+
+.clio-kanban-result,
+.clio-kanban-drawer pre {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.25));
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.clio-kanban-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 50;
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+  width: min(42rem, 100vw);
+  height: 100vh;
+  overflow: auto;
+  box-sizing: border-box;
+  border-left: 1px solid var(--color-border, rgba(127, 127, 127, 0.35));
+  padding: 1rem;
+  background: var(--color-background, #101014);
+  box-shadow: -24px 0 40px rgba(0, 0, 0, 0.28);
+}
+
+.clio-kanban-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.clio-kanban-drawer-head button {
+  border: 1px solid var(--color-border, #333);
+  border-radius: 5px;
+  padding: 0.35rem 0.65rem;
+  background: transparent;
+  color: inherit;
+}
+
+.clio-kanban-drawer section {
+  display: grid;
+  gap: 0.45rem;
+  border-top: 1px solid var(--color-border, rgba(127, 127, 127, 0.22));
+  padding-top: 0.75rem;
+}
+
+.clio-kanban-comment,
+.clio-kanban-run,
+.clio-kanban-event {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.24));
+  border-radius: 7px;
+  padding: 0.6rem;
+}
+
+.clio-kanban-comment span,
+.clio-kanban-event span {
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.75rem;
+}
+
+.clio-kanban-log {
+  max-height: 18rem;
+}
+
+.clio-kanban-empty,
+.clio-kanban-error {
+  color: var(--color-muted-foreground, #777);
+  font-size: 0.85rem;
+}
+
+.clio-kanban-error {
+  color: var(--color-destructive, #d33);
+}

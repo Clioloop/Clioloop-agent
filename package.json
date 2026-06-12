@@ -1,0 +1,35 @@
+{
+  "name": "clioloop-agent",
+  "version": "0.1.0",
+  "description": "Clioloop is a self-improving AI agent that creates skills from experience, improves them during use, and runs anywhere.",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "ui-tui",
+    "ui-tui/packages/*",
+    "web"
+  ],
+  "scripts": {
+    "postinstall": "echo '✅ Browser tools ready. Run: uv run clio --help'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Clioloop/Clioloop-agent.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Clioloop/Clioloop-agent/issues"
+  },
+  "homepage": "https://github.com/Clioloop/Clioloop-agent#readme",
+  "dependencies": {
+    "@streamdown/math": "^1.0.2",
+    "agent-browser": "^0.26.0"
+  },
+  "overrides": {
+    "lodash": "4.18.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
