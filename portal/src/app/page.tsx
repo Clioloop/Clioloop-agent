@@ -23,11 +23,17 @@ export default function LandingPage() {
             anything else: built strictly for your agent.
           </p>
           <div className="hero-actions">
-            <Link href="/signup" className="btn btn-primary btn-lg">
-              Start free
+            <a
+              className="btn btn-primary btn-lg"
+              href="https://github.com/Clioloop/Clioloop-agent/releases/latest/download/Clioloop-Setup.exe"
+            >
+              ⬇ Download for Windows
+            </a>
+            <Link href="#download" className="btn btn-ghost btn-lg">
+              Install on Linux / macOS
             </Link>
-            <Link href="/docs" className="btn btn-ghost btn-lg">
-              Read the docs
+            <Link href="/signup" className="btn btn-ghost btn-lg">
+              Start free
             </Link>
           </div>
 
@@ -36,34 +42,30 @@ export default function LandingPage() {
               <span />
               <span />
               <span />
-              <span className="t-title">clio setup</span>
+              <span className="t-title">install clioloop</span>
             </div>
             <div className="terminal-body">
               <div>
-                <span className="t-prompt">$</span> clio setup
+                <span className="t-prompt">$</span> curl -fsSL{" "}
+                https://raw.githubusercontent.com/Clioloop/Clioloop-agent/main/scripts/install.sh | bash
               </div>
-              <div className="t-dim">∞ Clioloop Setup — first run detected</div>
               <div>
-                <span className="t-accent">❯ 1.</span> Omni Loop Portal{" "}
-                <span className="t-dim">— one login, 300+ models (recommended)</span>
+                <span className="t-green">✓</span> Clioloop installed{" "}
+                <span className="t-dim">(or grab the Windows installer above)</span>
               </div>
-              <div className="t-dim">&nbsp;&nbsp;2. Bring your own provider (OpenAI, Anthropic, …)</div>
               <div>&nbsp;</div>
+              <div>
+                <span className="t-prompt">$</span> clio setup{" "}
+                <span className="t-dim"># choose Omni Loop Portal — one login, 300+ models</span>
+              </div>
               <div className="t-dim">Opening browser… approve this device with code</div>
               <div>
                 &nbsp;&nbsp;<span className="t-accent">WXYZ-2345</span>
               </div>
               <div>
-                <span className="t-green">✓</span> Connected to Omni Loop Portal —{" "}
-                <span className="t-green">Pro plan</span>
-              </div>
-              <div>
-                <span className="t-green">✓</span> Default model:{" "}
+                <span className="t-green">✓</span> Connected —{" "}
+                <span className="t-green">Pro plan</span>,{" "}
                 <span className="t-accent">anthropic/claude-sonnet-4.6</span>
-              </div>
-              <div>
-                <span className="t-green">✓</span> Tools enabled:{" "}
-                <span className="t-dim">web search · image gen · tts · browser</span>
               </div>
               <div>
                 <span className="t-prompt">$</span> clio{" "}
