@@ -24,4 +24,7 @@ jobs:
 
       - name: Run ruff
         run: |
+          # ruff is installed into the uv-managed .venv by `uv sync`, not onto
+          # the global PATH — activate it so the bare `ruff` call resolves.
+          source .venv/bin/activate
           ruff check .
