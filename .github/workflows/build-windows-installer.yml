@@ -100,9 +100,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-release
-          nsis="$(ls apps/bootstrap-installer/src-tauri/target/release/bundle/nsis/*.exe | head -1)"
-          echo "Renaming '$nsis' -> Clioloop-Setup.exe"
-          cp "$nsis" dist-release/Clioloop-Setup.exe
+          base="apps/bootstrap-installer/src-tauri/target/release"
+          # Prefer an NSIS bundle if Tauri produced one; otherwise ship the
+          # raw setup exe (the default Tauri output for this installer).
+          nsis="$(ls "$base"/bundle/nsis/*.exe 2>/dev/null | head -1 || true)"
+          if [ -n "$nsis" ]; then
+            src="$nsis"
+          elif [ -f "$base/Clio-Setup.exe" ]; then
+            src="$base/Clio-Setup.exe"
+          else
+            echo "::error::No installer found under $base (no NSIS bundle, no Clio-Setup.exe)"
+            ls -R "$base" | head -50 || true
+            exit 1
+          fi
+          echo "Staging '$src' -> Clioloop-Setup.exe"
+          cp "$src" dist-release/Clioloop-Setup.exe
 
       - name: Publish installer to GitHub Release
         env:
