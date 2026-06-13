@@ -13,8 +13,16 @@ Interactive mode (tool_progress_mode == "full") still uses ChatConsole.
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+import cli as cli_module
 from cli import ClioCLI
+
+
+@pytest.fixture(autouse=True)
+def _plain_cprint(monkeypatch):
+    """Keep this file independent of prompt-toolkit stdout state."""
+    monkeypatch.setattr(cli_module, "_cprint", print)
 
 
 def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):

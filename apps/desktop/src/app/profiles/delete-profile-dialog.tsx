@@ -1,5 +1,5 @@
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/clio'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits

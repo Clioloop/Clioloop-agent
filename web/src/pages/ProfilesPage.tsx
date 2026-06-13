@@ -43,6 +43,8 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 
+type CheckedState = boolean | "indeterminate";
+
 // Mirrors clio_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -880,7 +882,7 @@ export default function ProfilesPage() {
                     checked={cloneFromDefault}
                     id="clone-from-default"
                     disabled={cloneAll}
-                    onCheckedChange={(checked: any) =>
+                    onCheckedChange={(checked: CheckedState) =>
                       setCloneFromDefault(checked === true)
                     }
                   />
@@ -897,7 +899,9 @@ export default function ProfilesPage() {
                   <Checkbox
                     checked={cloneAll}
                     id="clone-all"
-                    onCheckedChange={(checked: any) => setCloneAll(checked === true)}
+                    onCheckedChange={(checked: CheckedState) =>
+                      setCloneAll(checked === true)
+                    }
                   />
 
                   <Label
@@ -913,7 +917,9 @@ export default function ProfilesPage() {
                     checked={noSkills}
                     id="no-skills"
                     disabled={cloning}
-                    onCheckedChange={(checked: any) => setNoSkills(checked === true)}
+                    onCheckedChange={(checked: CheckedState) =>
+                      setNoSkills(checked === true)
+                    }
                   />
 
                   <Label

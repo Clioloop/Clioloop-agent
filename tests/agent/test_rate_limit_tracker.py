@@ -153,7 +153,7 @@ class TestFormatting:
     def test_format_display_with_data(self):
         state = parse_rate_limit_headers(MANAGED_HEADERS, provider="managed")
         result = format_rate_limit_display(state)
-        assert "managed provider" in result
+        assert "Omni Loop Portal" in result
         assert "Requests/min" in result
         assert "Requests/hr" in result
         assert "Tokens/min" in result

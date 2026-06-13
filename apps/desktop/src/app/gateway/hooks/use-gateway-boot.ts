@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
-import type { ClioConnection } from '@/global'
 import { ClioGateway } from '@/clio'
+import type { ClioConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {

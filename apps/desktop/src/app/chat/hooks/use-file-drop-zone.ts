@@ -7,7 +7,7 @@ import {
   type SessionDragPayload
 } from '@/app/chat/composer/inline-refs'
 
-import { type DroppedFile, extractDroppedFiles, CLIO_PATHS_MIME } from './use-composer-actions'
+import { CLIO_PATHS_MIME, type DroppedFile, extractDroppedFiles } from './use-composer-actions'
 
 export type DragKind = 'files' | 'session' | null
 

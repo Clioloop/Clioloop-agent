@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   getAuxiliaryModels,
   getGlobalModelInfo,
@@ -12,6 +10,8 @@ import {
   startPortalConnect
 } from '@/clio'
 import type { AuxiliaryModelsResponse, ModelOptionProvider, PortalStatusResponse } from '@/clio'
+import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 

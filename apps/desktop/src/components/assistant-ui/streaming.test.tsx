@@ -93,7 +93,7 @@ function userMessage(): ThreadMessage {
     attachments: [],
     createdAt,
     metadata: { custom: {} }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function assistantMessage(text: string, running = true): ThreadMessage {
@@ -134,7 +134,7 @@ function assistantReasoningMessage(text: string, running = false): ThreadMessage
   return {
     id: 'assistant-reasoning-1',
     role: 'assistant',
-    content: [{ type: 'reasoning', text }],
+    content: [{ type: 'reasoning', text, status: running ? { type: 'running' } : { type: 'complete' } }],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
@@ -144,7 +144,7 @@ function assistantReasoningMessage(text: string, running = false): ThreadMessage
       steps: [],
       custom: {}
     }
-  } as ThreadMessage
+  } as unknown as ThreadMessage
 }
 
 function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
@@ -643,7 +643,8 @@ describe('assistant-ui streaming renderer', () => {
     const { container } = render(<RunningReasoningHarness />)
     const ui = within(container)
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    const disclosure = ui.getByRole('button', { name: /thinking/i })
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true')
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()

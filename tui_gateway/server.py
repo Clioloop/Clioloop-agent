@@ -527,6 +527,54 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     )
 
 
+def _emit_goal_event(
+    sid: str,
+    state: Any,
+    *,
+    text: str = "",
+    verdict: str | None = None,
+    reason: str | None = None,
+    cleared: bool = False,
+) -> None:
+    """Emit a structured standing-goal event.
+
+    Rich clients (the desktop app) render this as a goal banner that is
+    visually distinct from a normal task — mirroring how the TUI/Telegram
+    already surface ``/goal`` progress, but with structured fields so the UI
+    doesn't have to parse the human one-liner. ``cleared`` forces a terminal
+    payload so the client drops the banner even if ``state`` still carries the
+    last values (e.g. right after ``/goal clear``).
+    """
+    if not sid:
+        return
+    if cleared or state is None:
+        _emit(
+            "status.update",
+            sid,
+            {"kind": "goal", "status": "cleared", "active": False, "text": text or "Goal cleared."},
+        )
+        return
+    status = getattr(state, "status", "active")
+    _emit(
+        "status.update",
+        sid,
+        {
+            "kind": "goal",
+            "status": status,
+            # active|paused both keep the banner up (the loop can resume);
+            # done/cleared tell the client to retire it.
+            "active": status in {"active", "paused"},
+            "goal": getattr(state, "goal", "") or "",
+            "turns_used": int(getattr(state, "turns_used", 0) or 0),
+            "max_turns": int(getattr(state, "max_turns", 0) or 0),
+            "subgoals": len(getattr(state, "subgoals", []) or []),
+            "verdict": verdict,
+            "reason": reason,
+            "text": text or "",
+        },
+    )
+
+
 def _estimate_image_tokens(width: int, height: int) -> int:
     """Very rough UI estimate for image prompt cost.
 
@@ -4728,10 +4776,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
-                                _emit(
-                                    "status.update",
+                                _emit_goal_event(
                                     sid,
-                                    {"kind": "goal", "text": verdict_msg},
+                                    goal_mgr.state,
+                                    text=verdict_msg,
+                                    verdict=decision.get("verdict"),
+                                    reason=decision.get("reason"),
                                 )
                             if decision.get("should_continue"):
                                 cont_prompt = decision.get("continuation_prompt") or ""
@@ -6383,18 +6433,25 @@ def _(rid, params: dict) -> dict:
         except Exception:
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        # Connection sid for structured goal events (drives the desktop's
+        # goal banner). session_key above is the *session* id used for
+        # persistence; this is the per-connection routing id _emit expects.
+        goal_sid = params.get("session_id", "")
 
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
+            _emit_goal_event(goal_sid, mgr.state, text=mgr.status_line())
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
+            _emit_goal_event(goal_sid, state, text=out)
             return _ok(rid, {"type": "exec", "output": out})
         if lower == "resume":
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            _emit_goal_event(goal_sid, state, text=f"▶ Goal resumed: {state.goal}")
             return _ok(
                 rid,
                 {
@@ -6408,6 +6465,10 @@ def _(rid, params: dict) -> dict:
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
+            _emit_goal_event(
+                goal_sid, None, cleared=True,
+                text="✓ Goal cleared." if had else "No active goal.",
+            )
             return _ok(
                 rid,
                 {
@@ -6422,6 +6483,7 @@ def _(rid, params: dict) -> dict:
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
+        _emit_goal_event(goal_sid, state, text=f"⊙ Goal set: {state.goal}")
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"

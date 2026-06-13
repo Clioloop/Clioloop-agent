@@ -1,6 +1,6 @@
 """Console entrypoint for the Clio ACP adapter."""
 
-from __future__ import annotations
+import clio_bootstrap  # noqa: F401 - configure stdio before any other imports
 
 import argparse
 import asyncio
@@ -8,8 +8,7 @@ import logging
 import sys
 
 import acp
-
-from acp_adapter.server import ClioACPAgent, CLIO_VERSION
+from acp_adapter.server import CLIO_VERSION, ClioACPAgent
 
 
 class _BenignProbeMethodFilter(logging.Filter):

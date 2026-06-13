@@ -2,7 +2,7 @@ import { Box, Text, useStdout } from '@clio/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
-import { artWidth, infinity, logo, LOGO_WIDTH, terminalArt, terminalArtHero } from '../banner.js'
+import { artWidth, infinity, logo, LOGO_WIDTH, terminalArtHero } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -161,12 +161,15 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroWidth = Math.floor(cols * 0.5) - 4
+
   const heroLines = t.bannerHero
     ? infinity(t.color, t.bannerHero)
     : terminalArtHero(t.color, heroWidth, 16)
+
   const leftW = heroLines
     ? Math.min(artWidth(heroLines) + 4, Math.floor(cols * 0.6))
     : 0
+
   const wide = cols >= 90 && leftW + 36 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)

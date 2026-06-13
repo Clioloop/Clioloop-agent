@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
-import { ModelPickerDialog } from '@/components/model-picker'
 import type { ClioGateway } from '@/clio'
+import { ModelPickerDialog } from '@/components/model-picker'
 import {
   $activeSessionId,
   $currentModel,

@@ -18,6 +18,9 @@ import yaml
 
 SKILL_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "research" / "darwinian-evolver"
 
+if not SKILL_DIR.exists():
+    pytest.skip("darwinian-evolver optional skill is not shipped in this source tree", allow_module_level=True)
+
 
 @pytest.fixture(scope="module")
 def frontmatter() -> dict:

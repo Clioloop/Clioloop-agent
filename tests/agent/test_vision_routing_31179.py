@@ -64,9 +64,21 @@ def _fresh_modules():
     """Drop cached clio modules so each test reloads against current env."""
     for mod in list(sys.modules.keys()):
         if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
+                           "agent.models_dev",
                            "tools.vision_tools", "tools.browser_tool",
                            "clio_cli.config")):
             del sys.modules[mod]
+
+
+def _patch_main_vision_capability(monkeypatch, value: bool) -> None:
+    """Make the main-model capability premise deterministic for this test."""
+    import agent.auxiliary_client as auxiliary_client
+
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_main_model_supports_vision",
+        lambda _provider, _model: value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +165,13 @@ class TestTextOnlyMainSkippedForVision:
 model:
   provider: deepseek
   default: deepseek-v4-pro
-""")
+        """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        _patch_main_vision_capability(monkeypatch, False)
 
-        from agent.auxiliary_client import resolve_vision_provider_client
-        provider, client, _model = resolve_vision_provider_client(provider="auto")
+        import agent.auxiliary_client as auxiliary_client
+        provider, client, _model = auxiliary_client.resolve_vision_provider_client(provider="auto")
         assert client is None, (
             f"Vision auto-detect must skip text-only main {provider!r} when "
             "no vision-capable aggregator is available, not return a client "
@@ -171,12 +184,13 @@ model:
 model:
   provider: anthropic
   default: claude-sonnet-4-6
-""")
+        """)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _fresh_modules()
+        _patch_main_vision_capability(monkeypatch, True)
 
-        from agent.auxiliary_client import resolve_vision_provider_client
-        provider, client, _model = resolve_vision_provider_client(provider="auto")
+        import agent.auxiliary_client as auxiliary_client
+        provider, client, _model = auxiliary_client.resolve_vision_provider_client(provider="auto")
         assert client is not None
         assert provider == "anthropic"
 
@@ -241,9 +255,10 @@ auxiliary:
 model:
   provider: deepseek
   default: deepseek-v4-pro
-""")
+        """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        _patch_main_vision_capability(monkeypatch, False)
 
         from tools.vision_tools import check_vision_requirements
         assert check_vision_requirements() is False
@@ -256,9 +271,10 @@ model:
 model:
   provider: deepseek
   default: deepseek-v4-pro
-""")
+        """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        _patch_main_vision_capability(monkeypatch, False)
 
         import tools.browser_tool
         # Force the browser side to True so we exercise the vision-gating part.

@@ -1,6 +1,6 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getClioConfigRecord, type ClioConfigRecord, saveClioConfig } from '@/clio'
+import { type ClioConfigRecord, getClioConfigRecord, saveClioConfig } from '@/clio'
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'

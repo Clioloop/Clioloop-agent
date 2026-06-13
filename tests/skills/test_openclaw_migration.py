@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -14,6 +16,9 @@ SCRIPT_PATH = (
     / "scripts"
     / "openclaw_to_clio.py"
 )
+
+if not SCRIPT_PATH.exists():
+    pytest.skip("openclaw-migration optional skill is not shipped in this source tree", allow_module_level=True)
 
 
 def load_module():

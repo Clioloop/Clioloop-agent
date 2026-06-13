@@ -7,12 +7,14 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 
 import json
 import stat
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import clio_cli.auth as auth_module
 from clio_cli.auth import (
     AuthError,
     DEFAULT_QWEN_BASE_URL,
@@ -63,13 +65,19 @@ def _write_qwen_creds(tmp_path, tokens=None):
     return creds_path
 
 
+def _patch_auth_attr(monkeypatch, name: str, value):
+    """Patch auth helpers even if another test reloaded clio_cli.auth."""
+    monkeypatch.setattr(auth_module, name, value)
+    current = sys.modules.get("clio_cli.auth")
+    if current is not None and current is not auth_module:
+        monkeypatch.setattr(current, name, value, raising=False)
+
+
 @pytest.fixture()
 def qwen_env(tmp_path, monkeypatch):
     """Redirect _qwen_cli_auth_path to tmp_path/.qwen/oauth_creds.json."""
     creds_path = tmp_path / ".qwen" / "oauth_creds.json"
-    monkeypatch.setattr(
-        "clio_cli.auth._qwen_cli_auth_path", lambda: creds_path
-    )
+    _patch_auth_attr(monkeypatch, "_qwen_cli_auth_path", lambda: creds_path)
     return tmp_path
 
 
@@ -191,7 +199,7 @@ def test_refresh_qwen_cli_tokens_success(qwen_env):
         "expires_in": 7200,
     }
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         result = _refresh_qwen_cli_tokens(tokens)
 
@@ -211,7 +219,7 @@ def test_refresh_qwen_cli_tokens_preserves_old_refresh_if_not_in_response(qwen_e
         "expires_in": 3600,
     }
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         result = _refresh_qwen_cli_tokens(tokens)
 
@@ -232,7 +240,7 @@ def test_refresh_qwen_cli_tokens_http_error(qwen_env):
     resp.status_code = 401
     resp.text = "unauthorized"
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         with pytest.raises(AuthError) as exc:
             _refresh_qwen_cli_tokens(tokens)
@@ -242,7 +250,7 @@ def test_refresh_qwen_cli_tokens_http_error(qwen_env):
 def test_refresh_qwen_cli_tokens_network_error(qwen_env):
     tokens = _make_qwen_tokens()
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.side_effect = ConnectionError("timeout")
         with pytest.raises(AuthError) as exc:
             _refresh_qwen_cli_tokens(tokens)
@@ -256,7 +264,7 @@ def test_refresh_qwen_cli_tokens_invalid_json_response(qwen_env):
     resp.status_code = 200
     resp.json.side_effect = ValueError("bad json")
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         with pytest.raises(AuthError) as exc:
             _refresh_qwen_cli_tokens(tokens)
@@ -270,7 +278,7 @@ def test_refresh_qwen_cli_tokens_missing_access_token_in_response(qwen_env):
     resp.status_code = 200
     resp.json.return_value = {"something": "but no access_token"}
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         with pytest.raises(AuthError) as exc:
             _refresh_qwen_cli_tokens(tokens)
@@ -285,7 +293,7 @@ def test_refresh_qwen_cli_tokens_default_expires_in(qwen_env):
     resp.status_code = 200
     resp.json.return_value = {"access_token": "new"}
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         result = _refresh_qwen_cli_tokens(tokens)
 
@@ -304,7 +312,7 @@ def test_refresh_qwen_cli_tokens_saves_to_disk(qwen_env):
         "expires_in": 3600,
     }
 
-    with patch("clio_cli.auth.httpx") as mock_httpx:
+    with patch.object(auth_module, "httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         _refresh_qwen_cli_tokens(tokens)
 
@@ -338,8 +346,8 @@ def test_resolve_qwen_runtime_credentials_triggers_refresh(qwen_env):
 
     refreshed = _make_qwen_tokens(access_token="refreshed-at")
 
-    with patch(
-        "clio_cli.auth._refresh_qwen_cli_tokens", return_value=refreshed
+    with patch.object(
+        auth_module, "_refresh_qwen_cli_tokens", return_value=refreshed
     ) as mock_refresh:
         creds = resolve_qwen_runtime_credentials()
     mock_refresh.assert_called_once()
@@ -352,8 +360,8 @@ def test_resolve_qwen_runtime_credentials_force_refresh(qwen_env):
 
     refreshed = _make_qwen_tokens(access_token="force-refreshed")
 
-    with patch(
-        "clio_cli.auth._refresh_qwen_cli_tokens", return_value=refreshed
+    with patch.object(
+        auth_module, "_refresh_qwen_cli_tokens", return_value=refreshed
     ) as mock_refresh:
         creds = resolve_qwen_runtime_credentials(force_refresh=True)
     mock_refresh.assert_called_once()
@@ -398,8 +406,8 @@ def test_get_qwen_auth_status_refreshes_expired_token(qwen_env):
 
     refreshed = _make_qwen_tokens(access_token="refreshed-at")
 
-    with patch(
-        "clio_cli.auth._refresh_qwen_cli_tokens", return_value=refreshed
+    with patch.object(
+        auth_module, "_refresh_qwen_cli_tokens", return_value=refreshed
     ) as mock_refresh:
         status = get_qwen_auth_status()
 
@@ -413,8 +421,9 @@ def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_
     tokens = _make_qwen_tokens(access_token="dead-at", expiry_date=expired_ms)
     _write_qwen_creds(qwen_env, tokens)
 
-    with patch(
-        "clio_cli.auth._refresh_qwen_cli_tokens",
+    with patch.object(
+        auth_module,
+        "_refresh_qwen_cli_tokens",
         side_effect=AuthError(
             "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
             provider="qwen-oauth",
@@ -442,8 +451,9 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
     tokens = _make_qwen_tokens(access_token="dead-at", expiry_date=expired_ms)
     _write_qwen_creds(qwen_env, tokens)
 
-    monkeypatch.setattr(
-        "clio_cli.auth._refresh_qwen_cli_tokens",
+    _patch_auth_attr(
+        monkeypatch,
+        "_refresh_qwen_cli_tokens",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AuthError(
                 "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
@@ -456,12 +466,14 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
     prompt_called = {"value": False}
     update_called = {"value": False}
 
-    monkeypatch.setattr(
-        "clio_cli.auth._prompt_model_selection",
+    _patch_auth_attr(
+        monkeypatch,
+        "_prompt_model_selection",
         lambda *args, **kwargs: prompt_called.__setitem__("value", True),
     )
-    monkeypatch.setattr(
-        "clio_cli.auth._update_config_for_provider",
+    _patch_auth_attr(
+        monkeypatch,
+        "_update_config_for_provider",
         lambda *args, **kwargs: update_called.__setitem__("value", True),
     )
 

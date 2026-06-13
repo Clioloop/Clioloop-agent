@@ -3,7 +3,10 @@
     "allow": [
       "Bash(npm --version)",
       "Bash(timeout 15 npm ping)",
-      "Bash(awk -F: '$1 > 160 && $1 < 460')"
+      "Bash(awk -F: '$1 > 160 && $1 < 460')",
+      "Bash(grep -oE \"triage[^,}]{0,40}\" plugins/kanban/dashboard/dist/index.js)",
+      "Bash(grep -oE 'createTask[^;]{0,400}' index.js)",
+      "Bash(awk '/\\\\[project.scripts\\\\]/{f=1} f{print} /^\\\\[/{if\\(f && !/scripts/\\)exit}' pyproject.toml)"
     ]
   }
 }

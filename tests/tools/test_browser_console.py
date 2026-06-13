@@ -371,6 +371,11 @@ class TestRecordSessionsConfig:
 class TestDogfoodSkill:
     """Dogfood skill files exist and have correct structure."""
 
+    pytestmark = pytest.mark.skipif(
+        not os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "dogfood")),
+        reason="dogfood skill is not shipped in this source tree",
+    )
+
     @pytest.fixture(autouse=True)
     def _skill_dir(self):
         # Use the actual repo skills dir (not temp)

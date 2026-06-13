@@ -1,12 +1,11 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import { ThemeContext, type ThemeContextValue } from "./context-state";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
 import type {
   DashboardTheme,
@@ -480,26 +479,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-export function useTheme(): ThemeContextValue {
-  return useContext(ThemeContext);
-}
-
-const ThemeContext = createContext<ThemeContextValue>({
-  theme: defaultTheme,
-  themeName: "default",
-  availableThemes: Object.values(BUILTIN_THEMES).map((t) => ({
-    name: t.name,
-    label: t.label,
-    description: t.description,
-  })),
-  setTheme: () => {},
-});
-
-interface ThemeContextValue {
-  availableThemes: ThemeListEntry[];
-  setTheme: (name: string) => void;
-  theme: DashboardTheme;
-  themeName: string;
 }

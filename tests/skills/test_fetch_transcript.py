@@ -7,6 +7,9 @@ from unittest import mock
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "skills" / "media" / "youtube-content" / "scripts"
+if not SCRIPTS_DIR.exists():
+    pytest.skip("youtube-content skill scripts are not shipped in this source tree", allow_module_level=True)
+
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import fetch_transcript

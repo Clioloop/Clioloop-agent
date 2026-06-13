@@ -35,7 +35,7 @@ import {
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
-import { extractDroppedFiles, CLIO_PATHS_MIME } from '../hooks/use-composer-actions'
+import { CLIO_PATHS_MIME, extractDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'

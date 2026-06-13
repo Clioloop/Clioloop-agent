@@ -18,6 +18,9 @@ SCRIPT_PATH = (
     / "skills/productivity/google-workspace/scripts/setup.py"
 )
 
+if not SCRIPT_PATH.exists():
+    pytest.skip("google-workspace skill scripts are not shipped in this source tree", allow_module_level=True)
+
 
 class FakeCredentials:
     def __init__(self, payload=None):

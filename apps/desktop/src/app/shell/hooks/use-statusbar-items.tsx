@@ -11,6 +11,7 @@ import {
   Clock,
   Command,
   Hash,
+  KanbanSquare,
   Loader2,
   Sparkles,
   Zap,
@@ -42,7 +43,7 @@ import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
 import type { StatusResponse } from '@/types/clio'
 
-import { CRON_ROUTE } from '../../routes'
+import { CRON_ROUTE, KANBAN_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
@@ -273,6 +274,14 @@ export function useStatusbarItems({
         label: 'Cron',
         title: 'Open cron jobs',
         to: CRON_ROUTE,
+        variant: 'action'
+      },
+      {
+        icon: <KanbanSquare className="size-3" />,
+        id: 'kanban',
+        label: 'Kanban',
+        title: 'Open kanban board',
+        to: KANBAN_ROUTE,
         variant: 'action'
       }
     ],

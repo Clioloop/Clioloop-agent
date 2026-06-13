@@ -21,6 +21,9 @@ API_PATH = (
     / "skills/productivity/google-workspace/scripts/google_api.py"
 )
 
+if not BRIDGE_PATH.exists() or not API_PATH.exists():
+    pytest.skip("google-workspace skill scripts are not shipped in this source tree", allow_module_level=True)
+
 
 @pytest.fixture
 def bridge_module(monkeypatch, tmp_path):

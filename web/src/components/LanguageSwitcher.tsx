@@ -5,8 +5,7 @@ import { Button } from "@clioloop-agent/ui/ui/components/button";
 import { BottomSheet } from "@clioloop-agent/ui/ui/components/bottom-sheet";
 import { Typography } from "@clioloop-agent/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@clioloop-agent/ui/hooks/use-below-breakpoint";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
+import { LOCALE_META, useI18n } from "@/i18n";
 import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 

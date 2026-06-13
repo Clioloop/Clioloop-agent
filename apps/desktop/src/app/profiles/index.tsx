@@ -1,6 +1,16 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import {
+  createProfile,
+  deleteProfile,
+  getProfiles,
+  getProfileSetupCommand,
+  getProfileSoul,
+  type ProfileInfo,
+  renameProfile,
+  updateProfileSoul
+} from '@/clio'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -14,16 +24,6 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  createProfile,
-  deleteProfile,
-  getProfiles,
-  getProfileSetupCommand,
-  getProfileSoul,
-  type ProfileInfo,
-  renameProfile,
-  updateProfileSoul
-} from '@/clio'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'

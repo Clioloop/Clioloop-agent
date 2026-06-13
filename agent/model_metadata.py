@@ -406,6 +406,8 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     if not normalized:
         return None
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+    if parsed.scheme in {"http", "https"} and not parsed.netloc and parsed.path.rstrip("/") in {"", "/v1"}:
+        return "managed"
     host = parsed.netloc.lower() or parsed.path.lower()
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part and url_part in host:

@@ -75,7 +75,7 @@ def test_manifest_includes_bundled_skills():
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
     assert "graft skills" in manifest
-    assert "graft optional-skills" in manifest
+    assert "graft optional-skills" not in manifest
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():

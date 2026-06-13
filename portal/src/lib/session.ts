@@ -9,7 +9,6 @@ const MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 // In production set SESSION_SECRET; the dev fallback is random per process,
 // so sessions reset on restart (harmless locally, loud in prod logs).
 declare global {
-  // eslint-disable-next-line no-var
   var __olpSessionSecret: Uint8Array | undefined;
 }
 

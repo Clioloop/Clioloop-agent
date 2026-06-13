@@ -10,11 +10,12 @@ import type * as React from 'react'
 import { Suspense, useCallback, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
+import { type ClioGateway, getGlobalModelOptions } from '@/clio'
 import { Thread } from '@/components/assistant-ui/thread'
+import { GoalBanner } from '@/components/chat/goal-banner'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { getGlobalModelOptions, type ClioGateway } from '@/clio'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
@@ -332,6 +333,8 @@ export function ChatView({
       />
 
       <PromptOverlays />
+
+      <GoalBanner sessionId={activeSessionId} />
 
       <div
         className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-[color-mix(in_srgb,var(--ui-chat-surface-background)_78%,transparent)] contain-[layout_paint]"

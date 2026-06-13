@@ -97,6 +97,140 @@ export default function LandingPage() {
           </div>
         </section>
 
+        {/* ─── What is Clioloop ─────────────────────────────────────── */}
+        <section className="section" id="what-is-clioloop">
+          <div className="section-head">
+            <span className="eyebrow">what is clioloop</span>
+            <h2>The autonomous agent that grows with you</h2>
+            <p>
+              Clioloop is an open-source AI agent that lives in your terminal, a desktop
+              app, a web dashboard and your chat apps. Give it a goal and it keeps
+              working — planning, running tools, checking its own progress — until the
+              job is done. It remembers what it learns about you and your work, and gets
+              more capable the more you use it.
+            </p>
+          </div>
+          <div className="grid-3">
+            <div className="card">
+              <div className="card-icon">🎯</div>
+              <h3>Standing goals</h3>
+              <p>
+                <code>/goal</code> starts a loop: after every turn a judge decides if the
+                goal is met. If not, Clioloop takes the next step automatically — across
+                the terminal, gateway chats and the desktop app, with a live banner
+                showing progress.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">🗂️</div>
+              <h3>Multi-agent Kanban</h3>
+              <p>
+                Break big work into a board of tasks. New tasks land in Triage for
+                review, then worker agents pick them up, run them and report back —
+                visible in both the web dashboard and the desktop app.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">🧠</div>
+              <h3>Memory &amp; self-learning</h3>
+              <p>
+                Clioloop keeps a persistent <code>MEMORY.md</code> and <code>USER.md</code>,
+                updated automatically as it learns your preferences and projects — so the
+                next session already knows you.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">📦</div>
+              <h3>Skills it can evolve</h3>
+              <p>
+                Reusable expertise packs load per task. Clioloop can even refine and merge
+                them with <code>/evolve</code>, growing a library tuned to how you work.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">💬</div>
+              <h3>Drive it from anywhere</h3>
+              <p>
+                A messaging gateway lets you run the agent from Telegram, Slack, WhatsApp,
+                Discord and more — the same session, the same memory, on your phone.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">🔌</div>
+              <h3>Tools &amp; MCP</h3>
+              <p>
+                File editing, shell, web search &amp; extract, a cloud browser, image and
+                video generation, text-to-speech — plus any MCP server you connect.
+                Scheduled jobs run it on a <code>cron</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* ─── Get Clioloop ─────────────────────────────────────────── */}
+        <section className="section" id="download">
+          <div className="section-head">
+            <span className="eyebrow">get clioloop</span>
+            <h2>Install in one line — or one click</h2>
+            <p>
+              Clioloop runs on Linux, macOS and Windows. It&apos;s fully open source —
+              read every line on{" "}
+              <a href="https://github.com/Clioloop/Clioloop-agent">GitHub</a>.
+            </p>
+          </div>
+          <div className="grid-3">
+            <div className="card">
+              <div className="card-icon">🐧</div>
+              <h3>Linux &amp; macOS</h3>
+              <p>One command installs the CLI, TUI and desktop app:</p>
+              <div className="code-block">
+                <span className="c-cmd">
+                  curl -fsSL
+                  https://raw.githubusercontent.com/Clioloop/Clioloop-agent/main/scripts/install.sh
+                  | bash
+                </span>
+              </div>
+              <p style={{ marginTop: 14 }}>
+                Then run <code>clio setup</code> and pick a model.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">🪟</div>
+              <h3>Windows</h3>
+              <p>Download the installer and run it:</p>
+              <a
+                className="btn btn-primary btn-block"
+                href="https://github.com/Clioloop/Clioloop-agent/releases/latest/download/Clioloop-Setup.exe"
+              >
+                ⬇ Download for Windows
+              </a>
+              <p className="t-dim" style={{ marginTop: 14, fontSize: "0.85rem" }}>
+                <strong>Heads up:</strong> the installer isn&apos;t code-signed yet, so
+                Windows SmartScreen may show a &quot;Windows protected your PC&quot;
+                warning. That&apos;s expected — nothing harmful is in the app. Click{" "}
+                <strong>More info → Run anyway</strong>. Everything is open source and
+                auditable on{" "}
+                <a href="https://github.com/Clioloop/Clioloop-agent">GitHub</a> if
+                you&apos;d like to check first.
+              </p>
+            </div>
+            <div className="card">
+              <div className="card-icon">∞</div>
+              <h3>Then connect</h3>
+              <p>
+                Run the setup wizard and choose <strong>Omni Loop Portal</strong> for one
+                login and 300+ models — or bring your own provider keys.
+              </p>
+              <div className="code-block">
+                <span className="c-cmd">clio setup</span>
+              </div>
+              <p style={{ marginTop: 14 }}>
+                <Link href="/docs">Read the full setup guide →</Link>
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* ─── Features ─────────────────────────────────────────────── */}
         <section className="section" id="features">
           <div className="section-head">
@@ -193,6 +327,79 @@ export default function LandingPage() {
               </p>
               <code>clio</code>
             </div>
+          </div>
+        </section>
+
+        {/* ─── Commands ─────────────────────────────────────────────── */}
+        <section className="section" id="commands">
+          <div className="section-head">
+            <span className="eyebrow">commands</span>
+            <h2>Everything Clioloop can do, from one CLI</h2>
+            <p>
+              <code>clio</code> on its own starts an interactive chat. Add a subcommand
+              for everything else — or use slash commands mid-conversation.
+            </p>
+          </div>
+          <div className="grid-3">
+            <div className="card">
+              <h3>Set up &amp; connect</h3>
+              <ul className="cmd-list">
+                <li><code>clio setup</code> — first-run wizard</li>
+                <li><code>clio auth</code> — log in / add providers</li>
+                <li><code>clio model</code> — pick model &amp; provider</li>
+                <li><code>clio status</code> — keys, model, health</li>
+                <li><code>clio doctor</code> — diagnose problems</li>
+                <li><code>clio update</code> — upgrade Clioloop</li>
+              </ul>
+            </div>
+            <div className="card">
+              <h3>Run &amp; surfaces</h3>
+              <ul className="cmd-list">
+                <li><code>clio</code> — interactive chat</li>
+                <li><code>clio --tui</code> — full terminal UI</li>
+                <li><code>clio desktop</code> — desktop app</li>
+                <li><code>clio dashboard</code> — web dashboard</li>
+                <li><code>clio gateway</code> — Telegram/Slack/WhatsApp…</li>
+                <li><code>clio send</code> — message a channel from scripts</li>
+              </ul>
+            </div>
+            <div className="card">
+              <h3>Work &amp; automate</h3>
+              <ul className="cmd-list">
+                <li><code>clio kanban</code> — multi-agent task board</li>
+                <li><code>clio cron</code> — scheduled jobs</li>
+                <li><code>clio skills</code> — manage skill packs</li>
+                <li><code>clio mcp</code> — connect MCP servers</li>
+                <li><code>clio memory</code> — view/edit memory</li>
+                <li><code>clio sessions</code> · <code>clio profile</code></li>
+              </ul>
+            </div>
+          </div>
+          <div className="section-head" style={{ marginTop: 36 }}>
+            <span className="eyebrow">in-session</span>
+            <h3 style={{ fontSize: "1.4rem" }}>Slash commands, mid-conversation</h3>
+          </div>
+          <div className="code-block">
+            <span className="c-cmd">/goal</span>{" "}
+            <span className="c-comment"># keep working until a goal is judged done</span>
+            <br />
+            <span className="c-cmd">/subgoal</span>{" "}
+            <span className="c-comment"># add acceptance criteria to the active goal</span>
+            <br />
+            <span className="c-cmd">/model</span>{" "}
+            <span className="c-comment"># switch model or provider without restarting</span>
+            <br />
+            <span className="c-cmd">/kanban</span>{" "}
+            <span className="c-comment"># open the task board</span>
+            <br />
+            <span className="c-cmd">/skills</span>{" "}
+            <span className="c-comment"># load expertise for the task at hand</span>
+            <br />
+            <span className="c-cmd">/evolve</span>{" "}
+            <span className="c-comment"># let Clioloop refine its own skill library</span>
+            <br />
+            <span className="c-cmd">/help</span>{" "}
+            <span className="c-comment"># list every command in your build</span>
           </div>
         </section>
 

@@ -1,18 +1,18 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
-import { StatusDot, type StatusTone } from '@/components/status-dot'
-import { Button } from '@/components/ui/button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   updateMessagingPlatform
 } from '@/clio'
+import { PageLoader } from '@/components/page-loader'
+import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Button } from '@/components/ui/button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'

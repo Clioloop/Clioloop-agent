@@ -101,6 +101,7 @@ const loadTerminalArt = (): string[] | null => {
           .split('\n')
           .map(line => line.trimEnd())
           .filter(Boolean)
+
         return terminalArtCache
       }
     } catch {
@@ -109,6 +110,7 @@ const loadTerminalArt = (): string[] | null => {
   }
 
   terminalArtCache = null
+
   return terminalArtCache
 }
 

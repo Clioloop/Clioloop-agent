@@ -2,21 +2,21 @@ import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import {
+  getClioConfigDefaults,
+  getClioConfigRecord,
+  getClioConfigSchema,
+  getElevenLabsVoices,
+  saveClioConfig
+} from '@/clio'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  getElevenLabsVoices,
-  getClioConfigDefaults,
-  getClioConfigRecord,
-  getClioConfigSchema,
-  saveClioConfig
-} from '@/clio'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { ConfigFieldSchema, ClioConfigRecord } from '@/types/clio'
+import type { ClioConfigRecord, ConfigFieldSchema } from '@/types/clio'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'

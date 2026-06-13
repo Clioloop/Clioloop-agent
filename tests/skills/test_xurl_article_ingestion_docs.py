@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_MD = REPO_ROOT / "skills" / "social-media" / "xurl" / "SKILL.md"
@@ -13,6 +15,9 @@ DOC_MD = (
     / "social-media"
     / "social-media-xurl.md"
 )
+
+if not SKILL_MD.exists() or not DOC_MD.exists():
+    pytest.skip("xurl skill docs are not shipped in this source tree", allow_module_level=True)
 
 
 def test_xurl_article_ingestion_uses_raw_api_mode():

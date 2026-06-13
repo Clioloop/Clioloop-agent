@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -15,6 +17,9 @@ SCRIPT_PATH = (
     / "scripts"
     / "hyperliquid_client.py"
 )
+
+if not SCRIPT_PATH.exists():
+    pytest.skip("hyperliquid optional skill is not shipped in this source tree", allow_module_level=True)
 
 
 def load_module():

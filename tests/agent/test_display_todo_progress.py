@@ -5,7 +5,7 @@ todo tool call paths: read, create (merge=False), update (merge=True).
 """
 
 import json
-from agent.display import get_cute_tool_message
+from agent.display import get_cute_tool_message, get_skin_tool_prefix
 
 
 def _todo_result(total: int, completed: int) -> str:
@@ -239,4 +239,4 @@ class TestTodoSkinIntegration:
 
     def test_default_skin_prefix(self):
         msg = get_cute_tool_message("todo", {}, 0.5)
-        assert msg.startswith("┊")
+        assert msg.startswith(get_skin_tool_prefix())

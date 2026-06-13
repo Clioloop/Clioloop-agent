@@ -114,6 +114,43 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_bare_dashboard_task_lands_in_triage(client):
+    """A dashboard "Add task" with just a title (no assignee, no parents,
+    no explicit triage choice) must be parked in Triage rather than dropped
+    straight into Ready.
+
+    Regression: the dashboard "Add task" box posts only ``{title}``. That
+    created an unassigned ``ready`` card which, on a system with a running
+    gateway + configured ``default_assignee``, got claimed and run straight
+    to ``done`` — so new tasks appeared to "skip triage and instantly
+    complete". Bare tasks now start in Triage so a human/specifier can flesh
+    out and route them first.
+    """
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "rough idea"})
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert task["status"] == "triage"
+    assert task["assignee"] is None
+
+    # Board lists it under 'triage', not 'ready'/'done'.
+    data = client.get("/api/plugins/kanban/board").json()
+    cols = {c["name"]: c["tasks"] for c in data["columns"]}
+    assert any(t["id"] == task["id"] for t in cols["triage"])
+    assert not any(t["id"] == task["id"] for t in cols["ready"])
+    assert not any(t["id"] == task["id"] for t in cols["done"])
+
+
+def test_explicit_triage_false_keeps_ready(client):
+    """An explicit ``triage: false`` is honored even with no assignee — the
+    bare-task default only applies when triage is left unspecified."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "explicitly ready", "triage": False},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 
@@ -288,7 +325,9 @@ def test_task_detail_404_on_unknown(client):
 
 
 def test_patch_status_complete(client):
-    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "triage": False},
+    ).json()["task"]
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",
         json={"status": "done", "result": "shipped"},
@@ -305,7 +344,9 @@ def test_patch_status_complete(client):
 
 
 def test_patch_block_then_unblock(client):
-    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "triage": False},
+    ).json()["task"]
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",
         json={"status": "blocked", "block_reason": "need input"},
@@ -322,7 +363,9 @@ def test_patch_block_then_unblock(client):
 
 
 def test_patch_schedule_then_unblock(client):
-    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "triage": False},
+    ).json()["task"]
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",
         json={"status": "scheduled", "block_reason": "run tomorrow"},
@@ -349,7 +392,9 @@ def test_patch_drag_drop_move_todo_to_ready(client):
 
     Promoting a child whose parent is not done is rejected (409).
     Promoting a child whose parent IS done is accepted (200)."""
-    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "p", "triage": False},
+    ).json()["task"]
     child = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "c", "parents": [parent["id"]]},
@@ -394,7 +439,9 @@ def test_reopening_parent_demotes_ready_child(client):
     should not keep showing a stale child as ready after an operator drags
     its parent back out of done for more work.
     """
-    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "p", "triage": False},
+    ).json()["task"]
     child = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "c", "parents": [parent["id"]]},
@@ -631,9 +678,9 @@ def test_triage_task_not_promoted_to_ready(client):
 def test_patch_status_triage_works(client):
     """A user (or specifier) can push a task back into triage, and out of it."""
     t = client.post(
-        "/api/plugins/kanban/tasks", json={"title": "x"},
+        "/api/plugins/kanban/tasks", json={"title": "x", "triage": False},
     ).json()["task"]
-    # Normal creation is 'ready'; push to triage.
+    # Explicit triage=False creates a 'ready' task; push it to triage.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}", json={"status": "triage"},
     )
@@ -655,7 +702,7 @@ def test_patch_status_triage_works(client):
 
 def test_board_progress_rollup(client):
     parent = client.post(
-        "/api/plugins/kanban/tasks", json={"title": "parent"},
+        "/api/plugins/kanban/tasks", json={"title": "parent", "triage": False},
     ).json()["task"]
     child_a = client.post(
         "/api/plugins/kanban/tasks",
@@ -969,8 +1016,12 @@ def test_bulk_status_ready(client):
 
 
 def test_bulk_status_done_forwards_completion_summary(client):
-    a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
-    b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+    a = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "a", "triage": False},
+    ).json()["task"]
+    b = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "b", "triage": False},
+    ).json()["task"]
 
     r = client.post(
         "/api/plugins/kanban/tasks/bulk",
@@ -2178,7 +2229,9 @@ def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch)
     "task not in triage" rather than a 4xx — the dashboard renders the
     reason inline so the user can fix it without a page reload."""
     # Create a normal (ready) task — not in triage.
-    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "triage": False},
+    ).json()["task"]
 
     _patch_specifier_response(monkeypatch, content="unused")
 
@@ -2231,7 +2284,7 @@ def test_board_endpoint_accepts_explicit_board_default_param(client):
     # Create a task on the default board.
     t = client.post(
         "/api/plugins/kanban/tasks",
-        json={"title": "on-default-board"},
+        json={"title": "on-default-board", "triage": False},
     ).json()["task"]
     assert t["status"] == "ready"
 

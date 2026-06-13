@@ -586,7 +586,9 @@ class CreateTaskBody(BaseModel):
     workspace_kind: str = "scratch"
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
-    triage: bool = False
+    # None = not specified (apply the "bare task -> triage" default below);
+    # True/False = caller's explicit routing choice, always honored.
+    triage: Optional[bool] = None
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
@@ -599,6 +601,19 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        # A bare dashboard "Add task" — a title with no assignee and no
+        # parent links — is a rough idea, not a ready-to-run unit of work.
+        # Park it in Triage so a human (or a specifier) can flesh out the
+        # spec and route it before it becomes dispatchable. Without this the
+        # card lands straight in Ready, where a gateway watcher with a
+        # configured default_assignee picks it up and runs it to Done — which
+        # makes new tasks look like they "skip triage and instantly
+        # complete". Callers that pass an assignee, parent links, or
+        # triage=true keep their explicitly requested routing.
+        if payload.triage is None:
+            effective_triage = not payload.assignee and not payload.parents
+        else:
+            effective_triage = payload.triage
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
@@ -610,7 +625,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
-            triage=payload.triage,
+            triage=effective_triage,
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,

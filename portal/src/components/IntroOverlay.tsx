@@ -61,7 +61,6 @@ export default function IntroOverlay() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, phase]);
 
   // Phase timers + body class for the content entrance.

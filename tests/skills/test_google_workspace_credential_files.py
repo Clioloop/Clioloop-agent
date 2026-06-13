@@ -11,11 +11,16 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 SKILL_MD = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/SKILL.md"
 )
+
+if not SKILL_MD.exists():
+    pytest.skip("google-workspace skill is not shipped in this source tree", allow_module_level=True)
 
 _EXPECTED_PATHS = {"google_token.json", "google_client_secret.json"}
 

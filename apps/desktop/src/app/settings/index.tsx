@@ -1,8 +1,8 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useRef } from 'react'
 
-import { Tip } from '@/components/ui/tooltip'
 import { getClioConfigDefaults, getClioConfigRecord, saveClioConfig } from '@/clio'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'

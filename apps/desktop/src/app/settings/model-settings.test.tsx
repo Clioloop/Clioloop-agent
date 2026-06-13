@@ -4,13 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
+const getPortalConnectStatus = vi.fn()
+const getPortalStatus = vi.fn()
 const setModelAssignment = vi.fn()
+const startPortalConnect = vi.fn()
 
 vi.mock('@/clio', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
-  setModelAssignment: (body: unknown) => setModelAssignment(body)
+  getPortalConnectStatus: () => getPortalConnectStatus(),
+  getPortalStatus: () => getPortalStatus(),
+  setModelAssignment: (body: unknown) => setModelAssignment(body),
+  startPortalConnect: () => startPortalConnect()
 }))
 
 beforeEach(() => {
@@ -22,7 +28,22 @@ beforeEach(() => {
     main: { provider: 'openrouter', model: 'openai/gpt-oss-20b:free' },
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
+  getPortalConnectStatus.mockResolvedValue({ status: 'idle' })
+  getPortalStatus.mockResolvedValue({
+    inference_url: null,
+    logged_in: false,
+    portal_url: null,
+    provider: 'managed',
+    subscription_url: ''
+  })
   setModelAssignment.mockResolvedValue({ provider: 'openrouter', model: 'openai/gpt-oss-20b:free', gateway_tools: [] })
+  startPortalConnect.mockResolvedValue({
+    expires_in: 600,
+    status: 'pending',
+    user_code: 'ABCD-EFGH',
+    verification_uri: 'https://portal.example/activate',
+    verification_uri_complete: 'https://portal.example/activate?user_code=ABCD-EFGH'
+  })
 })
 
 afterEach(() => {

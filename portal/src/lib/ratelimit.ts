@@ -11,7 +11,6 @@ interface Bucket {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __olpRate: Map<string, Bucket> | undefined;
 }
 

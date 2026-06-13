@@ -167,14 +167,27 @@ class ManagedSubscriptionFeatures:
         self,
         *,
         provider_auth_present: bool = False,
+        provider_is_managed: bool = False,
+        subscribed: bool | None = None,
         account_info: Any = None,
+        features: Optional[dict[str, ManagedFeatureState]] = None,
         feature_flags: Optional[dict[str, bool]] = None,
         config: Optional[dict] = None,
     ) -> None:
+        if features is not None:
+            self.provider_auth_present = provider_auth_present
+            self.account_info = account_info
+            self.features = dict(features)
+            for key, state in self.features.items():
+                setattr(self, key, state)
+            return
+
         flags = dict(feature_flags or {})
         # Older portals (and test doubles) may omit granular feature flags;
         # a paid subscription implies the full bundle in that case.
         if not flags and getattr(account_info, "paid_service_access", False):
+            flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "tts")}
+        if not flags and subscribed:
             flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "tts")}
         self.provider_auth_present = provider_auth_present
         self.account_info = account_info
@@ -184,7 +197,7 @@ class ManagedSubscriptionFeatures:
             local = {}
         self.features: dict[str, ManagedFeatureState] = {}
         for key, label in _FEATURE_DEFS:
-            managed = bool(flags.get(key, False))
+            managed = bool(flags.get(key, False) or (provider_is_managed and subscribed))
             local_ok, local_label = local.get(key, (False, ""))
             state = ManagedFeatureState(
                 key=key,

@@ -5,7 +5,6 @@ import path from "node:path";
 // Single SQLite connection, cached on globalThis so Next.js dev-mode HMR
 // doesn't open a new handle per reload.
 declare global {
-  // eslint-disable-next-line no-var
   var __olpDb: Database.Database | undefined;
 }
 

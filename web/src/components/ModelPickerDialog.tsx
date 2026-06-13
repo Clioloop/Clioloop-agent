@@ -11,6 +11,8 @@ import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
 
+type CheckedState = boolean | "indeterminate";
+
 /**
  * Two-stage model picker modal.
  *
@@ -295,7 +297,7 @@ export function ModelPickerDialog(props: Props) {
               <Checkbox
                 checked={persistGlobal}
                 id="model-picker-persist-global"
-                onCheckedChange={(checked: any) =>
+                onCheckedChange={(checked: CheckedState) =>
                   setPersistGlobal(checked === true)
                 }
               />

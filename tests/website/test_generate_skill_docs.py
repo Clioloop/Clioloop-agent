@@ -20,6 +20,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "website" / "scripts" / "generate-skill-docs.py"
 
+if not GENERATOR.exists():
+    pytest.skip("website skill documentation scripts are not shipped in this source tree", allow_module_level=True)
+
 
 @pytest.fixture(scope="module")
 def gen_module():

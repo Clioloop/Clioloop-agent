@@ -1,4 +1,4 @@
-import { getSubscription, getUserById, monthUsageMicros, recordUsage, UserRow } from "./db";
+import { getSubscription, monthUsageMicros, recordUsage, UserRow } from "./db";
 import { getPlan, isFreeModel, Plan } from "./plans";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
@@ -85,7 +85,6 @@ interface ModelEntry {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __olpModelCache: { at: number; data: ModelEntry[] } | undefined;
 }
 

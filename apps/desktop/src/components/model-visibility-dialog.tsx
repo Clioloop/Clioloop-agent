@@ -2,11 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import type { ClioGateway } from '@/clio'
+import { getGlobalModelOptions } from '@/clio'
 import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
-import type { ClioGateway } from '@/clio'
-import { getGlobalModelOptions } from '@/clio'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import {
   $visibleModels,

@@ -1,5 +1,5 @@
 import { Leva, useControls } from 'leva'
-import { type CSSProperties, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const BLEND_MODES = [
   'normal',

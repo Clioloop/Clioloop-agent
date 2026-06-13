@@ -8,6 +8,9 @@ from unittest import mock
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "productivity" / "memento-flashcards" / "scripts"
+if not SCRIPTS_DIR.exists():
+    pytest.skip("memento-flashcards optional skill is not shipped in this source tree", allow_module_level=True)
+
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import youtube_quiz

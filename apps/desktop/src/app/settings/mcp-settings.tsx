@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { type ClioGateway, getClioConfigRecord, saveClioConfig } from '@/clio'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { getClioConfigRecord, type ClioGateway, saveClioConfig } from '@/clio'
 import { Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'

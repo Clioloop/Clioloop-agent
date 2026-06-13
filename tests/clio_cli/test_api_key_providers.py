@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+import clio_cli.auth as auth_module
 from clio_cli.auth import (
     PROVIDER_REGISTRY,
     resolve_provider,
@@ -162,7 +163,7 @@ PROVIDER_ENV_VARS = (
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("clio_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr(auth_module, "_load_auth_store", lambda: {})
 
 
 class TestResolveProvider:
@@ -370,7 +371,7 @@ class TestApiKeyProviderStatus:
 
     def test_copilot_acp_status_detects_local_cli(self, monkeypatch):
         monkeypatch.setenv("CLIO_COPILOT_ACP_ARGS", "--acp --stdio --debug")
-        monkeypatch.setattr("clio_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setattr(auth_module.shutil, "which", lambda command: f"/usr/local/bin/{command}")
 
         status = get_external_process_provider_status("copilot-acp")
 
@@ -382,7 +383,7 @@ class TestApiKeyProviderStatus:
         assert status["base_url"] == "acp://copilot"
 
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
-        monkeypatch.setattr("clio_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+        monkeypatch.setattr(auth_module.shutil, "which", lambda command: f"/opt/bin/{command}")
 
         status = get_auth_status("copilot-acp")
 
@@ -402,7 +403,7 @@ class TestResolveApiKeyProviderCredentials:
 
     def test_resolve_zai_with_key(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-secret-key")
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["provider"] == "zai"
         assert creds["api_key"] == "glm-secret-key"
@@ -476,7 +477,7 @@ class TestResolveApiKeyProviderCredentials:
 
     def test_resolve_copilot_acp_with_local_cli(self, monkeypatch):
         monkeypatch.setenv("CLIO_COPILOT_ACP_ARGS", "--acp --stdio")
-        monkeypatch.setattr("clio_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setattr(auth_module.shutil, "which", lambda command: f"/usr/local/bin/{command}")
 
         creds = resolve_external_process_provider_credentials("copilot-acp")
 
@@ -566,7 +567,7 @@ class TestResolveApiKeyProviderCredentials:
         """GLM_API_KEY takes priority over ZAI_API_KEY."""
         monkeypatch.setenv("GLM_API_KEY", "primary")
         monkeypatch.setenv("ZAI_API_KEY", "secondary")
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "primary"
         assert creds["source"] == "GLM_API_KEY"
@@ -574,7 +575,7 @@ class TestResolveApiKeyProviderCredentials:
     def test_zai_key_fallback(self, monkeypatch):
         """ZAI_API_KEY used when GLM_API_KEY not set."""
         monkeypatch.setenv("ZAI_API_KEY", "secondary")
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "secondary"
         assert creds["source"] == "ZAI_API_KEY"
@@ -678,7 +679,7 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "codex_responses"
 
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
-        monkeypatch.setattr("clio_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setattr(auth_module.shutil, "which", lambda command: f"/usr/local/bin/{command}")
         monkeypatch.setenv("CLIO_COPILOT_ACP_ARGS", "--acp --stdio --debug")
 
         from clio_cli.runtime_provider import resolve_runtime_provider
@@ -747,7 +748,7 @@ class TestHasAnyProviderConfigured:
         for var in _all_vars:
             monkeypatch.delenv(var, raising=False)
         # Prevent gh-cli / copilot auth fallback from leaking in
-        monkeypatch.setattr("clio_cli.auth.get_auth_status", lambda _pid: {})
+        monkeypatch.setattr(auth_module, "get_auth_status", lambda _pid: {})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
@@ -841,7 +842,7 @@ class TestHasAnyProviderConfigured:
         for var in _all_vars:
             monkeypatch.delenv(var, raising=False)
         # Prevent gh-cli / copilot auth fallback from leaking in
-        monkeypatch.setattr("clio_cli.auth.get_auth_status", lambda _pid: {})
+        monkeypatch.setattr(auth_module, "get_auth_status", lambda _pid: {})
         from clio_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is False
 
@@ -954,7 +955,7 @@ class TestKimiCodeCredentialAutoDetect:
     def test_non_kimi_providers_unaffected(self, monkeypatch):
         """Ensure the auto-detect logic doesn't leak to other providers."""
         monkeypatch.setenv("GLM_API_KEY", "sk-kim...isnt")
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
@@ -965,7 +966,8 @@ class TestZaiEndpointAutoDetect:
     def test_probe_success_returns_detected_url(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
         monkeypatch.setattr(
-            "clio_cli.auth.detect_zai_endpoint",
+            auth_module,
+            "detect_zai_endpoint",
             lambda *a, **kw: {
                 "id": "coding-global",
                 "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -978,7 +980,7 @@ class TestZaiEndpointAutoDetect:
 
     def test_probe_failure_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 
@@ -993,14 +995,14 @@ class TestZaiEndpointAutoDetect:
             probe_called = True
             return None
 
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", _never_called)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", _never_called)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://custom.example/v4"
         assert not probe_called
 
     def test_no_key_skips_probe(self, monkeypatch):
         """Without an API key, no probe should occur."""
-        monkeypatch.setattr("clio_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        monkeypatch.setattr(auth_module, "detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
 

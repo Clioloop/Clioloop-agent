@@ -1161,7 +1161,7 @@ export default function SessionsPage() {
 
       <Dialog
         open={pruneOpen}
-        onOpenChange={(open: any) => {
+        onOpenChange={(open: boolean) => {
           if (!pruning) setPruneOpen(open);
         }}
       >

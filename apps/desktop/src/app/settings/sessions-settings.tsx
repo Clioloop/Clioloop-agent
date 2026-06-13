@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { deleteSession, listSessions, setSessionArchived } from '@/clio'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listSessions, setSessionArchived } from '@/clio'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'

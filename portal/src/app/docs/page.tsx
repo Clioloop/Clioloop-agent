@@ -50,6 +50,17 @@ export default function DocsPage() {
                 | bash
               </span>
             </Code>
+            <p>
+              On <strong>Windows</strong>, download and run the installer instead:{" "}
+              <a href="https://github.com/Clioloop/Clioloop-agent/releases/latest/download/Clioloop-Setup.exe">
+                Clioloop-Setup.exe
+              </a>
+              . It isn&apos;t code-signed yet, so SmartScreen may warn with &quot;Windows
+              protected your PC&quot; — that&apos;s expected and harmless; click{" "}
+              <strong>More info → Run anyway</strong>. The whole project is open source
+              and auditable on{" "}
+              <a href="https://github.com/Clioloop/Clioloop-agent">GitHub</a>.
+            </p>
             <ol start={3}>
               <li>
                 <strong>Connect a surface</strong> — follow any tutorial below. They all

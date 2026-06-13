@@ -17,6 +17,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
+import { applyGoalEvent, type GoalEventPayload } from '@/store/goals'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -913,6 +914,15 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
+        }
+      } else if (event.type === 'status.update') {
+        // Standing-goal progress from the gateway's /goal loop. Routed to the
+        // goal store so the chat shows a goal banner — visually distinct from
+        // a normal task. Other status kinds are handled elsewhere/ignored.
+        const goalPayload = event.payload as GoalEventPayload | undefined
+
+        if (goalPayload?.kind === 'goal' && sessionId) {
+          applyGoalEvent(sessionId, goalPayload)
         }
       }
     },
