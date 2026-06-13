@@ -2,13 +2,14 @@
   "name": "omni-loop-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "Omni Loop Portal — accounts, billing, and managed model access for Clioloop",
+  "description": "Omni Loop Portal \u2014 accounts, billing, and managed model access for Clioloop",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "next dev -p 4280",
     "build": "next build",
     "start": "next start -p 4280",
-    "lint": "eslint src next.config.mjs"
+    "lint": "eslint src next.config.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -32,6 +33,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^16.5.0",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.61.0"
+    "typescript-eslint": "^8.61.0",
+    "vitest": "^3.2.6"
   }
 }

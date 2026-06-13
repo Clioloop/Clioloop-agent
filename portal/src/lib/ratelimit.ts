@@ -29,6 +29,8 @@ const LIMITS: Record<string, [number, number]> = {
   checkout: [20, 60 * 60],
   gateway: [120, 60], // per user, agent tool traffic
   inference: [300, 60], // per user
+  telegram_pairing: [10, 15 * 60], // managed-bot onboarding: create pairing
+  telegram_poll: [240, 60], // client polls every ~2s while awaiting bot creation
 };
 
 /**

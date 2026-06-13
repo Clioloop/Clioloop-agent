@@ -26,6 +26,7 @@ import { ListRow } from '../settings/primitives'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'
+import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -403,6 +404,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
             {selected && (
               <PlatformDetail
                 edits={edits[selected.id] || {}}
+                onApplied={() => void refreshPlatforms()}
                 onClear={key => void handleClear(selected, key)}
                 onEdit={(key, value) =>
                   setEdits(current => ({
@@ -457,6 +459,7 @@ function PlatformRow({
 
 function PlatformDetail({
   edits,
+  onApplied,
   onClear,
   onEdit,
   onSave,
@@ -465,6 +468,7 @@ function PlatformDetail({
   saving
 }: {
   edits: Record<string, string>
+  onApplied: () => void
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onSave: () => void
@@ -526,6 +530,12 @@ function PlatformDetail({
               </Button>
             </div>
           </section>
+
+          {platform.id === 'telegram' && (
+            <section>
+              <TelegramQrSetup onApplied={onApplied} />
+            </section>
+          )}
 
           <section>
             <SectionTitle>{m.required}</SectionTitle>

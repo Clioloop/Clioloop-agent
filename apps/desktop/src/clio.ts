@@ -725,3 +725,61 @@ export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
     path: '/api/audio/elevenlabs/voices'
   })
 }
+
+// ---------------------------------------------------------------------------
+// Telegram managed-bot QR onboarding (mirrors the web dashboard flow). Talks to
+// the local backend proxy, which forwards to the hosted Clioloop onboarding
+// service. The customer scans the QR, Telegram creates their own bot, and the
+// token is saved locally as TELEGRAM_BOT_TOKEN.
+// ---------------------------------------------------------------------------
+
+export interface TelegramOnboardingStart {
+  pairing_id: string
+  suggested_username: string
+  deep_link: string
+  qr_payload: string
+  expires_at: string
+}
+
+export type TelegramOnboardingStatus =
+  | { status: 'waiting'; expires_at: string }
+  | { status: 'ready'; bot_username?: string; owner_user_id?: string; expires_at: string }
+
+export interface TelegramOnboardingApplyResult {
+  ok: boolean
+  platform: 'telegram'
+  bot_username?: string
+  needs_restart: true
+}
+
+export function startTelegramOnboarding(body: { bot_name?: string }): Promise<TelegramOnboardingStart> {
+  return window.clioDesktop.api<TelegramOnboardingStart>({
+    body,
+    method: 'POST',
+    path: '/api/messaging/telegram/onboarding/start'
+  })
+}
+
+export function getTelegramOnboardingStatus(pairingId: string): Promise<TelegramOnboardingStatus> {
+  return window.clioDesktop.api<TelegramOnboardingStatus>({
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`
+  })
+}
+
+export function applyTelegramOnboarding(
+  pairingId: string,
+  body: { allowed_user_ids: string[] }
+): Promise<TelegramOnboardingApplyResult> {
+  return window.clioDesktop.api<TelegramOnboardingApplyResult>({
+    body,
+    method: 'POST',
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`
+  })
+}
+
+export function cancelTelegramOnboarding(pairingId: string): Promise<{ ok: boolean }> {
+  return window.clioDesktop.api<{ ok: boolean }>({
+    method: 'DELETE',
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`
+  })
+}

@@ -18,9 +18,10 @@ from typing import Optional
 
 import httpx
 
-# Default pairing API base URL (managed-provider-hosted Cloudflare Worker).
-# Override for PoC/staging with TELEGRAM_ONBOARDING_URL.
-DEFAULT_API_URL = "https://setup.clio-agent."
+# Default pairing API base URL — the hosted managed-bot onboarding service on
+# the Clioloop domain (portal). Override for staging/dev with
+# TELEGRAM_ONBOARDING_URL. The client appends ``/v1/telegram/...`` to this base.
+DEFAULT_API_URL = "https://portal.clioloop.com/api"
 TELEGRAM_ONBOARDING_URL_ENV = "TELEGRAM_ONBOARDING_URL"
 
 # The managed provider-hosted manager bot username (without @). The backend returns the

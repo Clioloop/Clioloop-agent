@@ -86,6 +86,24 @@ CREATE TABLE IF NOT EXISTS action_tokens (
   expires_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_action_tokens_user ON action_tokens(user_id, kind);
+
+-- Short-lived Telegram managed-bot onboarding sessions. The poll token is
+-- stored hashed (bearer credential); the customer's created child-bot token is
+-- stored AES-256-GCM encrypted and only long enough for one retrieval.
+CREATE TABLE IF NOT EXISTS telegram_pairings (
+  pairing_id          TEXT PRIMARY KEY,
+  poll_token_hash     TEXT NOT NULL,
+  suggested_username  TEXT NOT NULL,
+  bot_name            TEXT NOT NULL DEFAULT 'Clioloop',
+  status              TEXT NOT NULL DEFAULT 'pending', -- pending|ready|consumed
+  owner_user_id       INTEGER,
+  bot_username        TEXT,
+  child_token_enc     TEXT,
+  created_at          INTEGER NOT NULL,
+  expires_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tg_pairings_username ON telegram_pairings(suggested_username);
+CREATE INDEX IF NOT EXISTS idx_tg_pairings_status ON telegram_pairings(status);
 `;
 
 /** Additive column migrations for databases created before a column existed. */
@@ -211,4 +229,90 @@ export function recordUsage(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(userId, currentMonth(), model, promptTokens, completionTokens, costMicros, now());
+}
+
+// ---------------------------------------------------------------------------
+// Telegram managed-bot onboarding pairings.
+// ---------------------------------------------------------------------------
+
+export interface TelegramPairingRow {
+  pairing_id: string;
+  poll_token_hash: string;
+  suggested_username: string;
+  bot_name: string;
+  status: string; // pending|ready|consumed
+  owner_user_id: number | null;
+  bot_username: string | null;
+  child_token_enc: string | null;
+  created_at: number;
+  expires_at: number;
+}
+
+export function createTelegramPairing(row: {
+  pairingId: string;
+  pollTokenHash: string;
+  suggestedUsername: string;
+  botName: string;
+  ttlSeconds: number;
+}): void {
+  const ts = now();
+  getDb()
+    .prepare(
+      `INSERT INTO telegram_pairings
+         (pairing_id, poll_token_hash, suggested_username, bot_name, status, created_at, expires_at)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+    )
+    .run(row.pairingId, row.pollTokenHash, row.suggestedUsername, row.botName, ts, ts + row.ttlSeconds);
+}
+
+export function getTelegramPairing(pairingId: string): TelegramPairingRow | undefined {
+  return getDb()
+    .prepare("SELECT * FROM telegram_pairings WHERE pairing_id = ?")
+    .get(pairingId) as TelegramPairingRow | undefined;
+}
+
+/** Find the newest still-valid pending pairing for a suggested username — the
+ *  correlation the manager-bot webhook uses to match a created child bot. */
+export function findPendingTelegramPairingByUsername(username: string): TelegramPairingRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT * FROM telegram_pairings
+        WHERE suggested_username = ? AND status = 'pending' AND expires_at > ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(username, now()) as TelegramPairingRow | undefined;
+}
+
+export function markTelegramPairingReady(
+  pairingId: string,
+  encToken: string,
+  botUsername: string,
+  ownerUserId: number | null,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE telegram_pairings
+          SET status = 'ready', child_token_enc = ?, bot_username = ?, owner_user_id = ?
+        WHERE pairing_id = ? AND status = 'pending'`,
+    )
+    .run(encToken, botUsername, ownerUserId, pairingId);
+}
+
+/** Mark a ready pairing consumed and wipe the stored token (single retrieval). */
+export function consumeTelegramPairing(pairingId: string): void {
+  getDb()
+    .prepare(
+      "UPDATE telegram_pairings SET status = 'consumed', child_token_enc = NULL WHERE pairing_id = ?",
+    )
+    .run(pairingId);
+}
+
+/** Best-effort cleanup of expired/old pairings so tokens never linger. */
+export function pruneTelegramPairings(): void {
+  getDb()
+    .prepare(
+      // Drop expired pending sessions and any consumed/ready row older than 1h.
+      "DELETE FROM telegram_pairings WHERE (status = 'pending' AND expires_at < ?) OR created_at < ?",
+    )
+    .run(now(), now() - 3600);
 }
