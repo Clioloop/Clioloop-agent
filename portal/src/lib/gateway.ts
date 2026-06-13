@@ -70,6 +70,20 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     service: "browser",
     costMicros: 25_000,
   },
+  // Self-hosted image generation: a private server (e.g. a local FLUX box)
+  // exposed to the portal via a tunnel. Speaks POST /generate {prompt, steps}
+  // with X-API-Key. Set CLIOLOOP_IMAGE_UPSTREAM_URL to the tunnel origin and
+  // CLIOLOOP_IMAGE_KEY to the server's API key. When live it replaces the FAL
+  // image_gen path for entitled (Pro) subscribers.
+  "clioloop-image": {
+    id: "clioloop-image",
+    upstream: "http://127.0.0.1:8200",
+    keyEnv: "CLIOLOOP_IMAGE_KEY",
+    upstreamEnv: "CLIOLOOP_IMAGE_UPSTREAM_URL",
+    authHeaders: (key) => (key ? { "X-API-Key": key } : ({} as Record<string, string>)),
+    service: "image_gen",
+    costMicros: 5_000, // self-hosted — low flat metering
+  },
 };
 
 export function vendorUpstreamKey(vendor: GatewayVendor): string {

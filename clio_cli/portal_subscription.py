@@ -339,7 +339,7 @@ def apply_managed_defaults(
         # explicit use_gateway value (true OR false) wins.
         if section.get("use_gateway") is not None:
             continue
-        if str(section.get("provider") or "").strip() not in {"", "fal"}:
+        if str(section.get("provider") or "").strip() not in {"", "fal", "clioloop"}:
             continue
         # Wire the backend the gateway serves, so the tool picks the right
         # vendor route without a separate provider prompt.
@@ -349,7 +349,12 @@ def apply_managed_defaults(
             section["provider"] = "openai"
         elif key == "browser" and not section.get("cloud_provider"):
             section["cloud_provider"] = "browser-use"
-        elif key in ("image_gen", "video_gen") and not section.get("provider"):
+        elif key == "image_gen" and not section.get("provider"):
+            # Self-hosted image backend (clioloop-image gateway vendor), like
+            # the self-hosted Supertonic TTS. Operators who serve FAL instead
+            # should pin image_gen.provider: fal explicitly.
+            section["provider"] = "clioloop"
+        elif key == "video_gen" and not section.get("provider"):
             section["provider"] = "fal"
         section["use_gateway"] = True
         configured.add(key)
