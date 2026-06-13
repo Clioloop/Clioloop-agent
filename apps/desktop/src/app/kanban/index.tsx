@@ -118,7 +118,11 @@ export function KanbanView({ onClose }: KanbanViewProps) {
   return (
     <OverlayView closeLabel="Close" onClose={onClose}>
       <div className="flex h-full min-h-0 flex-col" data-testid="kanban-view">
-        <header className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-4 py-3">
+        {/* Top padding clears OverlayView's draggable titlebar strip — without
+            it, the OS treats this band as window-drag territory and eats the
+            input's focus/clicks (matches PageSearchShell's pattern). Do NOT add
+            -webkit-app-region:drag here. */}
+        <header className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-4 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
           <Codicon className="text-(--ui-accent)" name="project" size="1.125rem" />
           <h1 className="text-[0.9375rem] font-semibold">Kanban</h1>
           <div className="flex flex-1 items-center gap-2">
@@ -158,12 +162,9 @@ export function KanbanView({ onClose }: KanbanViewProps) {
           <div className="min-h-0 flex-1 overflow-x-auto">
             {loading && !board ? (
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">Loading board…</div>
-            ) : columns.every(c => c.tasks.length === 0) ? (
-              <div className="flex h-full flex-col items-center justify-center gap-1 text-(--ui-text-tertiary)">
-                <Codicon name="inbox" size="1.5rem" />
-                <p className="text-[0.8125rem]">No tasks yet. Add one above — it starts in Triage.</p>
-              </div>
             ) : (
+              // Always render every column (matches the web dashboard). Empty
+              // columns show an inline placeholder rather than hiding the board.
               <div className="flex h-full items-stretch gap-3 p-3">
                 {columns.map(col => (
                   <BoardColumn
@@ -213,9 +214,13 @@ function BoardColumn({
         </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-        {column.tasks.map(task => (
-          <TaskCard isSelected={task.id === selectedId} key={task.id} onSelect={onSelect} task={task} />
-        ))}
+        {column.tasks.length === 0 ? (
+          <p className="px-1 py-2 text-[0.6875rem] text-(--ui-text-quaternary)">No tasks</p>
+        ) : (
+          column.tasks.map(task => (
+            <TaskCard isSelected={task.id === selectedId} key={task.id} onSelect={onSelect} task={task} />
+          ))
+        )}
       </div>
     </section>
   )

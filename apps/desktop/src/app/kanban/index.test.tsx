@@ -55,6 +55,39 @@ describe('KanbanView', () => {
     expect(screen.getByText('alice')).toBeTruthy()
   })
 
+  it('renders ALL default columns even when the board is empty (no full-page state)', async () => {
+    getKanbanBoard.mockResolvedValue({
+      assignees: [],
+      columns: ['triage', 'todo', 'scheduled', 'ready', 'running', 'blocked', 'review', 'done'].map(name => ({
+        name,
+        tasks: []
+      })),
+      latest_event_id: 0,
+      tenants: []
+    })
+    render(<KanbanView onClose={() => {}} />)
+    // Every column header is shown...
+    expect(await screen.findByText('Triage')).toBeTruthy()
+
+    for (const label of ['To do', 'Scheduled', 'Ready', 'Running', 'Blocked', 'Review', 'Done']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+
+    // ...with inline "No tasks" placeholders, not a single full-page empty state.
+    expect(screen.getAllByText('No tasks').length).toBeGreaterThan(1)
+    expect(screen.queryByText(/No tasks yet/)).toBeNull()
+  })
+
+  it('lets you type in the new-task input and submit it', async () => {
+    render(<KanbanView onClose={() => {}} />)
+    await screen.findByText('Triage me')
+    const input = screen.getByLabelText('New task title') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Typed task' } })
+    expect(input.value).toBe('Typed task')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(createKanbanTask).toHaveBeenCalledWith({ title: 'Typed task' }))
+  })
+
   it('creates a bare task (no triage flag → backend parks it in triage)', async () => {
     render(<KanbanView onClose={() => {}} />)
     await screen.findByText('Triage me')
