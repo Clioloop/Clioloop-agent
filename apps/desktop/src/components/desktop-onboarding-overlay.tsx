@@ -103,7 +103,12 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
   }
 ]
 
+// The Omni Loop Portal (backend id "managed") is the recommended first-run
+// path: one device login, 300+ models and the Tool Gateway, no API keys.
+const PORTAL_PROVIDER_ID = 'managed'
+
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
+  [PORTAL_PROVIDER_ID]: { order: 0, title: 'Omni Loop Portal' },
   'openai-codex': { order: 1, title: 'OpenAI OAuth (ChatGPT)' },
   'minimax-oauth': { order: 2, title: 'MiniMax' },
   'qwen-oauth': { order: 3, title: 'Qwen Code' },
@@ -125,10 +130,11 @@ const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
 
 const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
-const RETIRED_PROVIDER_IDS = new Set(['managed', 'managed-provider', 'managed_provider'])
+// Dead legacy id aliases that must never appear. The live portal is id
+// "managed" (Omni Loop Portal) — NOT retired; it's the recommended option.
+const RETIRED_PROVIDER_IDS = new Set(['managed-provider', 'managed_provider'])
 
-export const isRetiredManagedProvider = (p: OAuthProvider) =>
-  RETIRED_PROVIDER_IDS.has(p.id) || /\bmanaged provider\b/i.test(p.name)
+export const isRetiredManagedProvider = (p: OAuthProvider) => RETIRED_PROVIDER_IDS.has(p.id)
 
 export const sortProviders = (providers: OAuthProvider[]) =>
   providers
@@ -392,11 +398,19 @@ export function ProviderRow({
   provider: OAuthProvider
 }) {
   const loggedIn = provider.status?.logged_in
+  const isPortal = provider.id === PORTAL_PROVIDER_ID
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+
+  const subtitle = isPortal
+    ? 'One login · 300+ models & the Tool Gateway · no API keys'
+    : FLOW_SUBTITLES[provider.flow]
 
   return (
     <button
-      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+      className={cn(
+        'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)',
+        isPortal && 'border border-primary/40 bg-primary/5'
+      )}
       onClick={() => onSelect(provider)}
       type="button"
     >
@@ -405,12 +419,21 @@ export function ProviderRow({
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
             {providerTitle(provider)}
           </span>
+          {isPortal && !loggedIn ? <RecommendedTag /> : null}
           {loggedIn ? <ConnectedTag /> : null}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FLOW_SUBTITLES[provider.flow]}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
+  )
+}
+
+function RecommendedTag() {
+  return (
+    <span className="inline-flex items-center bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+      Recommended
+    </span>
   )
 }
 

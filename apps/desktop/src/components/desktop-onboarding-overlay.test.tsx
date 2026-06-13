@@ -54,12 +54,22 @@ afterEach(() => {
 })
 
 describe('onboarding Picker', () => {
-  it('filters retired managed provider rows and shows normal providers directly', () => {
+  it('surfaces the Omni Loop Portal (managed) as the recommended first-run option', () => {
+    // The backend may still send the legacy "managed provider" name; the
+    // display title is overridden to "Omni Loop Portal" regardless.
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('managed', 'managed provider')])
     render(<Picker ctx={ctx} />)
 
-    expect(screen.queryByText('managed provider')).toBeNull()
-    expect(screen.queryByText('Recommended')).toBeNull()
+    expect(screen.getByText('Omni Loop Portal')).toBeTruthy()
+    expect(screen.getByText('Recommended')).toBeTruthy()
+    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+  })
+
+  it('still hides dead legacy managed-provider id aliases', () => {
+    setProviders([provider('anthropic', 'Anthropic Claude'), provider('managed-provider', 'old alias')])
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.queryByText('old alias')).toBeNull()
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
   })
 

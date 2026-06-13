@@ -3806,10 +3806,10 @@ def _claude_code_only_status() -> Dict[str, Any]:
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "managed",
-        "name": "managed provider",
+        "name": "Omni Loop Portal",
         "flow": "device_code",
         "cli_command": "clio auth add managed",
-        "docs_url": "https://",
+        "docs_url": "https://portal.clioloop.com/docs",
         "status_fn": None,  # dispatched via auth.get_managed_auth_status
     },
     {
