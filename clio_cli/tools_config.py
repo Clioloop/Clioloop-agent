@@ -2336,9 +2336,15 @@ def _is_provider_active(
                     return False
             return feature.managed_by_provider
         if provider.get("tts_provider"):
+            # The managed "Omni Loop Portal" row is the active one only when the
+            # gateway is engaged (use_gateway truthy). Both this row and the bare
+            # "OpenAI TTS" row carry tts_provider="openai" (the gateway speaks the
+            # OpenAI audio dialect), so use_gateway is what disambiguates which
+            # row the picker shows as selected.
             return (
                 feature.managed_by_provider
                 and cfg_get(config, "tts", "provider") == provider["tts_provider"]
+                and is_truthy_value(cfg_get(config, "tts", "use_gateway"), default=False)
             )
         if "browser_provider" in provider:
             current = cfg_get(config, "browser", "cloud_provider")
@@ -2349,7 +2355,13 @@ def _is_provider_active(
         return feature.managed_by_provider
 
     if provider.get("tts_provider"):
-        return cfg_get(config, "tts", "provider") == provider["tts_provider"]
+        # A direct (bring-your-own-key) TTS row is active only when the gateway
+        # is OFF. With use_gateway on, the managed "Omni Loop Portal" row above
+        # owns the selection, so the bare "OpenAI TTS" row must not also claim it.
+        return (
+            cfg_get(config, "tts", "provider") == provider["tts_provider"]
+            and not is_truthy_value(cfg_get(config, "tts", "use_gateway"), default=False)
+        )
     if "browser_provider" in provider:
         current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current

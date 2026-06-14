@@ -479,7 +479,7 @@ def _print_setup_summary(config: dict, clio_home):
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")
     if subscription_features.tts.managed_by_provider:
-        tool_status.append(("Text-to-Speech (OpenAI via managed subscription)", True, None))
+        tool_status.append(("Text-to-Speech (Omni Loop Portal — Supertonic)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
     elif tts_provider == "openai" and (

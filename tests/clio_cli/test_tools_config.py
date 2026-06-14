@@ -745,6 +745,36 @@ def test_fresh_install_tts_default_is_free_edge_not_paid_managed():
     assert _detect_active_provider_index(providers, {}) == 0
 
 
+def test_tts_gateway_selects_omni_loop_row_not_openai(monkeypatch):
+    """With the TTS gateway engaged (provider=openai + use_gateway), the managed
+    'Omni Loop Portal' row is the active selection — not the bare 'OpenAI TTS'
+    bring-your-own-key row. Both rows carry tts_provider='openai' (the gateway
+    speaks the OpenAI audio dialect), so use_gateway disambiguates which the
+    picker shows as selected. Regression: selecting on provider name alone made
+    the picker highlight 'OpenAI', misrepresenting the active backend.
+    """
+    from types import SimpleNamespace
+    from clio_cli.tools_config import _is_provider_active
+
+    monkeypatch.setattr(
+        "clio_cli.tools_config.get_managed_subscription_features",
+        lambda config, force_fresh=False: SimpleNamespace(
+            features={"tts": SimpleNamespace(managed_by_provider=True)}
+        ),
+    )
+    rows = {p["name"]: p for p in TOOL_CATEGORIES["tts"]["providers"]}
+    omni = rows["Omni Loop Portal Subscription (Supertonic Premium TTS)"]
+    openai = rows["OpenAI TTS"]
+
+    gateway_cfg = {"tts": {"provider": "openai", "use_gateway": True}}
+    assert _is_provider_active(omni, gateway_cfg) is True
+    assert _is_provider_active(openai, gateway_cfg) is False
+
+    direct_cfg = {"tts": {"provider": "openai", "use_gateway": False}}
+    assert _is_provider_active(omni, direct_cfg) is False
+    assert _is_provider_active(openai, direct_cfg) is True
+
+
 def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
     config = {"platform_toolsets": {"cli": ["web"]}}
     seen = {}
