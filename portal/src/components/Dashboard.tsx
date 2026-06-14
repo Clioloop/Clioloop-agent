@@ -20,7 +20,6 @@ interface Me {
   mock_billing: boolean;
 }
 
-const eur = (micros: number) => `€${(micros / 1_000_000).toFixed(2)}`;
 
 const SERVICE_LABELS: [string, string][] = [
   ["web", "Web search & extract"],
@@ -163,9 +162,7 @@ export default function Dashboard() {
                 <div style={{ width: `${pct}%` }} />
               </div>
               <div className="stat-row">
-                <span>
-                  {eur(me.usage.used_micros)} of {eur(me.usage.limit_micros)} used
-                </span>
+                <span>Used this month</span>
                 <span>{pct.toFixed(1)}%</span>
               </div>
               <div className="stat-row">
