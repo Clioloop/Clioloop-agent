@@ -46,12 +46,22 @@ export default function LandingPage() {
             </div>
             <div className="terminal-body">
               <div>
+                <span className="t-dim"># macOS / Linux</span>
+              </div>
+              <div>
                 <span className="t-prompt">$</span> curl -fsSL{" "}
                 https://raw.githubusercontent.com/Clioloop/Clioloop-agent/main/scripts/install.sh | bash
               </div>
               <div>
+                <span className="t-dim"># Windows (PowerShell)</span>
+              </div>
+              <div>
+                <span className="t-prompt">PS&gt;</span> iex (irm{" "}
+                https://raw.githubusercontent.com/Clioloop/Clioloop-agent/main/scripts/install.ps1)
+              </div>
+              <div>
                 <span className="t-green">✓</span> Clioloop installed{" "}
-                <span className="t-dim">(or grab the Windows installer above)</span>
+                <span className="t-dim">(macOS · Linux · Windows)</span>
               </div>
               <div>&nbsp;</div>
               <div>
@@ -206,6 +216,13 @@ export default function LandingPage() {
               >
                 ⬇ Download for Windows
               </a>
+              <p style={{ marginTop: 14 }}>Or install from PowerShell:</p>
+              <div className="code-block">
+                <span className="c-cmd">
+                  iex (irm
+                  https://raw.githubusercontent.com/Clioloop/Clioloop-agent/main/scripts/install.ps1)
+                </span>
+              </div>
               <p className="t-dim" style={{ marginTop: 14, fontSize: "0.85rem" }}>
                 <strong>Heads up:</strong> the installer isn&apos;t code-signed yet, so
                 Windows SmartScreen may show a &quot;Windows protected your PC&quot;
