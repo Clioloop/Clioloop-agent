@@ -63,7 +63,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tagline: "Many more models, one subscription",
     features: [
       "Access to a large open-model catalog",
-      "Web search · image gen · Supertonic TTS · cloud browser",
+      "Web search · image gen · premium TTS · cloud browser",
       "Unlimited devices",
       "Usage dashboard",
       "Email support",

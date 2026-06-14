@@ -158,20 +158,20 @@ export default function DocsPage() {
             </p>
             <ul>
               <li>
-                <strong>Web search &amp; extract</strong> (Firecrawl) — the{" "}
+                <strong>Web search &amp; extract</strong> — the{" "}
                 <code>web_search</code> and <code>web_extract</code> tools, all plans.
               </li>
               <li>
-                <strong>Image generation</strong> (FLUX &amp; friends via FAL) — paid
+                <strong>Image generation</strong> — fast, high-quality images, paid
                 plans.
               </li>
               <li>
-                <strong>Premium TTS</strong> — studio-quality Supertonic-3 voices for
-                voice replies, paid plans (free Edge TTS is always available locally).
+                <strong>Premium TTS</strong> — studio-quality voices for voice replies,
+                paid plans (a free local voice is always available).
               </li>
               <li>
-                <strong>Cloud browser</strong> (Browser Use) — hosted browser sessions
-                for automation, paid plans.
+                <strong>Cloud browser</strong> — hosted browser sessions for
+                automation, paid plans.
               </li>
               <li>
                 <strong>Video generation</strong> — Max and Max 10x plans.
@@ -191,7 +191,7 @@ export default function DocsPage() {
 
             <h2 id="models">Models &amp; switching</h2>
             <p>
-              Model IDs follow OpenRouter&apos;s <code>vendor/model</code> naming, e.g.{" "}
+              Most model IDs use <code>vendor/model</code> naming, e.g.{" "}
               <code>anthropic/claude-sonnet-4.6</code>, <code>openai/gpt-5.2</code>,{" "}
               <code>deepseek/deepseek-v3.2</code>. In any Clioloop surface:
             </p>
@@ -293,8 +293,8 @@ export default function DocsPage() {
             </p>
             <h3>Model not available</h3>
             <p>
-              Free plans only include <code>:free</code> models. If a paid model
-              disappears from the catalog, OpenRouter may have retired it — run{" "}
+              Free plans include one free model. If a model disappears from the
+              catalog, it may have been retired upstream — run{" "}
               <code>/model</code> to pick a current one.
             </p>
           </article>

@@ -82,15 +82,15 @@ export default function LandingPage() {
             </div>
             <div>
               <span className="s-label">Web search</span>
-              <span className="s-value">Firecrawl</span>
+              <span className="s-value">Included</span>
             </div>
             <div>
               <span className="s-label">Image gen</span>
-              <span className="s-value">FLUX</span>
+              <span className="s-value">Fast</span>
             </div>
             <div>
               <span className="s-label">Premium TTS</span>
-              <span className="s-value">Supertonic</span>
+              <span className="s-value">Studio-grade</span>
             </div>
             <div>
               <span className="s-label">Cloud browser</span>

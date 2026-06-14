@@ -41,10 +41,10 @@ export default function PrivacyPage() {
 
           <h2>Third parties</h2>
           <p>
-            Your requests are forwarded to upstream providers as needed to serve
-            them: OpenRouter (model inference), Firecrawl (web search), Browser Use
-            (cloud browser), FAL (image/video), Stripe (payments) and Resend
-            (transactional email). Each processes data under its own privacy policy.
+            Your requests are forwarded to upstream third-party providers as needed
+            to serve them — for model inference, web search, cloud browser, and
+            image/video generation — plus Stripe (payments) and Resend (transactional
+            email). Each processes data under its own privacy policy.
           </p>
 
           <h2>Retention &amp; deletion</h2>

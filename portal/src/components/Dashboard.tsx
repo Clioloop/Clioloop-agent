@@ -27,7 +27,7 @@ const SERVICE_LABELS: [string, string][] = [
   ["browser", "Cloud browser"],
   ["image_gen", "Image generation"],
   ["video_gen", "Video generation"],
-  ["tts", "Premium TTS (Supertonic)"],
+  ["tts", "Premium TTS"],
 ];
 
 export default function Dashboard() {
