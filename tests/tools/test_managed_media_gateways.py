@@ -468,6 +468,18 @@ def test_video_gen_is_available_true_via_gateway(monkeypatch):
     assert provider.is_available() is True
 
 
+def test_video_gen_fal_not_available_from_default_managed_gateway(monkeypatch):
+    """Portal Vidu access must not make the retired fal-queue backend available."""
+    _install_fake_fal_client({})
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.delenv("FAL_QUEUE_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-video-token")
+
+    plugin = _load_video_gen_plugin(monkeypatch)
+    provider = plugin.FALVideoGenProvider()
+    assert provider.is_available() is False
+
+
 def test_video_gen_prefers_gateway_overrides_direct_key(monkeypatch):
     """When FAL_KEY is set but prefers_gateway('video_gen') is True, routes through gateway."""
     captured = {}

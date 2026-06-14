@@ -336,11 +336,26 @@ def apply_managed_defaults(
             config[key] = section
         if not isinstance(section, dict):
             continue
-        # Respect explicit user choices: a configured provider or an
-        # explicit use_gateway value (true OR false) wins.
-        if section.get("use_gateway") is not None:
-            continue
         if str(section.get("provider") or "").strip() not in {"", "fal", "vidu", "clioloop", "omni-loop"}:
+            continue
+        use_gateway_value = section.get("use_gateway")
+        use_gateway_set = use_gateway_value is not None
+        use_gateway_truthy = (
+            str(use_gateway_value).strip().lower() in {"1", "true", "yes", "on"}
+            if use_gateway_set
+            else False
+        )
+
+        # Respect explicit user choices: a configured provider or an
+        # explicit use_gateway value (true OR false) wins. Managed video is
+        # the exception because old installs may already have
+        # ``use_gateway: true`` from the retired FAL gateway and still need to
+        # be migrated to Vidu.
+        if use_gateway_set and not (
+            key == "video_gen"
+            and use_gateway_truthy
+            and str(section.get("provider") or "").strip() in {"", "fal"}
+        ):
             continue
         # Wire the backend the gateway serves, so the tool picks the right
         # vendor route without a separate provider prompt.
@@ -356,7 +371,10 @@ def apply_managed_defaults(
             # should pin image_gen.provider: fal explicitly.
             section["provider"] = "omni-loop"
             section["model"] = "clioloop-local"
-        elif key == "video_gen" and not section.get("provider"):
+        elif key == "video_gen" and (
+            not section.get("provider")
+            or str(section.get("provider") or "").strip() == "fal"
+        ):
             section["provider"] = "vidu"
         section["use_gateway"] = True
         configured.add(key)

@@ -404,11 +404,12 @@ TOOL_CATEGORIES = {
         # ``_visible_providers``.
         "providers": [
             {
-                "name": "Omni Loop Portal Subscription (FAL Video Gen)",
+                "name": "Omni Loop Portal Subscription (Vidu Video Gen)",
                 "badge": "subscription · Max plans",
                 "tag": "Video generation through your portal subscription — no API key",
                 "env_vars": [],
                 "managed_feature": "video_gen",
+                "video_gen_plugin_name": "vidu",
             },
         ],
     },
@@ -2330,7 +2331,7 @@ def _is_provider_active(
             video_cfg = config.get("video_gen", {})
             if isinstance(video_cfg, dict):
                 configured_provider = video_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider != "vidu":
                     return False
                 if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
                     return False

@@ -922,6 +922,72 @@ def test_first_install_managed_auto_configures_video_gen(monkeypatch):
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
+
+def test_managed_defaults_migrates_partial_video_gateway_config(monkeypatch):
+    """Old installs can have use_gateway without a provider; repair to Vidu."""
+    from clio_cli.portal_subscription import apply_managed_defaults
+
+    monkeypatch.setattr(
+        "clio_cli.portal_subscription.get_managed_portal_account_info",
+        lambda *args, **kwargs: ManagedProviderAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+    config = {"video_gen": {"use_gateway": True}}
+
+    configured = apply_managed_defaults(config, enabled_toolsets={"video_gen"})
+
+    assert configured == {"video_gen"}
+    assert config["video_gen"]["provider"] == "vidu"
+    assert config["video_gen"]["use_gateway"] is True
+
+
+def test_managed_defaults_migrates_managed_fal_video_to_vidu(monkeypatch):
+    """Managed FAL was retired; gateway-backed Fal configs migrate to Vidu."""
+    from clio_cli.portal_subscription import apply_managed_defaults
+
+    monkeypatch.setattr(
+        "clio_cli.portal_subscription.get_managed_portal_account_info",
+        lambda *args, **kwargs: ManagedProviderAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+    config = {"video_gen": {"provider": "fal", "use_gateway": True}}
+
+    configured = apply_managed_defaults(config, enabled_toolsets={"video_gen"})
+
+    assert configured == {"video_gen"}
+    assert config["video_gen"]["provider"] == "vidu"
+    assert config["video_gen"]["use_gateway"] is True
+
+
+def test_managed_defaults_preserves_direct_fal_video(monkeypatch):
+    """Direct Fal BYOK configs should not be rewritten to Vidu."""
+    from clio_cli.portal_subscription import apply_managed_defaults
+
+    monkeypatch.setattr(
+        "clio_cli.portal_subscription.get_managed_portal_account_info",
+        lambda *args, **kwargs: ManagedProviderAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+    config = {"video_gen": {"provider": "fal", "use_gateway": False}}
+
+    configured = apply_managed_defaults(config, enabled_toolsets={"video_gen"})
+
+    assert configured == set()
+    assert config["video_gen"]["provider"] == "fal"
+    assert config["video_gen"]["use_gateway"] is False
+
 # ── Platform / toolset consistency ────────────────────────────────────────────
 
 

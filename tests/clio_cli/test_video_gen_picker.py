@@ -14,6 +14,7 @@ import pytest
 
 from agent import video_gen_registry
 from agent.video_gen_provider import VideoGenProvider
+from clio_cli.portal_subscription import ManagedFeatureState, ManagedSubscriptionFeatures
 
 
 class _FakeVideoProvider(VideoGenProvider):
@@ -235,3 +236,53 @@ class TestVideoPluginProviderActive:
         ]
 
         assert tools_config._detect_active_provider_index(providers, config) == 0
+
+
+class TestManagedViduVideoProvider:
+    """Regression tests for the managed Vidu picker row."""
+
+    def test_managed_video_row_is_vidu_not_fal(self):
+        from clio_cli import tools_config
+
+        rows = tools_config.TOOL_CATEGORIES["video_gen"]["providers"]
+        managed = next(row for row in rows if row.get("managed_feature") == "video_gen")
+
+        assert managed["name"] == "Omni Loop Portal Subscription (Vidu Video Gen)"
+        assert managed["video_gen_plugin_name"] == "vidu"
+
+    def test_managed_video_row_active_only_for_vidu_gateway(self, monkeypatch):
+        from clio_cli import tools_config
+
+        features = ManagedSubscriptionFeatures(
+            provider_auth_present=True,
+            features={
+                "video_gen": ManagedFeatureState(
+                    "video_gen",
+                    "Video generation",
+                    True,
+                    True,
+                    True,
+                    True,
+                    "Omni Loop Portal",
+                )
+            },
+        )
+        monkeypatch.setattr(
+            tools_config,
+            "get_managed_subscription_features",
+            lambda *args, **kwargs: features,
+        )
+        row = {
+            "name": "Omni Loop Portal Subscription (Vidu Video Gen)",
+            "managed_feature": "video_gen",
+            "video_gen_plugin_name": "vidu",
+        }
+
+        assert tools_config._is_provider_active(
+            row,
+            {"video_gen": {"provider": "vidu", "use_gateway": True}},
+        ) is True
+        assert tools_config._is_provider_active(
+            row,
+            {"video_gen": {"provider": "fal", "use_gateway": True}},
+        ) is False

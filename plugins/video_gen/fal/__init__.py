@@ -317,11 +317,19 @@ _managed_fal_video_client_lock = threading.Lock()
 
 
 def _resolve_managed_fal_video_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
+    """Return an explicit legacy fal-queue gateway config.
+
+    The Omni Loop Portal managed video backend now uses Vidu. Keep this path
+    only for private/legacy FAL gateway deployments that explicitly provide a
+    FAL_QUEUE_GATEWAY_URL.
+    """
+    import os
+
     from tools.tool_backend_helpers import fal_key_is_configured, prefers_gateway
 
     if fal_key_is_configured() and not prefers_gateway("video_gen"):
+        return None
+    if not os.getenv("FAL_QUEUE_GATEWAY_URL"):
         return None
     from tools.managed_tool_gateway import resolve_managed_tool_gateway
 
