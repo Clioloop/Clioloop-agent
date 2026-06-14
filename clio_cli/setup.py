@@ -457,7 +457,7 @@ def _print_setup_summary(config: dict, clio_home):
     # Only show the row when a plugin reports available so we don't badger
     # users who don't care about video gen with a "missing" status line.
     if subscription_features.video_gen.managed_by_provider:
-        tool_status.append(("Video Generation (FAL via managed subscription)", True, None))
+        tool_status.append(("Video Generation (Omni Loop Portal)", True, None))
     else:
         try:
             from agent.video_gen_registry import list_providers as _list_video_providers

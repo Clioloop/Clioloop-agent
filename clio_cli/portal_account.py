@@ -37,7 +37,7 @@ class ManagedProviderAccountInfo:
     #: "image_gen": bool, "video_gen": bool, "tts": bool}.
     features: dict[str, bool] = field(default_factory=dict)
     #: Tool-gateway entitlement strings (vendor slugs + extras like
-    #: "fal-video"); empty when the plan has no gateway access.
+    #: "vidu-video"); empty when the plan has no gateway access.
     tool_gateway_entitlements: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 

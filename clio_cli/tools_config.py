@@ -1987,7 +1987,7 @@ def _visible_providers(
     acct = features.account_info
     # Pool-only users (entitled to managed tools via the free tool pool but with
     # no paid access) get image gen but NOT video gen — the pool doesn't fund
-    # `fal-video`. Rather than advertise a managed video row that would be denied
+    # `vidu-video`. Rather than advertise a managed video row that would be denied
     # on select, hide it for them. Logged-out users still see it (advertising)
     # and paid users are entitled to it.
     pool_only = bool(
@@ -2012,7 +2012,7 @@ def _visible_providers(
         if (
             pool_only
             and provider.get("managed_feature") == "video_gen"
-            and not (acct and acct.tool_gateway_entitled_for("fal-video"))
+            and not (acct and acct.tool_gateway_entitled_for("vidu-video"))
         ):
             continue
         visible.append(provider)

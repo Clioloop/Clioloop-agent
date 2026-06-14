@@ -2,7 +2,7 @@
 
 Surfaces the portal's bundled tool services — web search (firecrawl),
 cloud browser (browser-use), self-hosted image generation (clioloop-image),
-video generation (fal-queue), and text-to-speech (openai-audio) — as managed feature descriptors consumed
+video generation (vidu), and text-to-speech (openai-audio) — as managed feature descriptors consumed
 by ``clio_cli.tools_config`` and status surfaces.
 
 Entitlements come from the portal's ``/api/account/info`` endpoint via
@@ -144,12 +144,12 @@ def _detect_local_backends(config: Optional[dict]) -> dict[str, tuple[bool, str]
                 pass
         out["browser"] = (ready, "Local browser")
 
-    # Video generation — FAL direct key. Image generation is first-party via
+    # Video generation — Vidu direct key. Image generation is first-party via
     # the Omni Loop Portal or via plugin backends probed separately by the
     # summary itself.
-    fal = bool(_env("FAL_KEY"))
+    vidu = bool(_env("VIDU_API_KEY"))
     out["image_gen"] = (False, "")
-    out["video_gen"] = (fal, "FAL.ai" if fal else "")
+    out["video_gen"] = (vidu, "Vidu" if vidu else "")
 
     out["tts"] = (True, "")  # Edge TTS is always available, no key needed.
     out["modal"] = (False, "")
@@ -340,7 +340,7 @@ def apply_managed_defaults(
         # explicit use_gateway value (true OR false) wins.
         if section.get("use_gateway") is not None:
             continue
-        if str(section.get("provider") or "").strip() not in {"", "fal", "clioloop", "omni-loop"}:
+        if str(section.get("provider") or "").strip() not in {"", "fal", "vidu", "clioloop", "omni-loop"}:
             continue
         # Wire the backend the gateway serves, so the tool picks the right
         # vendor route without a separate provider prompt.
@@ -357,7 +357,7 @@ def apply_managed_defaults(
             section["provider"] = "omni-loop"
             section["model"] = "clioloop-local"
         elif key == "video_gen" and not section.get("provider"):
-            section["provider"] = "fal"
+            section["provider"] = "vidu"
         section["use_gateway"] = True
         configured.add(key)
     return configured

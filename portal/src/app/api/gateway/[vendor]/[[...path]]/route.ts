@@ -5,6 +5,7 @@ import {
   GATEWAY_VENDORS,
   checkGatewayEntitlement,
   gatewayRequestCostMicros,
+  gatewayShouldRecordUsage,
   recordGatewayUsage,
   vendorUpstreamKey,
   vendorUpstreamOrigin,
@@ -66,7 +67,14 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     );
   }
 
-  const costMicros = gatewayRequestCostMicros(vendor, req.method, path);
+  // Buffer the body once. Vendor payloads are small, and Vidu metering needs
+  // the requested duration/resolution before we forward the generation task.
+  const body =
+    req.method === "GET" || req.method === "HEAD"
+      ? undefined
+      : Buffer.from(await req.arrayBuffer());
+
+  const costMicros = gatewayRequestCostMicros(vendor, req.method, path, body);
   const denial = checkGatewayEntitlement(identity.user, vendor, costMicros);
   if (denial) {
     return NextResponse.json(
@@ -89,14 +97,6 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     headers.set(key, value);
   }
 
-  // Buffer the body rather than streaming: vendor payloads are small, and
-  // buffering keeps Content-Length intact for upstreams that dislike
-  // chunked transfer encoding.
-  const body =
-    req.method === "GET" || req.method === "HEAD"
-      ? undefined
-      : Buffer.from(await req.arrayBuffer());
-
   let upstream: Response;
   try {
     upstream = await fetch(upstreamUrl, {
@@ -112,7 +112,17 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     );
   }
 
-  recordGatewayUsage(identity.user.id, vendor, costMicros);
+  let upstreamPayload: unknown = undefined;
+  if (costMicros > 0) {
+    try {
+      upstreamPayload = await upstream.clone().json();
+    } catch {
+      upstreamPayload = undefined;
+    }
+  }
+  if (gatewayShouldRecordUsage(vendor, req.method, path, upstream.status, upstreamPayload)) {
+    recordGatewayUsage(identity.user.id, vendor, costMicros);
+  }
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {

@@ -50,11 +50,11 @@ export async function GET(req: NextRequest) {
       entitled: gatewayVendors.length > 0,
       base_url: `${base}/api/gateway`,
       vendors: gatewayVendors,
-      // fal-video rides the fal-queue vendor but is a separate entitlement
-      // (Max tiers only) — clio_cli checks tool_gateway_entitled_for("fal-video").
+      // vidu-video rides the vidu vendor but is a separate entitlement
+      // (Max tiers only) — clio_cli checks tool_gateway_entitled_for("vidu-video").
       entitlements: [
         ...gatewayVendors,
-        ...(features.video_gen ? ["fal-video"] : []),
+        ...(features.video_gen ? ["vidu-video"] : []),
       ],
     },
     usage: {

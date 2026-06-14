@@ -28,6 +28,20 @@ export interface GatewayVendor {
   costMicros: number;
 }
 
+export const VIDU_DEFAULT_DURATION_SECONDS = 5;
+export const VIDU_MAX_DURATION_SECONDS = 10;
+export const VIDU_DEFAULT_RESOLUTION = "540p";
+export const VIDU_RATE_ENV: Record<string, string> = {
+  "540p": "VIDU_GATEWAY_RATE_540P_MICROS_PER_SECOND",
+  "720p": "VIDU_GATEWAY_RATE_720P_MICROS_PER_SECOND",
+  "1080p": "VIDU_GATEWAY_RATE_1080P_MICROS_PER_SECOND",
+};
+export const VIDU_MARKED_UP_MICROS_PER_SECOND: Record<string, number> = {
+  "540p": 42_000,
+  "720p": 66_000,
+  "1080p": 78_000,
+};
+
 export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
   firecrawl: {
     id: "firecrawl",
@@ -38,14 +52,14 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     service: "web",
     costMicros: 10_000, // ~1c per search/scrape
   },
-  "fal-queue": {
-    id: "fal-queue",
-    upstream: "https://queue.fal.run",
-    keyEnv: "FAL_KEY",
-    upstreamEnv: "FAL_QUEUE_UPSTREAM_URL",
-    authHeaders: (key) => ({ Authorization: `Key ${key}` }),
+  "vidu": {
+    id: "vidu",
+    upstream: "https://api.vidu.com/ent/v2",
+    keyEnv: "VIDU_API_KEY",
+    upstreamEnv: "VIDU_UPSTREAM_URL",
+    authHeaders: (key) => ({ Authorization: `Token ${key}` }),
     service: "video_gen",
-    costMicros: 40_000, // ~4c per generation request
+    costMicros: VIDU_MARKED_UP_MICROS_PER_SECOND[VIDU_DEFAULT_RESOLUTION] * VIDU_DEFAULT_DURATION_SECONDS,
   },
   // Premium TTS: a self-hosted Supertonic-3 server speaking the OpenAI
   // /v1/audio/speech dialect (deploy/supertonic_server.py). The vendor id
@@ -121,11 +135,87 @@ export function gatewayRequestCostMicros(
   vendor: GatewayVendor,
   method: string,
   path: string[] = [],
+  requestBody?: Buffer | string | null,
 ): number {
   if (vendor.id === "clioloop-image") {
     return method.toUpperCase() === "POST" && path[0] === "generate" ? vendor.costMicros : 0;
   }
+  if (vendor.id === "vidu") {
+    return viduRequestCostMicros(method, path, requestBody);
+  }
   return vendor.costMicros;
+}
+
+function parseGatewayJsonBody(requestBody?: Buffer | string | null): Record<string, unknown> {
+  if (!requestBody) return {};
+  try {
+    const raw = Buffer.isBuffer(requestBody) ? requestBody.toString("utf8") : requestBody;
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function normalizedViduResolution(value: unknown): string {
+  const resolution = String(value || VIDU_DEFAULT_RESOLUTION).trim().toLowerCase();
+  return resolution in VIDU_MARKED_UP_MICROS_PER_SECOND ? resolution : VIDU_DEFAULT_RESOLUTION;
+}
+
+export function viduRateMicrosPerSecond(resolution: string): number {
+  const normalized = normalizedViduResolution(resolution);
+  const envValue = process.env[VIDU_RATE_ENV[normalized]]?.trim();
+  if (envValue) {
+    const override = Number(envValue);
+    if (Number.isFinite(override) && override > 0) return Math.round(override);
+  }
+  return VIDU_MARKED_UP_MICROS_PER_SECOND[normalized];
+}
+
+export function viduRequestCostMicros(
+  method: string,
+  path: string[] = [],
+  requestBody?: Buffer | string | null,
+): number {
+  if (method.toUpperCase() !== "POST") return 0;
+  if (path[0] !== "text2video" && path[0] !== "img2video") return 0;
+
+  const body = parseGatewayJsonBody(requestBody);
+  const duration = clampInt(
+    body.duration,
+    1,
+    VIDU_MAX_DURATION_SECONDS,
+    VIDU_DEFAULT_DURATION_SECONDS,
+  );
+  const resolution = normalizedViduResolution(body.resolution);
+  return duration * viduRateMicrosPerSecond(resolution);
+}
+
+export function gatewayShouldRecordUsage(
+  vendor: GatewayVendor,
+  method: string,
+  path: string[] = [],
+  upstreamStatus = 0,
+  upstreamBody?: unknown,
+): boolean {
+  if (upstreamStatus < 200 || upstreamStatus >= 300) return false;
+  if (vendor.id !== "vidu") return true;
+  if (method.toUpperCase() !== "POST") return false;
+  if (path[0] !== "text2video" && path[0] !== "img2video") return false;
+  if (!upstreamBody || typeof upstreamBody !== "object" || Array.isArray(upstreamBody)) return false;
+
+  const body = upstreamBody as Record<string, unknown>;
+  if (typeof body.task_id !== "string" || !body.task_id.trim()) return false;
+  const state = String(body.state || "").toLowerCase();
+  return state !== "failed";
 }
 
 export interface GatewayDenial {

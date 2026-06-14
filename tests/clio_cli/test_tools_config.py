@@ -866,7 +866,7 @@ def test_first_install_managed_auto_configures_managed_defaults(monkeypatch):
 def test_first_install_managed_auto_configures_video_gen(monkeypatch):
     """When a managed provider subscriber checks video_gen in the toolset checklist,
     apply_managed_defaults must write video_gen.provider and
-    video_gen.use_gateway so the FAL plugin can route through the gateway
+    video_gen.use_gateway so the Vidu plugin can route through the gateway
     at runtime.  Regression test for the bug where video_gen was marked as
     auto-configured but no config was actually written."""
     monkeypatch.setattr("clio_cli.portal_subscription.managed_tools_enabled", lambda: True)
@@ -885,6 +885,7 @@ def test_first_install_managed_auto_configures_video_gen(monkeypatch):
         "BROWSERBASE_API_KEY",
         "BROWSERBASE_PROJECT_ID",
         "BROWSER_USE_API_KEY",
+        "VIDU_API_KEY",
         "FAL_KEY",
     ):
         monkeypatch.delenv(env_var, raising=False)
@@ -916,7 +917,7 @@ def test_first_install_managed_auto_configures_video_gen(monkeypatch):
 
     tools_command(first_install=True, config=config)
 
-    assert config["video_gen"]["provider"] == "fal"
+    assert config["video_gen"]["provider"] == "vidu"
     assert config["video_gen"]["use_gateway"] is True
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
