@@ -18,6 +18,7 @@ import {
   ZapFilled
 } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { providerLabel } from '@/lib/provider-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -361,12 +362,12 @@ export function useStatusbarItems({
               menuAlign: 'end' as const,
               menuClassName: 'w-64',
               menuContent: modelMenuContent,
-              title: currentProvider ? `Model · ${currentProvider}: ${currentModel || 'none'}` : 'Switch model',
+              title: currentProvider ? `Model · ${providerLabel(currentProvider)}: ${currentModel || 'none'}` : 'Switch model',
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
-              title: currentProvider ? `${currentProvider} · ${currentModel || 'no model'}` : 'Open model picker',
+              title: currentProvider ? `${providerLabel(currentProvider)} · ${currentModel || 'no model'}` : 'Open model picker',
               variant: 'action' as const
             })
       },

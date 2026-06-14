@@ -84,6 +84,19 @@ def _safe_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _provider_label(provider: str | None) -> str:
+    """Human-friendly provider label for display (e.g. managed -> Omni Loop
+    Portal). Falls back to the raw slug if the label map is unavailable.
+    Used only for user-facing strings — never for model-id/routing slugs.
+    """
+    try:
+        from clio_cli.models import provider_label
+
+        return provider_label(provider)
+    except Exception:
+        return provider or "openrouter"
+
+
 class ClioACPAgent:
     def __init__(self, session_manager: SessionManager | None = None):
         self.session_manager = session_manager or SessionManager()
@@ -119,6 +132,7 @@ class ClioACPAgent:
         model = _safe_str(state.model) or _safe_str(getattr(state.agent, "model", None))
         if not model:
             return None
+        provider_display = _provider_label(provider)
         current_id = f"{provider}:{model}" if provider else str(model)
         available: list[ModelInfo] = []
         try:
@@ -126,12 +140,12 @@ class ClioACPAgent:
 
             for mid, desc in curated_models_for_provider(provider):
                 model_id = f"{provider}:{mid}" if provider else mid
-                description = f"Provider: {provider}\n{desc or ''}".strip() if provider else (desc or None)
+                description = f"Provider: {provider_display}\n{desc or ''}".strip() if provider else (desc or None)
                 available.append(ModelInfo(modelId=model_id, name=mid, description=description))
         except Exception:
             pass
         if not any(item.model_id == current_id for item in available):
-            description = f"Provider: {provider}" if provider else None
+            description = f"Provider: {provider_display}" if provider else None
             available.insert(0, ModelInfo(modelId=current_id, name=str(model), description=description))
         return SessionModelState(currentModelId=current_id, availableModels=available)
 
@@ -664,4 +678,6 @@ class ClioACPAgent:
             "base_url": _safe_str(getattr(state.agent, "base_url", None)),
             "api_mode": _safe_str(getattr(state.agent, "api_mode", None)),
         }
-        return f"Model switched to {model}\nProvider: {state.runtime.get('provider') or 'default'}"
+        _switched_provider = state.runtime.get("provider")
+        _provider_display = _provider_label(_switched_provider) if _switched_provider else "default"
+        return f"Model switched to {model}\nProvider: {_provider_display}"

@@ -3685,6 +3685,8 @@ def _(rid, params: dict) -> dict:
 
     usage = _get_usage(agent) if agent is not None else {}
     provider = getattr(agent, "provider", None) or "unknown"
+    from clio_cli.models import provider_label
+    provider_display = provider_label(provider)
     model = getattr(agent, "model", None) or "(unknown)"
     lines = [
         "Clio TUI Status",
@@ -3697,7 +3699,7 @@ def _(rid, params: dict) -> dict:
         lines.append(f"Title: {title}")
     lines.extend(
         [
-            f"Model: {model} ({provider})",
+            f"Model: {model} ({provider_display})",
             f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {int(usage.get('total') or 0):,}",

@@ -1616,7 +1616,9 @@ class TestSlashCommands:
             state = manager.create_session(cwd="/tmp")
             result = acp_agent._cmd_model("anthropic:claude-sonnet-4-6", state)
 
-        assert "Provider: anthropic" in result
+        # Display string uses the human-friendly provider label; the routing
+        # slug on the agent stays raw ("anthropic").
+        assert "Provider: Anthropic" in result
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
         # ``state.agent.provider == "anthropic"`` plus the base_url check above

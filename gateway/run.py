@@ -9942,6 +9942,7 @@ class GatewayRunner:
         local models falling to the 128K default).
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from clio_cli.models import provider_label
 
         model = _resolve_gateway_model()
         config_context_length = None
@@ -10043,7 +10044,7 @@ class GatewayRunner:
 
         lines = [
             f"◆ Model: `{model}`",
-            f"◆ Provider: {provider or 'openrouter'}",
+            f"◆ Provider: {provider_label(provider)}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
 

@@ -337,6 +337,24 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
+def _provider_display(provider: str) -> str:
+    """User-facing provider label for the TTS tool result/log.
+
+    The managed Omni Loop Portal gateway is a self-hosted Supertonic server
+    that speaks the OpenAI ``/v1/audio/speech`` dialect, so the config
+    provider is ``"openai"``. When the gateway actually serves the request
+    surface the portal brand instead of the upstream vendor. A user's own
+    direct OpenAI key (no gateway) keeps showing ``"openai"``.
+
+    This intentionally stays separate from ``clio_cli`` ``provider_label``:
+    the openai->portal mapping is conditional on gateway routing and must not
+    rebrand genuine direct-key usage.
+    """
+    if provider == "openai" and prefers_gateway("tts"):
+        return "Omni Loop Portal"
+    return provider
+
+
 # ===========================================================================
 # Custom command providers (type: command under tts.providers.<name>)
 # ===========================================================================
@@ -2201,7 +2219,8 @@ def text_to_speech_tool(
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
-        logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
+        provider_display = _provider_display(provider)
+        logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider_display)
 
         # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
@@ -2212,7 +2231,7 @@ def text_to_speech_tool(
             "success": True,
             "file_path": file_str,
             "media_tag": media_tag,
-            "provider": provider,
+            "provider": provider_display,
             "voice_compatible": voice_compatible,
         }, ensure_ascii=False)
 
