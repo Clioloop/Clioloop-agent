@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { currentMonth, getDb, UserRow } from "@/lib/db";
+import { currentMonth, getDb, now, UserRow } from "@/lib/db";
+import { PLANS } from "@/lib/plans";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -48,17 +49,17 @@ export async function GET() {
   return NextResponse.json({ users, totals, month: currentMonth() });
 }
 
-/** Admin actions: ban / unban / revoke all devices. */
+/** Admin actions that never bypass target-user email verification. */
 export async function POST(req: NextRequest) {
   const me = await getSessionUser();
   if (!isAdmin(me)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const body = (await req.json().catch(() => null)) as
-    | { action?: string; user_id?: string }
+    | { action?: string; user_id?: string; plan?: string }
     | null;
   const userId = body?.user_id ?? "";
   const action = body?.action ?? "";
-  if (!userId || !["ban", "unban", "revoke_devices"].includes(action)) {
+  if (!userId || !["ban", "unban", "revoke_devices", "verify_card", "set_plan"].includes(action)) {
     return NextResponse.json({ error: "bad_request" }, { status: 400 });
   }
   if (userId === me.id && action === "ban") {
@@ -66,6 +67,15 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
+  const target = db
+    .prepare("SELECT id, email_verified FROM users WHERE id = ?")
+    .get(userId) as { id: string; email_verified: number } | undefined;
+  if (!target) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+  if (["verify_card", "set_plan"].includes(action) && !target.email_verified) {
+    return NextResponse.json({ error: "email_verification_required" }, { status: 403 });
+  }
+
   if (action === "ban") {
     db.prepare("UPDATE users SET banned = 1 WHERE id = ?").run(userId);
     db.prepare("UPDATE oauth_tokens SET revoked = 1 WHERE user_id = ?").run(userId);
@@ -73,6 +83,22 @@ export async function POST(req: NextRequest) {
     db.prepare("UPDATE users SET banned = 0 WHERE id = ?").run(userId);
   } else if (action === "revoke_devices") {
     db.prepare("UPDATE oauth_tokens SET revoked = 1 WHERE user_id = ?").run(userId);
+  } else if (action === "verify_card") {
+    db.prepare("UPDATE users SET card_verified = 1 WHERE id = ?").run(userId);
+  } else if (action === "set_plan") {
+    const plan = body?.plan ?? "";
+    if (!PLANS[plan as keyof typeof PLANS]) {
+      return NextResponse.json({ error: "unknown_plan" }, { status: 400 });
+    }
+    db.prepare(
+      `INSERT INTO subscriptions (user_id, plan, status, stripe_subscription_id, renews_at, updated_at)
+       VALUES (?, ?, 'active', NULL, NULL, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         plan = excluded.plan,
+         status = 'active',
+         renews_at = NULL,
+         updated_at = excluded.updated_at`,
+    ).run(userId, plan, now());
   }
   return NextResponse.json({ ok: true });
 }

@@ -1,8 +1,8 @@
 """Omni Loop Portal subscription features (managed tool gateway).
 
 Surfaces the portal's bundled tool services — web search (firecrawl),
-cloud browser (browser-use), image/video generation (fal-queue), and
-text-to-speech (openai-audio) — as managed feature descriptors consumed
+cloud browser (browser-use), self-hosted image generation (clioloop-image),
+video generation (fal-queue), and text-to-speech (openai-audio) — as managed feature descriptors consumed
 by ``clio_cli.tools_config`` and status surfaces.
 
 Entitlements come from the portal's ``/api/account/info`` endpoint via
@@ -144,10 +144,11 @@ def _detect_local_backends(config: Optional[dict]) -> dict[str, tuple[bool, str]
                 pass
         out["browser"] = (ready, "Local browser")
 
-    # Image / video generation — FAL direct key (plugin backends are probed
-    # separately by the summary itself).
+    # Video generation — FAL direct key. Image generation is first-party via
+    # the Omni Loop Portal or via plugin backends probed separately by the
+    # summary itself.
     fal = bool(_env("FAL_KEY"))
-    out["image_gen"] = (fal, "FAL.ai" if fal else "")
+    out["image_gen"] = (False, "")
     out["video_gen"] = (fal, "FAL.ai" if fal else "")
 
     out["tts"] = (True, "")  # Edge TTS is always available, no key needed.
@@ -339,7 +340,7 @@ def apply_managed_defaults(
         # explicit use_gateway value (true OR false) wins.
         if section.get("use_gateway") is not None:
             continue
-        if str(section.get("provider") or "").strip() not in {"", "fal", "clioloop"}:
+        if str(section.get("provider") or "").strip() not in {"", "fal", "clioloop", "omni-loop"}:
             continue
         # Wire the backend the gateway serves, so the tool picks the right
         # vendor route without a separate provider prompt.
@@ -349,11 +350,12 @@ def apply_managed_defaults(
             section["provider"] = "openai"
         elif key == "browser" and not section.get("cloud_provider"):
             section["cloud_provider"] = "browser-use"
-        elif key == "image_gen" and not section.get("provider"):
+        elif key == "image_gen":
             # Self-hosted image backend (clioloop-image gateway vendor), like
             # the self-hosted Supertonic TTS. Operators who serve FAL instead
             # should pin image_gen.provider: fal explicitly.
-            section["provider"] = "clioloop"
+            section["provider"] = "omni-loop"
+            section["model"] = "clioloop-local"
         elif key == "video_gen" and not section.get("provider"):
             section["provider"] = "fal"
         section["use_gateway"] = True

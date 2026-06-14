@@ -827,7 +827,9 @@ def test_first_install_managed_auto_configures_managed_defaults(monkeypatch):
     assert config["web"]["backend"] == "firecrawl"
     assert config["tts"]["provider"] == "openai"
     assert config["browser"]["cloud_provider"] == "browser-use"
+    assert config["image_gen"]["provider"] == "omni-loop"
     assert config["image_gen"]["use_gateway"] is True
+    assert config["image_gen"]["model"] == "clioloop-local"
     assert configured == []
 
 
@@ -1069,13 +1071,12 @@ class TestImagegenBackendRegistry:
         assert "fal-ai/flux-2/klein/9b" in catalog
         assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both managed provider Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
+    def test_image_gen_managed_provider_tagged_with_omni_loop_backend(self):
+        """The managed image row must select the Omni Loop self-hosted backend."""
         from clio_cli.tools_config import TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
+            assert p.get("imagegen_backend") == "omni-loop", (
                 f"{p['name']} missing imagegen_backend tag"
             )
 
@@ -1540,4 +1541,3 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-

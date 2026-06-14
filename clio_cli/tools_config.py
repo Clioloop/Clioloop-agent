@@ -29,12 +29,19 @@ from clio_cli.portal_subscription import (
     get_managed_subscription_features,
 )
 from clio_cli.portal_account import format_managed_provider_entitlement_message
-from tools.tool_backend_helpers import fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+OMNI_LOOP_IMAGE_PROVIDER = "omni-loop"
+LEGACY_CLIOLOOP_IMAGE_PROVIDER = "clioloop"
+OMNI_LOOP_IMAGE_MODEL = "clioloop-local"
+_HIDDEN_FIRST_PARTY_IMAGE_PLUGINS = {
+    "fal",
+    LEGACY_CLIOLOOP_IMAGE_PROVIDER,
+    OMNI_LOOP_IMAGE_PROVIDER,
+}
 RETIRED_MANAGED_GATEWAY_NAMES = {
     "managed provider subscription",
     "managed provider subscription (browser use cloud)",
@@ -371,19 +378,21 @@ TOOL_CATEGORIES = {
     "image_gen": {
         "name": "Image Generation",
         "icon": "🎨",
-        # Per-provider rows for FAL.ai (`plugins/image_gen/fal`), OpenAI,
-        # OpenAI Codex, and xAI are injected at runtime from each
+        # Per-provider rows for OpenAI, OpenAI Codex, xAI, and other third
+        # party image backends are injected at runtime from each
         # ``plugins.image_gen.<vendor>`` package via
         # ``_plugin_image_gen_providers()`` in ``_visible_providers``.
-        # Provider rows are injected at runtime from image generation plugins.
+        # First-party image generation is the managed Omni Loop Portal row
+        # below; the FAL and legacy clioloop image plugins are intentionally
+        # hidden from the picker.
         "providers": [
             {
-                "name": "Omni Loop Portal Subscription (FAL Image Gen)",
+                "name": "Omni Loop Portal Subscription (Image Generation)",
                 "badge": "subscription",
-                "tag": "FLUX & friends through your portal subscription — no API key",
+                "tag": "Self-hosted image generation through the Omni Loop Portal — no API key",
                 "env_vars": [],
                 "managed_feature": "image_gen",
-                "imagegen_backend": "fal",
+                "imagegen_backend": "omni-loop",
             },
         ],
     },
@@ -1735,6 +1744,8 @@ def _plugin_image_gen_providers() -> list[dict]:
 
     rows: list[dict] = []
     for provider in providers:
+        if provider.name in _HIDDEN_FIRST_PARTY_IMAGE_PLUGINS:
+            continue
         try:
             schema = provider.get_setup_schema()
         except Exception:
@@ -2106,9 +2117,18 @@ def _toolset_needs_configuration_prompt(
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
-        # Satisfied when the in-tree FAL backend is configured OR any
-        # plugin-registered image gen provider is available.
-        if fal_key_is_configured():
+        # Satisfied when Omni Loop Portal image generation or a third-party
+        # plugin provider is available. Direct FAL_KEY no longer enables
+        # image generation.
+        image_cfg = config.get("image_gen", {})
+        if (
+            isinstance(image_cfg, dict)
+            and image_cfg.get("provider") in {
+                OMNI_LOOP_IMAGE_PROVIDER,
+                LEGACY_CLIOLOOP_IMAGE_PROVIDER,
+            }
+            and is_truthy_value(image_cfg.get("use_gateway"), default=True)
+        ):
             return False
         try:
             from agent.image_gen_registry import list_providers
@@ -2116,6 +2136,8 @@ def _toolset_needs_configuration_prompt(
 
             _ensure_plugins_discovered()
             for provider in list_providers():
+                if provider.name in _HIDDEN_FIRST_PARTY_IMAGE_PLUGINS:
+                    continue
                 try:
                     if provider.is_available():
                         return False
@@ -2286,9 +2308,22 @@ def _is_provider_active(
             image_cfg = config.get("image_gen", {})
             if isinstance(image_cfg, dict):
                 configured_provider = image_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider not in {
+                    None,
+                    "",
+                    "fal",
+                    OMNI_LOOP_IMAGE_PROVIDER,
+                    LEGACY_CLIOLOOP_IMAGE_PROVIDER,
+                }:
                     return False
-                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                if (
+                    configured_provider not in {
+                        OMNI_LOOP_IMAGE_PROVIDER,
+                        LEGACY_CLIOLOOP_IMAGE_PROVIDER,
+                    }
+                    and image_cfg.get("use_gateway") is not None
+                    and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+                ):
                     return False
             return feature.managed_by_provider
         if managed_feature == "video_gen":
@@ -2545,6 +2580,17 @@ def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
     _configure_imagegen_model_for_plugin(plugin_name, config)
 
 
+def _select_omni_loop_image_gen_provider(config: dict) -> None:
+    """Persist the managed Omni Loop image generation backend."""
+    img_cfg = config.setdefault("image_gen", {})
+    if not isinstance(img_cfg, dict):
+        img_cfg = {}
+        config["image_gen"] = img_cfg
+    img_cfg["provider"] = OMNI_LOOP_IMAGE_PROVIDER
+    img_cfg["use_gateway"] = True
+    img_cfg["model"] = OMNI_LOOP_IMAGE_MODEL
+
+
 # ─── Video Generation Model Pickers ───────────────────────────────────────────
 
 
@@ -2678,7 +2724,10 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:
-        config.setdefault(managed_feature, {})["use_gateway"] = True
+        if managed_feature == "image_gen":
+            _select_omni_loop_image_gen_provider(config)
+        else:
+            config.setdefault(managed_feature, {})["use_gateway"] = True
     elif not managed_feature:
         # User picked a non-gateway provider — find which category this
         # belongs to and clear use_gateway if it was previously set.
@@ -2742,7 +2791,12 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     # path (mirrors _configure_provider).
     if provider.get("imagegen_backend"):
         img_cfg = config.setdefault("image_gen", {})
-        if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
+        if (
+            provider.get("imagegen_backend") == OMNI_LOOP_IMAGE_PROVIDER
+            and isinstance(img_cfg, dict)
+        ):
+            _select_omni_loop_image_gen_provider(config)
+        elif isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
             img_cfg["provider"] = "fal"
 
 
@@ -2837,7 +2891,9 @@ def _configure_provider(
             return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
-        if backend:
+        if backend == OMNI_LOOP_IMAGE_PROVIDER:
+            _select_omni_loop_image_gen_provider(config)
+        elif backend:
             _configure_imagegen_model(backend, config)
             # In-tree FAL is the only non-plugin backend today. Keep
             # image_gen.provider clear so the dispatch shim falls through
@@ -2916,7 +2972,9 @@ def _configure_provider(
             return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
-        if backend:
+        if backend == OMNI_LOOP_IMAGE_PROVIDER:
+            _select_omni_loop_image_gen_provider(config)
+        elif backend:
             _configure_imagegen_model(backend, config)
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
@@ -3186,11 +3244,14 @@ def _reconfigure_provider(
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:
-        section = config.setdefault(managed_feature, {})
-        if not isinstance(section, dict):
-            section = {}
-            config[managed_feature] = section
-        section["use_gateway"] = True
+        if managed_feature == "image_gen":
+            _select_omni_loop_image_gen_provider(config)
+        else:
+            section = config.setdefault(managed_feature, {})
+            if not isinstance(section, dict):
+                section = {}
+                config[managed_feature] = section
+            section["use_gateway"] = True
     elif not managed_feature:
         for cat_key, cat in TOOL_CATEGORIES.items():
             if provider in cat.get("providers", []):
@@ -3216,7 +3277,9 @@ def _reconfigure_provider(
             return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
-        if backend:
+        if backend == OMNI_LOOP_IMAGE_PROVIDER:
+            _select_omni_loop_image_gen_provider(config)
+        elif backend:
             _configure_imagegen_model(backend, config)
             if backend == "fal":
                 img_cfg = config.setdefault("image_gen", {})
@@ -3256,7 +3319,9 @@ def _reconfigure_provider(
         return
 
     backend = provider.get("imagegen_backend")
-    if backend:
+    if backend == OMNI_LOOP_IMAGE_PROVIDER:
+        _select_omni_loop_image_gen_provider(config)
+    elif backend:
         _configure_imagegen_model(backend, config)
         if backend == "fal":
             img_cfg = config.setdefault("image_gen", {})

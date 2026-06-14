@@ -20,6 +20,7 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
+import base64
 import json
 import logging
 import os
@@ -62,6 +63,7 @@ from tools.fal_common import (
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
 )
+from agent.image_gen_provider import save_b64_image, save_url_image
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
@@ -69,6 +71,7 @@ from tools.tool_backend_helpers import (
     managed_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +377,12 @@ DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
 
+OMNI_LOOP_IMAGE_PROVIDER = "omni-loop"
+LEGACY_CLIOLOOP_IMAGE_PROVIDER = "clioloop"
+OMNI_LOOP_IMAGE_VENDOR = "clioloop-image"
+OMNI_LOOP_IMAGE_MODEL = "clioloop-local"
+OMNI_LOOP_IMAGE_STEPS = 4
+
 
 # ---------------------------------------------------------------------------
 # Upscaler (Clarity Upscaler — unchanged from previous implementation)
@@ -471,6 +480,180 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
                 f"{gateway_message}"
             ) from exc
         raise
+
+
+# ---------------------------------------------------------------------------
+# Omni Loop self-hosted image gateway
+# ---------------------------------------------------------------------------
+def _resolve_omni_loop_image_gateway():
+    """Return the Omni Loop Portal gateway config for self-hosted images."""
+    return resolve_managed_tool_gateway(OMNI_LOOP_IMAGE_VENDOR)
+
+
+def _image_ext_for_content_type(content_type: str) -> str:
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if content_type in {"image/jpeg", "image/jpg"}:
+        return "jpg"
+    if content_type == "image/webp":
+        return "webp"
+    if content_type == "image/gif":
+        return "gif"
+    return "png"
+
+
+def _save_image_response_bytes(response, *, prefix: str = "clioloop"):
+    return save_b64_image(
+        base64.b64encode(response.content).decode("ascii"),
+        prefix=prefix,
+        extension=_image_ext_for_content_type(response.headers.get("content-type", "")),
+    )
+
+
+def _gateway_get_image(gateway_origin: str, token: str, image_path: str):
+    """Fetch an image URL/path through the managed gateway and cache it."""
+    import requests
+
+    url = gateway_origin.rstrip("/") + "/" + image_path.lstrip("/")
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120,
+    )
+    response.raise_for_status()
+    return _save_image_response_bytes(response)
+
+
+def _save_omni_loop_image_reference(gateway_origin: str, token: str, image_url: str):
+    image_url = (image_url or "").strip()
+    if not image_url:
+        raise ValueError("image server returned an empty image URL")
+    if image_url.startswith("/"):
+        return _gateway_get_image(gateway_origin, token, image_url)
+    if image_url.startswith(("http://", "https://")):
+        gateway_prefix = gateway_origin.rstrip("/") + "/"
+        if image_url.startswith(gateway_prefix):
+            return _gateway_get_image(gateway_origin, token, image_url[len(gateway_prefix):])
+        return save_url_image(image_url, prefix="clioloop")
+    raise ValueError(
+        f"image server returned unsupported image URL {image_url!r}; "
+        "expected an absolute http(s) URL or a relative /images/... path"
+    )
+
+
+def omni_loop_image_generate_tool(
+    prompt: str,
+    aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    *,
+    steps: Optional[int] = None,
+) -> str:
+    """Generate an image through the Omni Loop Portal self-hosted gateway."""
+    start_time = datetime.datetime.now()
+    prompt = (prompt or "").strip()
+    aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
+    if aspect_lc not in VALID_ASPECT_RATIOS:
+        aspect_lc = DEFAULT_ASPECT_RATIO
+
+    def _failure(error: str, error_type: str) -> str:
+        return json.dumps(
+            {
+                "success": False,
+                "image": None,
+                "error": error,
+                "error_type": error_type,
+                "provider": OMNI_LOOP_IMAGE_PROVIDER,
+                "model": OMNI_LOOP_IMAGE_MODEL,
+                "prompt": prompt,
+                "aspect_ratio": aspect_lc,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    if not prompt:
+        return _failure("Prompt is required and must be a non-empty string", "invalid_argument")
+
+    managed_gateway = _resolve_omni_loop_image_gateway()
+    if managed_gateway is None:
+        return _failure(
+            _build_no_backend_setup_message(),
+            "auth_required",
+        )
+
+    try:
+        resolved_steps = int(steps or OMNI_LOOP_IMAGE_STEPS)
+    except (TypeError, ValueError):
+        resolved_steps = OMNI_LOOP_IMAGE_STEPS
+
+    import requests
+
+    try:
+        response = requests.post(
+            managed_gateway.gateway_origin.rstrip("/") + "/generate",
+            headers={
+                "Authorization": f"Bearer {managed_gateway.managed_user_token}",
+                "Content-Type": "application/json",
+            },
+            json={"prompt": prompt, "steps": resolved_steps},
+            timeout=300,
+        )
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
+        detail = ""
+        try:
+            detail = exc.response.text[:400] if exc.response is not None else ""
+        except Exception:
+            detail = ""
+        return _failure(
+            f"image gateway returned HTTP {status}: {detail}".strip(),
+            "provider_error",
+        )
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        return _failure(f"could not reach the image gateway: {exc}", "network_error")
+
+    try:
+        content_type = (response.headers.get("content-type") or "").lower()
+        if content_type.startswith("image/"):
+            path = _save_image_response_bytes(response)
+        else:
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("image server returned non-object JSON")
+            b64 = data.get("image_base64") or data.get("b64_json") or data.get("image")
+            image_url = data.get("image_url") or data.get("url")
+            if isinstance(b64, str) and b64.strip():
+                if b64.startswith("data:"):
+                    b64 = b64.split(",", 1)[-1]
+                path = save_b64_image(b64, prefix="clioloop")
+            elif isinstance(image_url, str) and image_url.strip():
+                path = _save_omni_loop_image_reference(
+                    managed_gateway.gateway_origin,
+                    managed_gateway.managed_user_token,
+                    image_url,
+                )
+            else:
+                raise ValueError("image server returned no recognizable image data")
+    except Exception as exc:
+        return _failure(f"could not decode the image response: {exc}", "provider_error")
+
+    generation_time = (datetime.datetime.now() - start_time).total_seconds()
+    logger.info(
+        "Generated self-hosted image in %.1fs via %s",
+        generation_time,
+        OMNI_LOOP_IMAGE_VENDOR,
+    )
+    return json.dumps(
+        {
+            "success": True,
+            "image": str(path),
+            "model": OMNI_LOOP_IMAGE_MODEL,
+            "prompt": prompt,
+            "aspect_ratio": aspect_lc,
+            "provider": OMNI_LOOP_IMAGE_PROVIDER,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -761,38 +944,35 @@ def check_fal_api_key() -> bool:
     return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
-def _build_no_backend_setup_message() -> str:
-    """Build an actionable error string when no FAL backend is reachable.
+def check_omni_loop_image_gateway() -> bool:
+    """True when the Omni Loop self-hosted image gateway is available."""
+    return _resolve_omni_loop_image_gateway() is not None
 
-    Used by the in-tree FAL path. Mentions:
-      - FAL_KEY signup link
-      - managed-gateway status (if managed-provider tools are enabled)
-      - plugin alternative pointer (so users on a stale ``image_gen.provider``
-        know the registry exists and how to inspect it)
-    """
+
+def _build_no_backend_setup_message() -> str:
+    """Build an actionable error string when no image backend is reachable."""
     lines = ["Image generation is unavailable in this environment.", ""]
     lines.append("Missing requirements:")
     if managed_tools_enabled():
         lines.append(
-            "  - FAL_KEY is not set and the managed FAL gateway is unreachable"
+            "  - the Omni Loop Portal image gateway is unreachable or not included in your plan"
         )
     else:
-        lines.append("  - FAL_KEY environment variable is not set")
+        lines.append("  - Omni Loop Portal image generation is not connected")
         gateway_message = managed_tool_gateway_unavailable_message(
-            "managed FAL image generation",
+            "Omni Loop Portal image generation",
         )
         if gateway_message:
             lines.append(f"  - {gateway_message}")
     lines.append("")
     lines.append("To enable image generation, do one of:")
     lines.append(
-        "  1. Get a free API key at https://fal.ai and set "
-        "FAL_KEY=<your-key> (then restart the session)"
+        "  1. Select `Omni Loop Portal Subscription (Image Generation)` "
+        "in `clio tools` → Image Generation"
     )
     if managed_tools_enabled():
         lines.append(
-            "  2. Sign in to a managed provider account that has the managed FAL "
-            "gateway enabled (`clio setup`)"
+            "  2. Verify your Omni Loop Portal plan includes image generation"
         )
     lines.append(
         "  3. Configure a different image_gen provider via `clio tools` "
@@ -807,24 +987,12 @@ def check_image_generation_requirements() -> bool:
 
     Providers are considered in this order:
 
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
-
-    Plugins win only when the in-tree FAL path is NOT ready, which matches
-    the historical behavior: shipping clio with a FAL key configured
-    should still expose the tool. The active selection among ready
-    providers is resolved per-call by ``image_gen.provider``.
+    1. The Omni Loop Portal self-hosted image gateway.
+    2. Any third-party plugin-registered provider whose ``is_available()``
+       returns True.
     """
-    try:
-        if check_fal_api_key():
-            # Trigger the lazy fal_client import here as the SDK presence
-            # check. Raises ImportError if the optional ``fal-client``
-            # package isn't installed; the caller's except ImportError
-            # below catches that and continues to plugin probing.
-            _load_fal_client()
-            return True
-    except ImportError:
-        pass
+    if check_omni_loop_image_gateway():
+        return True
 
     # Probe plugin providers. Discovery is idempotent and cheap.
     try:
@@ -833,6 +1001,8 @@ def check_image_generation_requirements() -> bool:
 
         _ensure_plugins_discovered()
         for provider in list_providers():
+            if provider.name in {"fal", LEGACY_CLIOLOOP_IMAGE_PROVIDER, OMNI_LOOP_IMAGE_PROVIDER}:
+                continue
             try:
                 if provider.is_available():
                     return True
@@ -888,8 +1058,8 @@ IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
         "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
+        "backend (Omni Loop Portal, OpenAI, etc.) and model are "
+        "user-configured and not selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
         "![description](url-or-path) and the gateway will deliver it."
     ),
@@ -930,13 +1100,9 @@ def _read_configured_image_model():
 def _read_configured_image_provider():
     """Return the value of ``image_gen.provider`` from config.yaml, or None.
 
-    We only consult the plugin registry when this is explicitly set — an
-    unset value keeps users on the in-tree FAL fallback even when other
-    providers happen to be registered (e.g. a user has OPENAI_API_KEY set
-    for other features but never asked for OpenAI image gen). ``"fal"``
-    explicitly routes through ``plugins/image_gen/fal/`` (which delegates
-    back into this module's pipeline via call-time indirection — see
-    issue #26241).
+    ``omni-loop`` and legacy ``clioloop`` route to the Omni Loop Portal
+    self-hosted gateway. Third-party provider names route through the plugin
+    registry. Direct FAL image generation is intentionally inactive.
     """
     try:
         from clio_cli.config import load_config
@@ -951,21 +1117,53 @@ def _read_configured_image_provider():
     return None
 
 
+def _configured_image_uses_gateway() -> bool:
+    try:
+        from clio_cli.config import load_config
+
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            return is_truthy_value(section.get("use_gateway"), default=False)
+    except Exception as exc:
+        logger.debug("Could not read image_gen.use_gateway: %s", exc)
+    return False
+
+
+def _should_use_omni_loop_image_provider(configured_provider: Optional[str]) -> bool:
+    if configured_provider in {OMNI_LOOP_IMAGE_PROVIDER, LEGACY_CLIOLOOP_IMAGE_PROVIDER}:
+        return True
+    if configured_provider == "fal" and _configured_image_uses_gateway():
+        return True
+    if not configured_provider and _configured_image_uses_gateway():
+        return True
+    return False
+
+
 def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     """Route the call to a plugin-registered provider when one is selected.
 
-    Returns a JSON string on dispatch, or ``None`` to fall through to the
-    in-tree FAL fallback in ``image_generate_tool``.
-
-    Dispatch fires when ``image_gen.provider`` is explicitly set — including
-    ``"fal"`` itself, which now resolves to the
-    ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
-    pipeline via ``_it`` indirection so behavior is identical to the
-    direct call, just routed through the registry).
+    Returns a JSON string on dispatch, or ``None`` when no explicit provider
+    is configured and the caller should use the Omni Loop Portal default.
     """
     configured = _read_configured_image_provider()
+    if _should_use_omni_loop_image_provider(configured):
+        return omni_loop_image_generate_tool(prompt, aspect_ratio)
     if not configured:
         return None
+
+    if configured == "fal":
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                "Direct FAL image generation is no longer active. Select "
+                "`Omni Loop Portal Subscription (Image Generation)` in "
+                "`clio tools` → Image Generation, or choose a third-party "
+                "image provider."
+            ),
+            "error_type": "provider_inactive",
+        })
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
@@ -1042,10 +1240,7 @@ def _handle_image_generate(args, **kw):
     if dispatched is not None:
         return dispatched
 
-    return image_generate_tool(
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
-    )
+    return omni_loop_image_generate_tool(prompt=prompt, aspect_ratio=aspect_ratio)
 
 
 registry.register(

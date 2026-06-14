@@ -44,7 +44,7 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     keyEnv: "FAL_KEY",
     upstreamEnv: "FAL_QUEUE_UPSTREAM_URL",
     authHeaders: (key) => ({ Authorization: `Key ${key}` }),
-    service: "image_gen",
+    service: "video_gen",
     costMicros: 40_000, // ~4c per generation request
   },
   // Premium TTS: a self-hosted Supertonic-3 server speaking the OpenAI
@@ -59,7 +59,7 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     authHeaders: (key) =>
       key ? { Authorization: `Bearer ${key}` } : ({} as Record<string, string>),
     service: "tts",
-    costMicros: 2_000, // self-hosted — flat metering only
+    costMicros: 10_000, // €0.01 per TTS request (self-hosted Supertonic)
   },
   "browser-use": {
     id: "browser-use",
@@ -82,7 +82,7 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     upstreamEnv: "CLIOLOOP_IMAGE_UPSTREAM_URL",
     authHeaders: (key) => (key ? { "X-API-Key": key } : ({} as Record<string, string>)),
     service: "image_gen",
-    costMicros: 5_000, // self-hosted — low flat metering
+    costMicros: 20_000, // €0.02 per image generation (charged on POST /generate only)
   },
 };
 
@@ -110,12 +110,22 @@ export function serviceAvailability(userId: string): Record<ServiceKey, boolean>
       .filter(vendorConfigured)
       .map((v) => v.service),
   );
-  // video_gen rides the fal-queue vendor.
-  if (configuredServices.has("image_gen")) configuredServices.add("video_gen");
   const services: ServiceKey[] = ["web", "browser", "image_gen", "video_gen", "tts"];
   return Object.fromEntries(
     services.map((s) => [s, plan.services.includes(s) && configuredServices.has(s)]),
   ) as Record<ServiceKey, boolean>;
+}
+
+/** Per-request metering. Some vendors serve generated assets after the paid generation call. */
+export function gatewayRequestCostMicros(
+  vendor: GatewayVendor,
+  method: string,
+  path: string[] = [],
+): number {
+  if (vendor.id === "clioloop-image") {
+    return method.toUpperCase() === "POST" && path[0] === "generate" ? vendor.costMicros : 0;
+  }
+  return vendor.costMicros;
 }
 
 export interface GatewayDenial {
@@ -128,6 +138,7 @@ export interface GatewayDenial {
 export function checkGatewayEntitlement(
   user: UserRow,
   vendor: GatewayVendor,
+  costMicros = vendor.costMicros,
 ): GatewayDenial | null {
   if (!vendorConfigured(vendor)) {
     return {
@@ -153,7 +164,7 @@ export function checkGatewayEntitlement(
     };
   }
   const used = monthUsageMicros(user.id);
-  if (used + vendor.costMicros > plan.monthlyCreditsMicros) {
+  if (costMicros > 0 && used + costMicros > plan.monthlyCreditsMicros) {
     return {
       status: 429,
       error: "monthly_limit_reached",
@@ -164,6 +175,11 @@ export function checkGatewayEntitlement(
 }
 
 /** Meter one gateway call against the subscriber's monthly allowance. */
-export function recordGatewayUsage(userId: string, vendor: GatewayVendor): void {
-  recordUsage(userId, `gateway:${vendor.id}`, 0, 0, vendor.costMicros);
+export function recordGatewayUsage(
+  userId: string,
+  vendor: GatewayVendor,
+  costMicros = vendor.costMicros,
+): void {
+  if (costMicros <= 0) return;
+  recordUsage(userId, `gateway:${vendor.id}`, 0, 0, costMicros);
 }

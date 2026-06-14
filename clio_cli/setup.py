@@ -451,7 +451,7 @@ def _print_setup_summary(config: dict, clio_home):
         if _img_backend:
             tool_status.append((f"Image Generation ({_img_backend})", True, None))
         else:
-            tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
+            tool_status.append(("Image Generation", False, "Omni Loop Portal or image provider API key"))
 
     # Video generation — opt-in via `clio tools` → Video Generation.
     # Only show the row when a plugin reports available so we don't badger

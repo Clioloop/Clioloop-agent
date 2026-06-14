@@ -4,6 +4,7 @@ import { rateLimit } from "@/lib/ratelimit";
 import {
   GATEWAY_VENDORS,
   checkGatewayEntitlement,
+  gatewayRequestCostMicros,
   recordGatewayUsage,
   vendorUpstreamKey,
   vendorUpstreamOrigin,
@@ -65,7 +66,8 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     );
   }
 
-  const denial = checkGatewayEntitlement(identity.user, vendor);
+  const costMicros = gatewayRequestCostMicros(vendor, req.method, path);
+  const denial = checkGatewayEntitlement(identity.user, vendor, costMicros);
   if (denial) {
     return NextResponse.json(
       { error: denial.error, message: denial.message },
@@ -110,7 +112,7 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     );
   }
 
-  recordGatewayUsage(identity.user.id, vendor);
+  recordGatewayUsage(identity.user.id, vendor, costMicros);
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {

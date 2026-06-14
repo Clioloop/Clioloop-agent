@@ -40,12 +40,12 @@ def test_fal_key_empty_is_unset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Actionable setup message when no FAL backend is reachable.
+# Actionable setup message when no image backend is reachable.
 # Regression for the silent-drop UX gap described in issue #2543.
 # ---------------------------------------------------------------------------
 
 
-def test_no_backend_message_mentions_fal_signup_and_plugins(monkeypatch):
+def test_no_backend_message_mentions_omni_loop_and_plugins(monkeypatch):
     from tools import image_generation_tool
 
     monkeypatch.setattr(
@@ -54,13 +54,12 @@ def test_no_backend_message_mentions_fal_signup_and_plugins(monkeypatch):
 
     msg = image_generation_tool._build_no_backend_setup_message()
 
-    assert "FAL_KEY" in msg
-    assert "https://fal.ai" in msg
-    # Plugin pointer so users on a stale image_gen.provider know where to look.
+    assert "Omni Loop Portal" in msg
+    assert "FAL_KEY" not in msg
     assert "clio tools" in msg or "clio plugins" in msg
 
 
-def test_no_backend_message_mentions_managed_gateway_when_enabled(monkeypatch):
+def test_no_backend_message_mentions_portal_gateway_when_enabled(monkeypatch):
     from tools import image_generation_tool
 
     monkeypatch.setattr(
@@ -69,8 +68,8 @@ def test_no_backend_message_mentions_managed_gateway_when_enabled(monkeypatch):
 
     msg = image_generation_tool._build_no_backend_setup_message()
 
-    assert "managed FAL gateway" in msg
-    assert "managed provider account" in msg or "clio setup" in msg
+    assert "Omni Loop Portal image gateway" in msg
+    assert "image generation" in msg
 
 
 def test_image_generate_tool_returns_actionable_error_when_no_backend(monkeypatch):
@@ -94,5 +93,20 @@ def test_image_generate_tool_returns_actionable_error_when_no_backend(monkeypatc
     )
 
     assert result["success"] is False
-    assert "https://fal.ai" in result["error"]
-    assert "FAL_KEY" in result["error"]
+    assert "Omni Loop Portal" in result["error"]
+    assert "FAL_KEY" not in result["error"]
+
+
+def test_image_generation_requirements_ignore_direct_fal_key(monkeypatch):
+    from tools import image_generation_tool
+    from agent import image_gen_registry
+    from clio_cli import plugins
+
+    monkeypatch.setenv("FAL_KEY", "fal-test")
+    monkeypatch.setattr(
+        image_generation_tool, "_resolve_omni_loop_image_gateway", lambda: None
+    )
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: None)
+    monkeypatch.setattr(image_gen_registry, "list_providers", lambda: [])
+
+    assert image_generation_tool.check_image_generation_requirements() is False

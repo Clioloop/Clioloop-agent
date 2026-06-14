@@ -69,19 +69,17 @@ class TestPluginPickerInjection:
         assert "Myimg" in names
         assert "myimg" in plugin_names
 
-    def test_fal_surfaced_alongside_other_plugins(self, monkeypatch):
+    def test_first_party_fal_and_clioloop_plugins_are_hidden(self, monkeypatch):
         from clio_cli import tools_config
 
-        # After #26241, FAL is itself a plugin (`plugins/image_gen/fal/`)
-        # and the hardcoded `TOOL_CATEGORIES["image_gen"]` FAL row is
-        # gone. The plugin-row builder therefore surfaces it like any
-        # other backend — no deduplication step needed.
         image_gen_registry.register_provider(_FakeProvider("fal"))
+        image_gen_registry.register_provider(_FakeProvider("clioloop"))
         image_gen_registry.register_provider(_FakeProvider("openai"))
 
         rows = tools_config._plugin_image_gen_providers()
         names = [r.get("image_gen_plugin_name") for r in rows]
-        assert "fal" in names
+        assert "fal" not in names
+        assert "clioloop" not in names
         assert "openai" in names
 
     def test_visible_providers_includes_plugins_for_image_gen(self, monkeypatch):
@@ -173,6 +171,14 @@ class TestConfigPrompt:
 
         assert tools_config._toolset_needs_configuration_prompt("image_gen", {}) is True
 
+    def test_image_gen_prompts_when_only_fal_key_is_available(self, monkeypatch, tmp_path):
+        from clio_cli import tools_config
+
+        monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+        monkeypatch.setenv("FAL_KEY", "fal-test")
+
+        assert tools_config._toolset_needs_configuration_prompt("image_gen", {}) is True
+
 
 class TestConfigWriting:
     def test_picking_plugin_provider_writes_provider_and_model(self, monkeypatch, tmp_path):
@@ -255,25 +261,50 @@ class TestConfigWriting:
         assert tools_config._is_provider_active(openai_row, config) is True
         assert tools_config._is_provider_active(managed_row, config) is False
 
-    def test_reconfiguring_fal_clears_plugin_provider(self, monkeypatch):
+    def test_configuring_managed_image_writes_omni_loop_provider(self, monkeypatch):
         from clio_cli import tools_config
 
-        monkeypatch.setattr(tools_config, "_prompt_choice", lambda *a, **kw: 0)
-        monkeypatch.setattr(tools_config, "_prompt", lambda *a, **kw: "")
         monkeypatch.setattr(
             tools_config,
-            "get_env_value",
-            lambda key: "fal-key" if key == "FAL_KEY" else "",
+            "get_managed_subscription_features",
+            lambda config, **kwargs: SimpleNamespace(
+                features={"image_gen": SimpleNamespace(managed_by_provider=True)}
+            ),
+        )
+        monkeypatch.setattr(
+            "clio_cli.portal_subscription.ensure_managed_provider_access",
+            lambda **kwargs: True,
         )
 
         config = {"image_gen": {"provider": "openai", "use_gateway": False}}
         provider_row = {
-            "name": "FAL.ai",
-            "env_vars": [{"key": "FAL_KEY", "prompt": "FAL API key"}],
-            "imagegen_backend": "fal",
+            "name": "Omni Loop Portal Subscription (Image Generation)",
+            "env_vars": [],
+            "managed_feature": "image_gen",
+            "imagegen_backend": "omni-loop",
         }
 
-        tools_config._reconfigure_provider(provider_row, config)
+        tools_config._configure_provider(provider_row, config)
 
-        assert config["image_gen"]["provider"] == "fal"
-        assert config["image_gen"]["use_gateway"] is False
+        assert config["image_gen"]["provider"] == "omni-loop"
+        assert config["image_gen"]["use_gateway"] is True
+        assert config["image_gen"]["model"] == "clioloop-local"
+
+    def test_legacy_clioloop_config_marks_managed_provider_active(self, monkeypatch):
+        from clio_cli import tools_config
+
+        monkeypatch.setattr(
+            tools_config,
+            "get_managed_subscription_features",
+            lambda config, **kwargs: SimpleNamespace(
+                features={"image_gen": SimpleNamespace(managed_by_provider=True)}
+            ),
+        )
+
+        config = {"image_gen": {"provider": "clioloop", "use_gateway": False}}
+        managed_row = {
+            "name": "Omni Loop Portal Subscription (Image Generation)",
+            "managed_feature": "image_gen",
+        }
+
+        assert tools_config._is_provider_active(managed_row, config) is True

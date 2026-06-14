@@ -63,7 +63,6 @@ export async function startCheckout(user: UserRow, planId: PlanId): Promise<Chec
     const session = await stripe().checkout.sessions.create({
       mode: "setup",
       customer: customerId,
-      payment_method_types: ["card"],
       success_url: `${base}/api/billing/confirm?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${base}/pricing?cancelled=1`,
       metadata: { olp_user_id: user.id, olp_plan: "free" },

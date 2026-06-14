@@ -18,6 +18,7 @@ interface AdminUser {
 }
 
 const eur = (m: number) => `€${(m / 1_000_000).toFixed(2)}`;
+const plans = ["free", "pro", "max", "max20x"];
 
 export default function AdminPage() {
   const router = useRouter();
@@ -41,11 +42,11 @@ export default function AdminPage() {
     reload();
   }, [reload]);
 
-  const act = async (action: string, userId: string) => {
+  const act = async (action: string, userId: string, extra: Record<string, string> = {}) => {
     await fetch("/api/admin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, user_id: userId }),
+      body: JSON.stringify({ action, user_id: userId, ...extra }),
     });
     reload();
   };
@@ -107,7 +108,33 @@ export default function AdminPage() {
                     )}{" "}
                     <button className="btn btn-ghost btn-sm" onClick={() => act("revoke_devices", u.id)} disabled={!u.devices}>
                       Revoke devices
-                    </button>
+                    </button>{" "}
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => act("verify_card", u.id)}
+                      disabled={!u.email_verified || !!u.card_verified}
+                      title={!u.email_verified ? "Email verification is required first." : undefined}
+                    >
+                      Verify card
+                    </button>{" "}
+                    <select
+                      value={u.plan}
+                      onChange={(event) => act("set_plan", u.id, { plan: event.target.value })}
+                      disabled={!u.email_verified}
+                      title={!u.email_verified ? "Email verification is required first." : "Change plan"}
+                      style={{
+                        background: "rgba(3, 15, 13, 0.72)",
+                        border: "1px solid var(--line)",
+                        borderRadius: 6,
+                        color: "var(--text)",
+                        fontSize: 12,
+                        padding: "7px 8px",
+                      }}
+                    >
+                      {plans.map((plan) => (
+                        <option key={plan} value={plan}>{plan}</option>
+                      ))}
+                    </select>
                   </td>
                 </tr>
               ))}
