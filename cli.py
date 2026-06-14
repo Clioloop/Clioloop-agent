@@ -4946,7 +4946,16 @@ class ClioCLI:
         if not self.model and resolved_provider:
             try:
                 from clio_cli.models import get_default_model_for_provider
-                _default = get_default_model_for_provider(resolved_provider)
+                # Free-tier managed accounts can only use free models — a paid
+                # silent default would 403. The tier check is cached + never raises.
+                _free_tier = False
+                if resolved_provider == "managed":
+                    try:
+                        from clio_cli.models import check_managed_free_tier
+                        _free_tier = check_managed_free_tier()
+                    except Exception:
+                        _free_tier = False
+                _default = get_default_model_for_provider(resolved_provider, free_tier=_free_tier)
                 if _default:
                     self.model = _default
                     logger.info(

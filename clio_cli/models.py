@@ -1170,8 +1170,14 @@ _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
     "managed": "deepseek/deepseek-v4-flash",
 }
 
+# Silent default for FREE-tier managed accounts. The paid cost-safe override
+# above would 403 (`model_not_in_plan`) for free accounts, so a missing model
+# must fall back to a free community model instead. Snapshot value — free
+# models drift; the interactive picker uses the live partition.
+_MANAGED_FREE_SILENT_DEFAULT = "nvidia/nemotron-3-super-120b-a12b:free"
 
-def get_default_model_for_provider(provider: str) -> str:
+
+def get_default_model_for_provider(provider: str, *, free_tier: bool = False) -> str:
     """Return a cost-safe default model for a provider, or "" if unknown.
 
     Used as a NON-INTERACTIVE fallback when a provider is configured but no
@@ -1185,7 +1191,14 @@ def get_default_model_for_provider(provider: str) -> str:
     providers carry an explicit low-cost override in
     ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
     auto-escalate to the flagship.
+
+    *free_tier* (managed provider only): when True, returns a free community
+    model — the paid cost-safe override would 403 for a free account. The
+    caller decides tier (this function stays pure / network-free); pass the
+    cached ``check_managed_free_tier()`` result.
     """
+    if free_tier and provider == "managed":
+        return _MANAGED_FREE_SILENT_DEFAULT
     models = _PROVIDER_MODELS.get(provider, [])
     override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
     if override and override in models:

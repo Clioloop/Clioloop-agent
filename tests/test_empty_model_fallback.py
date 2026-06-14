@@ -55,6 +55,28 @@ class TestGetDefaultModelForProvider:
         assert result == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
         assert result in _PROVIDER_MODELS["managed"]
 
+    def test_managed_free_tier_silent_default_is_a_free_model(self):
+        """A free-tier managed account can only use free models — the paid
+        cost-safe override would 403. With free_tier=True the silent default
+        must be a free (`:free`) model. Paid/default path is unchanged.
+        """
+        from clio_cli.models import (
+            _MANAGED_FREE_SILENT_DEFAULT,
+            _PROVIDER_SILENT_DEFAULT_OVERRIDES,
+            get_default_model_for_provider,
+        )
+
+        free_default = get_default_model_for_provider("managed", free_tier=True)
+        assert free_default == _MANAGED_FREE_SILENT_DEFAULT
+        assert free_default.endswith(":free"), "free-tier default must be a free model"
+        # free_tier only changes the managed provider…
+        assert get_default_model_for_provider("openai-codex", free_tier=True)
+        # …and the default (paid) path is untouched.
+        assert (
+            get_default_model_for_provider("managed", free_tier=False)
+            == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
+        )
+
     def test_override_falls_back_to_catalog_when_missing(self):
         """If an override model is no longer in the catalog, fall back to [0]
         rather than returning a stale/absent id."""

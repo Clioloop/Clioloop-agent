@@ -986,7 +986,15 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
     if not model and runtime_kwargs.get("provider"):
         try:
             from clio_cli.models import get_default_model_for_provider
-            model = get_default_model_for_provider(runtime_kwargs["provider"])
+            _prov = runtime_kwargs["provider"]
+            _free_tier = False
+            if _prov == "managed":
+                try:
+                    from clio_cli.models import check_managed_free_tier
+                    _free_tier = check_managed_free_tier()
+                except Exception:
+                    _free_tier = False
+            model = get_default_model_for_provider(_prov, free_tier=_free_tier)
         except Exception:
             pass
 

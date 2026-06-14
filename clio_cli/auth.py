@@ -6094,15 +6094,25 @@ def _prompt_model_selection(
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
     """
-    from clio_cli.models import _format_price_per_mtok
+    from clio_cli.models import _format_price_per_mtok, _is_model_free
 
     _unavailable = unavailable_models or []
 
-    # Reorder: current model first, then the rest (deduplicated)
-    ordered = []
-    if current_model and current_model in model_ids:
-        ordered.append(current_model)
-    for mid in model_ids:
+    def _is_free_model(mid: str) -> bool:
+        return bool(mid.endswith(":free") or (pricing and _is_model_free(mid, pricing)))
+
+    # Group free models first (a clear "free" section on top), then paid;
+    # within each group the current model floats to the front for convenience.
+    free_ids = [m for m in model_ids if _is_free_model(m)]
+    paid_ids = [m for m in model_ids if not _is_free_model(m)]
+
+    def _front(group: List[str]) -> List[str]:
+        if current_model and current_model in group:
+            return [current_model] + [m for m in group if m != current_model]
+        return group
+
+    ordered: List[str] = []
+    for mid in _front(free_ids) + _front(paid_ids):
         if mid not in ordered:
             ordered.append(mid)
 
@@ -6145,6 +6155,8 @@ def _prompt_model_selection(
             base = f"{mid:<{name_col}}{price_part}"
         else:
             base = mid
+        if _is_free_model(mid):
+            base += "  FREE"
         if mid == current_model:
             base += "  ← currently in use"
         return base

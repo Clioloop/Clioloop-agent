@@ -361,6 +361,13 @@ export interface ToolsConfigureResponse {
 
 // ── Model picker ─────────────────────────────────────────────────────
 
+export interface ModelPricing {
+  input: string
+  output: string
+  cache: string | null
+  free: boolean
+}
+
 export interface ModelOptionProvider {
   auth_type?: string
   authenticated?: boolean
@@ -371,6 +378,12 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** Per-model pricing keyed by model id (present when the picker requested pricing). */
+  pricing?: Record<string, ModelPricing>
+  /** managed provider only: whether the current account is on the free tier. */
+  free_tier?: boolean
+  /** managed provider only: paid models a free-tier user cannot select. */
+  unavailable_models?: string[]
 }
 
 export interface ModelOptionsResponse {

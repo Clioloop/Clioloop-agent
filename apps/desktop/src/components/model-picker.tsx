@@ -208,6 +208,41 @@ function ModelResults({
         }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
+        const isFree = (model: string) => provider.pricing?.[model]?.free ?? model.endsWith(':free')
+        const freeModels = models.filter(isFree)
+        const paidModels = models.filter(model => !isFree(model))
+
+        const renderModel = (model: string) => {
+          const isCurrent = model === currentModel && provider.slug === currentProvider
+          const price = provider.pricing?.[model]
+          const locked = unavailable.has(model)
+
+          return (
+            <CommandItem
+              className={cn(
+                'flex items-center gap-2 pl-6 font-mono',
+                isCurrent &&
+                  'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
+                locked && 'cursor-not-allowed opacity-45'
+              )}
+              disabled={locked}
+              key={`${provider.slug}:${model}`}
+              onSelect={() => {
+                if (!locked) {
+                  onSelectModel(provider, model)
+                }
+              }}
+              title={locked ? 'Upgrade your plan to use this model' : undefined}
+              value={`${provider.slug}:${model}`}
+            >
+              <span className="min-w-0 flex-1 truncate">{model}</span>
+              {locked && (
+                <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">🔒 Upgrade</span>
+              )}
+              <ModelPrice isCurrent={isCurrent} price={price} />
+            </CommandItem>
+          )
+        }
 
         return (
           <CommandGroup heading={<ProviderHeading provider={provider} />} key={provider.slug}>
@@ -218,38 +253,17 @@ function ModelResults({
                 </InlineNotice>
               </div>
             )}
-            {models.map(model => {
-              const isCurrent = model === currentModel && provider.slug === currentProvider
-              const price = provider.pricing?.[model]
-              const locked = unavailable.has(model)
-
-              return (
-                <CommandItem
-                  className={cn(
-                    'flex items-center gap-2 pl-6 font-mono',
-                    isCurrent &&
-                      'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
-                    locked && 'cursor-not-allowed opacity-45'
-                  )}
-                  disabled={locked}
-                  key={`${provider.slug}:${model}`}
-                  onSelect={() => {
-                    if (!locked) {
-                      onSelectModel(provider, model)
-                    }
-                  }}
-                  value={`${provider.slug}:${model}`}
-                >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
-                  {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">Pro</span>}
-                  <ModelPrice isCurrent={isCurrent} price={price} />
-                </CommandItem>
-              )
-            })}
-            {unavailable.size > 0 && (
-              <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
-                Some models are unavailable for the current provider or account.
-              </div>
+            {freeModels.length > 0 && (
+              <>
+                <SectionLabel label="Free models" />
+                {freeModels.map(renderModel)}
+              </>
+            )}
+            {paidModels.length > 0 && (
+              <>
+                <SectionLabel label={provider.free_tier ? 'Paid · upgrade to use' : 'Paid models'} />
+                {paidModels.map(renderModel)}
+              </>
             )}
           </CommandGroup>
         )
@@ -300,6 +314,15 @@ function LoadingResults() {
         </div>
       ))}
     </CommandGroup>
+  )
+}
+
+// Dim uppercase divider separating the Free and Paid model sections.
+function SectionLabel({ label }: { label: string }) {
+  return (
+    <div className="px-6 pb-1 pt-1.5 text-[0.6rem] font-semibold uppercase tracking-wider text-muted-foreground">
+      {label}
+    </div>
   )
 }
 

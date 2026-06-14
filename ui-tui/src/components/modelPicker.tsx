@@ -33,6 +33,8 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const [oauthError, setOauthError] = useState('')
   // Type-to-filter query, scoped per stage (cleared on stage change).
   const [filter, setFilter] = useState('')
+  // Transient hint shown when a free-tier user tries to pick a locked paid model.
+  const [modelHint, setModelHint] = useState('')
 
   const { stdout } = useStdout()
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
@@ -101,12 +103,25 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const allModels = useMemo(() => provider?.models ?? [], [provider])
 
   const filteredModels = useMemo(() => {
-    if (stage !== 'model' || !filter.trim()) {
-      return allModels
+    const base =
+      stage !== 'model' || !filter.trim() ? allModels : fuzzyRank(allModels, filter, m => m).map(r => r.item)
+
+    // Group free models first so they read as a clear section on top; preserve
+    // relative order within each group. Free = explicit pricing flag, else the
+    // OpenRouter `:free` id convention.
+    const free: string[] = []
+    const paid: string[] = []
+
+    for (const m of base) {
+      if (provider?.pricing?.[m]?.free ?? m.endsWith(':free')) {
+        free.push(m)
+      } else {
+        paid.push(m)
+      }
     }
 
-    return fuzzyRank(allModels, filter, m => m).map(r => r.item)
-  }, [allModels, filter, stage])
+    return [...free, ...paid]
+  }, [allModels, filter, stage, provider])
 
   const models = filteredModels
 
@@ -122,6 +137,11 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       setModelIdx(0)
     }
   }, [models.length, modelIdx])
+
+  // Clear the upgrade hint as soon as the user moves or changes context.
+  useEffect(() => {
+    setModelHint('')
+  }, [modelIdx, stage, filter])
 
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
@@ -398,6 +418,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       const model = models[modelIdx]
 
       if (provider && model) {
+        if ((provider.unavailable_models ?? []).includes(model)) {
+          setModelHint('🔒 Upgrade your plan to use this model')
+
+          return
+        }
+
         onSelect(
           `${model} --provider ${provider.slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
         )
@@ -716,8 +742,13 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
       </Text>
-      <Text color={t.color.label} wrap="truncate-end">
-        {provider?.warning ? `warning: ${provider.warning}` : ' '}
+      {provider?.free_tier ? (
+        <Text color={t.color.muted} wrap="truncate-end">
+          free models first · 🔒 = paid · upgrade to use
+        </Text>
+      ) : null}
+      <Text color={modelHint ? t.color.accent : t.color.label} wrap="truncate-end">
+        {modelHint || (provider?.warning ? `warning: ${provider.warning}` : ' ')}
       </Text>
       <Text color={t.color.muted} wrap="truncate-end">
         {offset > 0 ? ` ↑ ${offset} more` : ' '}
@@ -739,18 +770,22 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
           )
         }
 
+        const locked = (provider?.unavailable_models ?? []).includes(row)
+        const free = provider?.pricing?.[row]?.free ?? row.endsWith(':free')
+        const tag = locked ? ' 🔒' : free ? ' · free' : ''
         const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
 
         return (
           <Text
             bold={modelIdx === idx}
-            color={modelIdx === idx ? t.color.accent : t.color.muted}
+            color={modelIdx === idx ? t.color.accent : locked ? t.color.label : t.color.muted}
             inverse={modelIdx === idx}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
             wrap="truncate-end"
           >
             {prefix}
             {idx + 1}. {row}
+            {tag}
           </Text>
         )
       })}

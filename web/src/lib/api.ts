@@ -1589,6 +1589,17 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
+export interface ModelPricing {
+  /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
+  input: string;
+  /** Formatted $/Mtok output price. */
+  output: string;
+  /** Formatted $/Mtok cached-input price, or null when the model has none. */
+  cache: string | null;
+  /** True when the model costs nothing (free-tier eligible). */
+  free: boolean;
+}
+
 export interface ModelOptionProvider {
   name: string;
   slug: string;
@@ -1598,6 +1609,12 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean;
   source?: string;
   warning?: string;
+  /** Per-model pricing keyed by model id (present when the picker requested pricing). */
+  pricing?: Record<string, ModelPricing>;
+  /** managed provider only: whether the current account is on the free tier. */
+  free_tier?: boolean;
+  /** managed provider only: paid models a free-tier user cannot select (shown disabled). */
+  unavailable_models?: string[];
 }
 
 export interface ModelOptionsResponse {

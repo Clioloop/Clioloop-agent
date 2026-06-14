@@ -34,6 +34,13 @@ type CheckedState = boolean | "indeterminate";
  *    requiring an open chat PTY.
  */
 
+interface ModelPricing {
+  input: string;
+  output: string;
+  cache: string | null;
+  free: boolean;
+}
+
 interface ModelOptionProvider {
   name: string;
   slug: string;
@@ -41,6 +48,17 @@ interface ModelOptionProvider {
   total_models?: number;
   is_current?: boolean;
   warning?: string;
+  /** Per-model pricing keyed by model id (present when the picker requested pricing). */
+  pricing?: Record<string, ModelPricing>;
+  /** managed provider only: whether the current account is on the free tier. */
+  free_tier?: boolean;
+  /** managed provider only: paid models a free-tier user cannot select (shown disabled). */
+  unavailable_models?: string[];
+}
+
+/** Free signal shared by every picker: explicit pricing flag, else the `:free` id convention. */
+function isFreeModelEntry(provider: ModelOptionProvider | null, modelId: string): boolean {
+  return provider?.pricing?.[modelId]?.free ?? modelId.endsWith(":free");
 }
 
 interface ModelOptionsResponse {
@@ -382,6 +400,7 @@ function ProviderColumn({
               <div className="flex items-center gap-1.5">
                 <span className="font-medium truncate">{p.name}</span>
                 {p.is_current && <CurrentTag />}
+                <TierBadge freeTier={p.free_tier} />
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
@@ -442,32 +461,128 @@ function ModelColumn({
             : "no models listed for this provider"}
         </div>
       ) : (
-        models.map(({ model: m, positions }) => {
-          const active = m === selectedModel;
-          const isCurrent =
-            m === currentModel && provider.slug === currentProviderSlug;
+        (() => {
+          const unavailable = new Set(provider.unavailable_models ?? []);
+          const freeRows = models.filter((m) => isFreeModelEntry(provider, m.model));
+          const paidRows = models.filter((m) => !isFreeModelEntry(provider, m.model));
+
+          const renderRow = ({
+            model: m,
+            positions,
+          }: {
+            model: string;
+            positions: number[];
+          }) => {
+            const active = m === selectedModel;
+            const isCurrent =
+              m === currentModel && provider.slug === currentProviderSlug;
+            const locked = unavailable.has(m);
+
+            return (
+              <ListItem
+                key={m}
+                active={active}
+                disabled={locked}
+                title={locked ? "Upgrade your plan to use this model" : undefined}
+                onClick={() => !locked && onSelect(m)}
+                onDoubleClick={() => !locked && onConfirm(m)}
+                className={cn("px-3 py-1.5 text-xs font-mono", locked && "opacity-45")}
+              >
+                <Check
+                  className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
+                />
+                <span className="flex-1 truncate">
+                  <HighlightedText text={m} positions={positions} />
+                </span>
+                {isCurrent && <CurrentTag />}
+                <ModelPriceTag price={provider.pricing?.[m]} locked={locked} />
+              </ListItem>
+            );
+          };
 
           return (
-            <ListItem
-              key={m}
-              active={active}
-              onClick={() => onSelect(m)}
-              onDoubleClick={() => onConfirm(m)}
-              className="px-3 py-1.5 text-xs font-mono"
-            >
-              <Check
-                className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
-              />
-              <span className="flex-1 truncate">
-                <HighlightedText text={m} positions={positions} />
-              </span>
-              {isCurrent && <CurrentTag />}
-            </ListItem>
+            <>
+              {freeRows.length > 0 && (
+                <>
+                  <SectionHeader label="Free models" />
+                  {freeRows.map(renderRow)}
+                </>
+              )}
+              {paidRows.length > 0 && (
+                <>
+                  <SectionHeader
+                    label={provider.free_tier ? "Paid · upgrade to use" : "Paid models"}
+                  />
+                  {paidRows.map(renderRow)}
+                </>
+              )}
+            </>
           );
-        })
+        })()
       )}
     </div>
   );
+}
+
+/** A dim uppercase section divider inside the model list. */
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div className="px-3 pt-2 pb-1 text-display text-[0.6rem] uppercase tracking-wider text-muted-foreground">
+      {label}
+    </div>
+  );
+}
+
+/** Compact price / FREE / 🔒 Upgrade tag for a model row. */
+function ModelPriceTag({
+  price,
+  locked,
+}: {
+  price?: ModelPricing;
+  locked?: boolean;
+}) {
+  if (locked) {
+    return (
+      <span className="shrink-0 text-[0.62rem] uppercase tracking-wide text-muted-foreground">
+        🔒 Upgrade
+      </span>
+    );
+  }
+  if (!price || (!price.input && !price.output)) return null;
+  if (price.free) {
+    return (
+      <span className="shrink-0 rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+        Free
+      </span>
+    );
+  }
+  return (
+    <span
+      className="shrink-0 text-[0.66rem] tabular-nums text-muted-foreground"
+      title="Input / Output price per million tokens"
+    >
+      {price.input || "?"} / {price.output || "?"}
+    </span>
+  );
+}
+
+/** managed-provider account tier chip shown beside the provider name. */
+function TierBadge({ freeTier }: { freeTier?: boolean }) {
+  if (freeTier === true) {
+    return (
+      <span className="shrink-0 rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.55rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+        Free tier
+      </span>
+    );
+  }
+  if (freeTier === false) {
+    return (
+      <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-0.5 text-[0.55rem] font-semibold uppercase tracking-wide text-primary">
+        Pro
+      </span>
+    );
+  }
+  return null;
 }
 
 function CurrentTag() {
