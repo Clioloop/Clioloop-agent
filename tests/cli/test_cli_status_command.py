@@ -78,12 +78,29 @@ def test_show_session_status_prints_gateway_style_summary():
     assert "Session ID: session-123" in printed
     assert "Path: ~/.clio" in printed
     assert "Title: My titled session" in printed
-    assert "Model: openai/gpt-5.4 (openai)" in printed
+    # Provider renders via the canonical display label. In this app "openai" is
+    # proxied through OpenRouter, so its label is "OpenRouter" (matching the
+    # model picker); the managed subscription renders as "Omni Loop Portal".
+    assert "Model: openai/gpt-5.4 (OpenRouter)" in printed
     assert "Tokens: 321" in printed
     assert "Agent Running: No" in printed
     _, kwargs = cli_obj.console.print.call_args
     assert kwargs.get("highlight") is False
     assert kwargs.get("markup") is False
+
+
+def test_show_session_status_brands_managed_provider_as_portal():
+    """The managed subscription shows as 'Omni Loop Portal', not the slug."""
+    cli_obj = _make_cli()
+    cli_obj.provider = "managed"
+    cli_obj.model = "kimi-k2.7-code"
+
+    with patch("cli.display_clio_home", return_value="~/.clio"):
+        cli_obj._show_session_status()
+
+    printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
+    assert "Model: kimi-k2.7-code (Omni Loop Portal)" in printed
+    assert "(managed)" not in printed
 
 
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):

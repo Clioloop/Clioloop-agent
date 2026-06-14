@@ -6193,7 +6193,9 @@ class ClioCLI:
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
             toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim {separator_color}]·[/] [dim]provider: {self.provider}[/]"
+        from clio_cli.providers import get_label
+        provider_display = get_label(self.provider) if self.provider else self.provider
+        provider_info = f" [dim {separator_color}]·[/] [dim]provider: {provider_display}[/]"
         if self._provider_source:
             provider_info += f" [dim {separator_color}]·[/] [dim]auth: {self._provider_source}[/]"
 
@@ -6236,6 +6238,8 @@ class ClioCLI:
         agent = getattr(self, "agent", None)
         total_tokens = getattr(agent, "session_total_tokens", 0) or 0
         provider = getattr(self, "provider", None) or "unknown"
+        from clio_cli.providers import get_label
+        provider_display = get_label(provider) if provider != "unknown" else provider
         model = getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
 
@@ -6248,7 +6252,7 @@ class ClioCLI:
         if title:
             lines.append(f"Title: {title}")
         lines.extend([
-            f"Model: {model} ({provider})",
+            f"Model: {model} ({provider_display})",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
@@ -14763,7 +14767,10 @@ class ClioCLI:
                         label += "  ← current"
                     choices.append(label)
                 choices.append("Cancel")
-                hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+                from clio_cli.providers import get_label
+                _cur_prov = state.get('current_provider', 'unknown')
+                _cur_prov_display = get_label(_cur_prov) if _cur_prov and _cur_prov != 'unknown' else _cur_prov
+                hint = f"Current: {state.get('current_model', 'unknown')} on {_cur_prov_display}"
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
