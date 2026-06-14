@@ -206,6 +206,62 @@ def _raise_web_backend_configuration_error() -> None:
     raise ValueError(message)
 
 
+def _route_firecrawl_client_through_gateway(client: Any) -> None:
+    """Make a gateway-backed Firecrawl client preserve the gateway sub-path.
+
+    The Firecrawl v2 SDK builds request URLs with
+    ``urljoin(api_url + "/", "/v2/search")``. Because the endpoints are
+    root-relative (leading ``/v2/...``), ``urljoin`` DISCARDS any path on the
+    base URL — so our managed-gateway base ``{portal}/api/gateway/firecrawl``
+    collapses to ``{portal}/v2/search`` (a 404), never reaching the proxy.
+
+    Override the http client's ``_build_url`` to concatenate instead, so
+    endpoints land on ``{portal}/api/gateway/firecrawl/v2/search`` which the
+    portal forwards to ``https://api.firecrawl.dev/v2/search``. Covers search,
+    extract (scrape), and map — they all route through ``client.http_client``.
+
+    No-op when no real ``_build_url`` is reachable (e.g. a test ``Mock``), so
+    unit tests that patch ``tools.web_tools.Firecrawl`` are unaffected.
+
+    The Firecrawl v4 unified client exposes its v2 ``HttpClient`` at
+    ``client._v2_client.http_client`` (aliased via ``client.v2._client``); the
+    search/scrape/extract/map methods the provider calls all route through it.
+    """
+    # Candidate http-client locations across SDK shapes (deduped by identity).
+    candidates = []
+    for path in (("http_client",), ("_v2_client", "http_client"), ("v2", "_client", "http_client")):
+        obj: Any = client
+        for attr in path:
+            obj = getattr(obj, attr, None)
+            if obj is None:
+                break
+        if obj is not None:
+            candidates.append(obj)
+
+    seen: set[int] = set()
+    patched = 0
+    for http in candidates:
+        if id(http) in seen or not callable(getattr(type(http), "_build_url", None)):
+            continue
+        seen.add(id(http))
+
+        def _build_url(endpoint: str, _http: Any = http) -> str:
+            base = str(getattr(_http, "api_url", "")).rstrip("/")
+            return f"{base}/{str(endpoint).lstrip('/')}"
+
+        try:
+            http._build_url = _build_url  # instance override (unbound — takes endpoint only)
+            patched += 1
+        except Exception:  # noqa: BLE001 — never block client creation on this
+            logger.debug("could not install firecrawl gateway URL builder", exc_info=True)
+
+    if patched == 0:
+        # Real SDK clients always expose a patchable http client; 0 means a test
+        # double (Mock) or an SDK shape change. The real-SDK regression test
+        # (tests/tools/test_firecrawl_gateway_url.py) guards the latter.
+        logger.debug("firecrawl gateway URL builder not installed (no patchable http client)")
+
+
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
@@ -227,6 +283,7 @@ def _get_firecrawl_client() -> Any:
     import tools.web_tools as _wt
 
     direct_config = _get_direct_firecrawl_config()
+    is_gateway = False
     if direct_config is not None and not _wt.prefers_gateway("web"):
         kwargs, client_config = direct_config
     else:
@@ -249,6 +306,7 @@ def _get_firecrawl_client() -> Any:
             kwargs["api_url"],
             managed_gateway.managed_user_token,
         )
+        is_gateway = True
 
     cached = getattr(_wt, "_firecrawl_client", None)
     cached_config = getattr(_wt, "_firecrawl_client_config", None)
@@ -257,9 +315,15 @@ def _get_firecrawl_client() -> Any:
 
     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
-    _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+    client = _wt.Firecrawl(**kwargs)
+    if is_gateway:
+        # The managed gateway base is a sub-path ({portal}/api/gateway/firecrawl);
+        # rewrite the SDK's URL builder so endpoints land on the gateway proxy
+        # instead of the portal root. See _route_firecrawl_client_through_gateway.
+        _route_firecrawl_client_through_gateway(client)
+    _wt._firecrawl_client = client
     _wt._firecrawl_client_config = client_config
-    return _wt._firecrawl_client
+    return client
 
 
 def _reset_client_for_tests() -> None:
