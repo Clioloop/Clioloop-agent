@@ -223,28 +223,28 @@ export default function DocsPage() {
                 <tr>
                   <td>Free</td>
                   <td>€0 (card verification)</td>
-                  <td>Community :free models</td>
+                  <td>1 free model</td>
                   <td>Web search</td>
                   <td>Starter allowance</td>
                 </tr>
                 <tr>
                   <td>Pro</td>
                   <td>€20/mo</td>
-                  <td>All 300+ models</td>
+                  <td>Large open-model catalog</td>
                   <td>Web · image · TTS · browser</td>
                   <td>Baseline (1×)</td>
                 </tr>
                 <tr>
                   <td>Max</td>
                   <td>€100/mo</td>
-                  <td>All 300+ models</td>
+                  <td>300+ frontier models</td>
                   <td>Everything + video</td>
                   <td>5× Pro</td>
                 </tr>
                 <tr>
                   <td>Max 10x</td>
                   <td>€250/mo</td>
-                  <td>All 300+ models</td>
+                  <td>300+ frontier models</td>
                   <td>Everything + video</td>
                   <td>10× Pro</td>
                 </tr>

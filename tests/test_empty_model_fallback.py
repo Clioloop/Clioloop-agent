@@ -55,27 +55,32 @@ class TestGetDefaultModelForProvider:
         assert result == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
         assert result in _PROVIDER_MODELS["managed"]
 
-    def test_managed_free_tier_silent_default_is_a_free_model(self):
-        """A free-tier managed account can only use free models — the paid
-        cost-safe override would 403. With free_tier=True the silent default
-        must be a free (`:free`) model. Paid/default path is unchanged.
+    def test_managed_free_tier_silent_default_is_the_free_model(self):
+        """A free-tier (or unset-model) managed account must default to the
+        portal's free model (kimi-k2.7-code) — a paid/OpenRouter default would
+        403 for free and pro accounts.
         """
         from clio_cli.models import (
             _MANAGED_FREE_SILENT_DEFAULT,
+            _PROVIDER_MODELS,
             _PROVIDER_SILENT_DEFAULT_OVERRIDES,
             get_default_model_for_provider,
         )
 
+        assert _MANAGED_FREE_SILENT_DEFAULT == "kimi-k2.7-code"
         free_default = get_default_model_for_provider("managed", free_tier=True)
         assert free_default == _MANAGED_FREE_SILENT_DEFAULT
-        assert free_default.endswith(":free"), "free-tier default must be a free model"
-        # free_tier only changes the managed provider…
-        assert get_default_model_for_provider("openai-codex", free_tier=True)
-        # …and the default (paid) path is untouched.
+        # It is a bare (open-model) id — never a paid OpenRouter `vendor/model` id.
+        assert "/" not in free_default
+        # The default (free_tier omitted) managed override is also the free model.
         assert (
             get_default_model_for_provider("managed", free_tier=False)
             == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
+            == "kimi-k2.7-code"
         )
+        assert "kimi-k2.7-code" in _PROVIDER_MODELS["managed"]
+        # free_tier only changes the managed provider…
+        assert get_default_model_for_provider("openai-codex", free_tier=True)
 
     def test_override_falls_back_to_catalog_when_missing(self):
         """If an override model is no longer in the catalog, fall back to [0]

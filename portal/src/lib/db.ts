@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_month ON usage_events(user_id, month);
 
+-- Per-user daily counter for the one free model (kimi-k2.7-code). The free
+-- daily allotment is shared across ALL tiers: free users are blocked past it,
+-- pro/max keep using the model but charged. Keyed by UTC day; old rows pruned.
+CREATE TABLE IF NOT EXISTS free_model_requests (
+  user_id  TEXT NOT NULL,
+  day      TEXT NOT NULL,        -- 'YYYY-MM-DD' (UTC)
+  count    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day)
+);
+
 -- Single-use email action tokens (verification / password reset),
 -- stored hashed like every other credential.
 CREATE TABLE IF NOT EXISTS action_tokens (
@@ -142,6 +152,30 @@ export function now(): number {
 
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
+}
+
+/** UTC calendar day, 'YYYY-MM-DD'. */
+export function utcDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** How many free-model (kimi-k2.7-code) requests this user has made today (UTC). */
+export function freeModelDayCount(userId: string, day = utcDay()): number {
+  const row = getDb()
+    .prepare("SELECT count FROM free_model_requests WHERE user_id = ? AND day = ?")
+    .get(userId, day) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+/** Increment today's free-model counter for a user; prunes old rows opportunistically. */
+export function incrFreeModelDay(userId: string, day = utcDay()): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO free_model_requests (user_id, day, count) VALUES (?, ?, 1)
+     ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1`,
+  ).run(userId, day);
+  // Best-effort cleanup of stale days so the table stays tiny.
+  db.prepare("DELETE FROM free_model_requests WHERE day < ?").run(day);
 }
 
 export interface UserRow {

@@ -411,8 +411,8 @@ export default function LandingPage() {
             <span className="eyebrow">∞ start looping</span>
             <h2 style={{ marginTop: 18 }}>Give your agent the whole universe</h2>
             <p>
-              Start free with community models and web search, or go Pro for the
-              frontier and the full Tool Gateway. Cancel anytime.
+              Start free with a free model and web search, or go Pro for many more
+              models and the full Tool Gateway. Cancel anytime.
             </p>
             <div className="hero-actions">
               <Link href="/pricing" className="btn btn-primary btn-lg">

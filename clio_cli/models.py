@@ -150,42 +150,31 @@ def _xai_curated_models() -> list[str]:
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    # Offline fallback only — the live portal /api/v1/models is authoritative and
+    # tier-filtered (free → free model; pro → open models; max → +frontier). This
+    # snapshot mixes frontier (Max) and open models; the free model is last so the
+    # silent-default invariants hold (override is in-list and not index 0).
     "managed": [
-        # Anthropic
+        # Frontier (Max) — OpenRouter `vendor/model` ids.
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-haiku-4.5",
-        # OpenAI
         "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-mini",
-        # Google
         "google/gemini-3-pro-preview",
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3.5-flash",
-        # xAI
         "x-ai/grok-4.3",
-        # DeepSeek
-        "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-flash",
-        # Qwen
-        "qwen/qwen3.7-max",
-        "qwen/qwen3.7-plus",
-        "qwen/qwen3.6-35b-a3b",
-        # MoonshotAI
-        "moonshotai/kimi-k2.6",
-        # MiniMax
-        "minimax/minimax-m3",
-        # Z-AI
-        "z-ai/glm-5.1",
-        # Xiaomi
-        "xiaomi/mimo-v2.5-pro",
-        # Tencent
-        "tencent/hy3-preview",
-        # StepFun
-        "stepfun/step-3.7-flash",
-        # NVIDIA
-        "nvidia/nemotron-3-super-120b-a12b",
+        # Open models (Pro + Max) — bare ids, priced at OpenRouter-equivalent rates.
+        "qwen3-coder:480b",
+        "kimi-k2:1t",
+        "deepseek-v3.1:671b",
+        "glm-4.6",
+        "gpt-oss:120b",
+        "qwen3-next:80b",
+        "minimax-m2",
+        "gpt-oss:20b",
+        "gemma3:27b",
+        "qwen3-vl:235b-instruct",
+        "nemotron-3-super",
+        # Free model (every tier).
+        "kimi-k2.7-code",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -1167,14 +1156,16 @@ _PROVIDER_ALIASES = {
 # in clio_cli/web_server.py and ``partition_managed_models_by_tier`` — which can
 # hit the Portal; this fallback must stay cheap and network-free.
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    "managed": "deepseek/deepseek-v4-flash",
+    # The portal's free model: works for every tier (free up to the daily
+    # allotment, then charged for pro/max) and is cost-safe as a silent default.
+    "managed": "kimi-k2.7-code",
 }
 
-# Silent default for FREE-tier managed accounts. The paid cost-safe override
-# above would 403 (`model_not_in_plan`) for free accounts, so a missing model
-# must fall back to a free community model instead. Snapshot value — free
-# models drift; the interactive picker uses the live partition.
-_MANAGED_FREE_SILENT_DEFAULT = "nvidia/nemotron-3-super-120b-a12b:free"
+# Silent default for FREE-tier managed accounts. A paid/OpenRouter default would
+# 403 (`model_not_in_plan`) for free (and pro) accounts, so a missing model must
+# fall back to the portal's free model. The interactive picker uses the live
+# tier-filtered catalog from the portal.
+_MANAGED_FREE_SILENT_DEFAULT = "kimi-k2.7-code"
 
 
 def get_default_model_for_provider(provider: str, *, free_tier: bool = False) -> str:

@@ -174,9 +174,9 @@ export default function Dashboard() {
               </div>
               {me.plan.free_models_only && (
                 <p style={{ color: "var(--text-faint)", fontSize: 13, marginTop: 12 }}>
-                  The Free plan includes community{" "}
-                  <code style={{ color: "var(--accent-bright)" }}>:free</code> models
-                  only. <Link href="/pricing">Upgrade</Link> for the frontier catalog.
+                  The Free plan includes one free model.{" "}
+                  <Link href="/pricing">Upgrade</Link> for many more models and the
+                  frontier catalog.
                 </p>
               )}
             </div>

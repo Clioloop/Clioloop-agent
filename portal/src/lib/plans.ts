@@ -22,7 +22,9 @@ export interface Plan {
   priceEur: number;
   /** Monthly inference allowance, in credit micros (1e6 = €1 upstream). */
   monthlyCreditsMicros: number;
-  /** Free tier only gets `:free` OpenRouter models. */
+  /** Legacy flag (kept for compatibility). Tier model access is now decided by
+   *  `modelAllowedForPlan` in lib/ollama.ts: free → the one free model; pro →
+   *  open-model catalog; max → everything incl. OpenRouter. */
   freeModelsOnly: boolean;
   /** Requires a verified card on file before inference is allowed. */
   requiresCardVerification: boolean;
@@ -42,9 +44,9 @@ export const PLANS: Record<PlanId, Plan> = {
     freeModelsOnly: true,
     requiresCardVerification: true,
     services: ["web"],
-    tagline: "Try Clioloop with free community models",
+    tagline: "Try Clioloop with a free model",
     features: [
-      "Free community models",
+      "A capable free model",
       "Web search through the gateway",
       "1 connected device",
       "Card verification required — never charged",
@@ -58,9 +60,9 @@ export const PLANS: Record<PlanId, Plan> = {
     freeModelsOnly: false,
     requiresCardVerification: false,
     services: ["web", "browser", "image_gen", "tts"],
-    tagline: "Every frontier model, one subscription",
+    tagline: "Many more models, one subscription",
     features: [
-      "300+ frontier models — Claude, GPT, Gemini, Grok",
+      "Access to a large open-model catalog",
       "Web search · image gen · Supertonic TTS · cloud browser",
       "Unlimited devices",
       "Usage dashboard",
@@ -76,8 +78,9 @@ export const PLANS: Record<PlanId, Plan> = {
     freeModelsOnly: false,
     requiresCardVerification: false,
     services: ["web", "browser", "image_gen", "video_gen", "tts"],
-    tagline: "5× Pro usage for daily autonomous loops",
+    tagline: "300+ frontier models — 5× Pro usage",
     features: [
+      "300+ frontier models — Claude, GPT, Gemini, Grok",
       "Everything in Pro",
       "5× Pro monthly usage",
       "Video generation",
