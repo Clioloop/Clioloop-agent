@@ -712,6 +712,60 @@ class TestReasoningStreaming:
         assert response.choices[0].message.content == "The answer is 42"
 
 
+class TestFusionDraftSuppression:
+    """While a Fusion draft (work/revise) turn runs, the agent hides the draft
+    text + reasoning from the chat but still surfaces interim commentary and
+    tool actions (see run_agent.AIAgent._fusion_hide_draft)."""
+
+    def _agent(self, **cbs):
+        from run_agent import AIAgent
+        return AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            **cbs,
+        )
+
+    def test_stream_and_reasoning_suppressed_when_hiding_draft(self):
+        text, reasoning = [], []
+        agent = self._agent(
+            stream_delta_callback=lambda t: text.append(t),
+            reasoning_callback=lambda t: reasoning.append(t),
+        )
+
+        # Default (no flag): both channels deliver.
+        agent._fire_stream_delta("draft text")
+        agent._fire_reasoning_delta("thinking")
+        assert text == ["draft text"]
+        assert reasoning == ["thinking"]
+
+        # Draft turn: both channels are silenced.
+        text.clear()
+        reasoning.clear()
+        agent._fusion_hide_draft = True
+        agent._fire_stream_delta("the hidden draft")
+        agent._fire_reasoning_delta("hidden thinking")
+        assert text == []
+        assert reasoning == []
+
+        # Flag cleared: delivery resumes.
+        agent._fusion_hide_draft = False
+        agent._fire_stream_delta("final answer")
+        assert text == ["final answer"]
+
+    def test_interim_commentary_still_fires_when_hiding_draft(self):
+        seen = []
+        agent = self._agent(
+            interim_assistant_callback=lambda visible, already_streamed=False: seen.append(visible),
+        )
+        agent._fusion_hide_draft = True
+        agent._emit_interim_assistant_message({"role": "assistant", "content": "Let me read the config."})
+        assert seen == ["Let me read the config."]
+
+
 # ── Test: _has_stream_consumers ──────────────────────────────────────────
 
 

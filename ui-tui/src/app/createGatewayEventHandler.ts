@@ -488,11 +488,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         // Fusion: the main model's work + final answer render through the
         // normal message stream. Here we surface the otherwise-invisible
-        // reviewer step: a persistent line per round when reviewers report a
-        // decision (critique/approved); planning/working/finalizing stay as
+        // panel steps: a "being reviewed" line when the draft is shipped to the
+        // reviewers, then a persistent line per round when reviewers report a
+        // decision (critique/approved). planning/working/finalizing stay as
         // transient status.
         if (p.kind === 'fusion') {
-          if (p.phase === 'critique' || p.phase === 'approved') {
+          if (p.phase === 'reviewing') {
+            // Status label only — never the draft or reviewer internals.
+            sys(`🔍 ${p.text}`)
+          } else if (p.phase === 'critique' || p.phase === 'approved') {
             const head = p.phase === 'approved' ? '✅ ' : '📝 '
             sys(p.detail ? `${head}${p.text}\n${p.detail}` : `${head}${p.text}`)
           }

@@ -644,11 +644,23 @@ def run_fusion_turn(
             turns = 0
             while action in {"work", "revise"} and turns < _MAX_LOCAL_TURNS:
                 turns += 1
-                draft_result = _run_local_turn(
-                    str(data.get("message") or ""),
-                    internal=True,
-                    sc=(work_stream_callback or stream_callback) if action == "work" else None,
-                )
+                # Hide the main model's *draft* answer + reasoning from the chat
+                # for this work/revise turn — the user should see only the
+                # tool-call actions and interim commentary. The draft itself is
+                # handed to the reviewers, not shown (see
+                # run_agent._fusion_hide_draft). Always cleared in finally so the
+                # later finalize turn streams the fused answer normally.
+                with contextlib.suppress(Exception):
+                    agent._fusion_hide_draft = True
+                try:
+                    draft_result = _run_local_turn(
+                        str(data.get("message") or ""),
+                        internal=True,
+                        sc=(work_stream_callback or stream_callback) if action == "work" else None,
+                    )
+                finally:
+                    with contextlib.suppress(Exception):
+                        agent._fusion_hide_draft = False
                 last_draft = str((draft_result or {}).get("final_response") or "").strip()
                 resp = client.post(
                     f"{base}/api/v1/fusion/step",

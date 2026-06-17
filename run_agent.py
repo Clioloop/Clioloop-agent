@@ -3768,10 +3768,14 @@ class AIAgent:
         # turned out not to be a tag prefix should reach the UI.  Then
         # flush the context scrubber.  Order matters — the think
         # scrubber's output feeds into the context scrubber's state.
+        # During a Fusion draft turn the visible-text channels are suppressed,
+        # so we still drain the scrubbers (to clear their state for the next
+        # call) but never deliver the flushed tails to the callbacks.
+        hide_draft = self._fusion_draft_is_hidden()
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
             think_tail = think_scrubber.flush()
-            if think_tail:
+            if think_tail and not hide_draft:
                 # Route the tail through the context scrubber too so a
                 # memory-context span straddling the final boundary is
                 # still caught.
@@ -3792,7 +3796,7 @@ class AIAgent:
         scrubber = getattr(self, "_stream_context_scrubber", None)
         if scrubber is not None:
             tail = scrubber.flush()
-            if tail:
+            if tail and not hide_draft:
                 callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                 for cb in callbacks:
                     try:
@@ -3841,8 +3845,26 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
+    def _fusion_draft_is_hidden(self) -> bool:
+        """True while a Fusion *draft* (work/revise) turn is running.
+
+        The server-side Fusion panel hands the main model's draft answer to the
+        reviewers; the user should never see that draft (or its reasoning) in the
+        chat — only the tool-call actions and the interim commentary that precede
+        them. ``agent/fusion_engine.run_fusion_turn`` sets the ``_fusion_hide_draft``
+        flag around the work/revise local turns; the visible-text channels honour
+        it here. The interim-commentary and tool channels are intentionally left
+        alone, and the flag is off for the final synthesizer turn so the fused
+        answer streams normally.
+        """
+        return bool(getattr(self, "_fusion_hide_draft", False))
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # Fusion draft turn: suppress the live draft text — only tool actions and
+        # interim commentary should reach the chat (see _fusion_draft_is_hidden).
+        if self._fusion_draft_is_hidden():
+            return
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking
@@ -3896,6 +3918,9 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        # Fusion draft turn: the draft's reasoning is internal — hide it.
+        if self._fusion_draft_is_hidden():
+            return
         cb = self.reasoning_callback
         if cb is not None:
             try:

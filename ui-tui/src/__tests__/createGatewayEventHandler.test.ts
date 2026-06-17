@@ -132,6 +132,36 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
   })
 
+  it('surfaces the fusion "being reviewed" step as a persistent system line', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'fusion', phase: 'reviewing', text: 'Reviewing draft (2 reviewers)…' },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('🔍 Reviewing draft (2 reviewers)…')
+  })
+
+  it('surfaces a fusion critique with reviewer notes; planning stays transient', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { detail: 'Missing edge case X.', kind: 'fusion', phase: 'critique', text: 'Reviewer 1' },
+      type: 'status.update'
+    } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('📝 Reviewer 1\nMissing edge case X.')
+
+    ctx.system.sys.mockClear()
+    onEvent({
+      payload: { kind: 'fusion', phase: 'planning', text: 'Planning route…' },
+      type: 'status.update'
+    } as any)
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

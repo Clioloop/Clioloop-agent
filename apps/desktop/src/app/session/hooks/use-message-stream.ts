@@ -941,13 +941,24 @@ export function useMessageStream({
 
           if (
             fusion?.kind === 'fusion' &&
-            (fusion.phase === 'critique' || fusion.phase === 'approved')
+            (fusion.phase === 'reviewing' ||
+              fusion.phase === 'critique' ||
+              fusion.phase === 'approved')
           ) {
-            const head = fusion.phase === 'approved' ? '✅ ' : '📝 '
+            const head =
+              fusion.phase === 'approved'
+                ? '✅ '
+                : fusion.phase === 'reviewing'
+                  ? '🔍 '
+                  : '📝 '
 
-            const body = fusion.detail
-              ? `${head}${fusion.text ?? ''}\n\n${fusion.detail}`
-              : `${head}${fusion.text ?? ''}`
+            // The "being reviewed" bubble shows only the status label — never
+            // the draft or the reviewers' internals. Critique/approval carry the
+            // reviewer notes in `detail`.
+            const body =
+              fusion.phase !== 'reviewing' && fusion.detail
+                ? `${head}${fusion.text ?? ''}\n\n${fusion.detail}`
+                : `${head}${fusion.text ?? ''}`
 
             updateSessionState(sessionId, state => ({
               ...state,

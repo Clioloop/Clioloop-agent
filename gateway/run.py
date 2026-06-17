@@ -18503,7 +18503,13 @@ class GatewayRunner:
                         _round = getattr(_ev, "round", 0) or 0
                         if _phase in ("reviewing", "critique", "approved"):
                             _key = f"{_base}:review:{_round}"
-                            _content = _text if not _detail else f"{_text}\n\n{_detail}"
+                            # The "being reviewed" confirmation shows only the
+                            # status label — never the draft or reviewer
+                            # internals. Critique/approval carry reviewer notes.
+                            if _phase == "reviewing":
+                                _content = _text
+                            else:
+                                _content = _text if not _detail else f"{_text}\n\n{_detail}"
                         else:
                             _key = f"{_base}:plan"
                             _content = _text

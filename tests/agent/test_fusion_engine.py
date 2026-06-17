@@ -131,6 +131,9 @@ class FakeAgent:
             "message": message,
             "kwargs": kwargs,
             "tool_names": [t["function"]["name"] for t in self.tools],
+            # Snapshot the draft-suppression flag as seen by the local turn so
+            # tests can assert it is on only for work/revise and off for finalize.
+            "hide_draft": bool(getattr(self, "_fusion_hide_draft", False)),
         })
         if kwargs.get("internal_turn"):
             return {"final_response": "WORK DRAFT"}
@@ -225,6 +228,44 @@ def test_full_protocol_start_work_finalize(wire):
     assert any("/step" in url and body.get("draft") == "WORK DRAFT"
                for url, body in state["client"].requests)
     assert "planning" in progress_phases
+
+
+def test_draft_is_hidden_during_work_but_not_finalize(wire):
+    install, state = wire
+    agent = FakeAgent()
+    install([
+        FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
+        FakeResp(200, {"action": "finalize", "message": "F", "hide_image_tool": False, "events": []}),
+    ])
+    fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
+    # Work turn ran with the draft hidden; finalize streamed the fused answer.
+    assert agent.calls[0]["kwargs"].get("internal_turn") is True
+    assert agent.calls[0]["hide_draft"] is True
+    assert agent.calls[1]["hide_draft"] is False
+    # Flag is always cleared once the turn returns.
+    assert getattr(agent, "_fusion_hide_draft", False) is False
+
+
+def test_draft_hidden_flag_cleared_when_work_turn_raises(wire):
+    install, state = wire
+
+    class BoomAgent(FakeAgent):
+        def run_conversation(self, message, **kwargs):
+            if kwargs.get("internal_turn"):
+                raise RuntimeError("boom")
+            return super().run_conversation(message, **kwargs)
+
+    agent = BoomAgent()
+    install([
+        FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
+    ])
+    # The work turn raises; run_fusion_turn falls back to a normal turn, but the
+    # draft-suppression flag must not leak into that (visible) fallback turn.
+    out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
+    assert out["final_response"] == "FINAL ANSWER"
+    assert getattr(agent, "_fusion_hide_draft", False) is False
+    # The fallback (normal) turn ran with the draft visible.
+    assert agent.calls[-1]["hide_draft"] is False
 
 
 def test_finalize_hides_image_tool_during_local_turn(wire):
