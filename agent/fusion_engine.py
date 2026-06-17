@@ -257,11 +257,7 @@ def main_model_is_managed(agent: Any = None) -> bool:
 
 # Shown when a user tries to enable fusion while their main model is from a
 # provider other than the managed Omni Loop subscription.
-FUSION_NEEDS_MANAGED_NOTICE = (
-    "🔮 Fusion needs an Omni Loop Portal Subscription model as your main model, "
-    "so the whole run is metered through the portal. Switch your chat model to a "
-    "managed model with  /model  first, then enable fusion."
-)
+FUSION_NEEDS_MANAGED_NOTICE = "🔮 Fusion needs an Omni Loop Portal model."
 
 
 # ---------------------------------------------------------------------------
