@@ -1,5 +1,13 @@
-import { getSubscription, monthUsageMicros, recordUsage, UserRow } from "./db";
-import { getPlan, isFreeModel, Plan } from "./plans";
+import {
+  getSubscription,
+  hasActiveMeteringAlert,
+  monthUsageMicros,
+  recordMeteringAlert,
+  recordUsage,
+  UserRow,
+} from "./db";
+import { FREE_OPENROUTER_MODEL } from "./model-policy";
+import { getPlan, Plan } from "./plans";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
@@ -52,7 +60,7 @@ export function checkEntitlement(user: UserRow): Entitlement {
 }
 
 export function modelAllowed(plan: Plan, modelId: string): boolean {
-  return !plan.freeModelsOnly || isFreeModel(modelId);
+  return !plan.freeModelsOnly || modelId === FREE_OPENROUTER_MODEL;
 }
 
 interface UpstreamUsage {
@@ -61,16 +69,82 @@ interface UpstreamUsage {
   cost?: number; // USD credits, present when usage.include is requested
 }
 
-export function meterUsage(userId: string, model: string, usage: UpstreamUsage | undefined): void {
-  if (!usage) return;
-  const costMicros = Math.max(0, Math.round((usage.cost ?? 0) * 1_000_000));
+export class MeteringError extends Error {
+  constructor(
+    message: string,
+    public readonly reason: "missing_usage" | "missing_cost" | "non_positive_cost",
+  ) {
+    super(message);
+    this.name = "MeteringError";
+  }
+}
+
+export interface MeterUsageOptions {
+  requirePositiveCost?: boolean;
+  path?: string;
+}
+
+export interface MeterUsageResult {
+  recorded: boolean;
+  costMicros: number;
+}
+
+export function isFreeModelId(model: string): boolean {
+  return model.endsWith(":free");
+}
+
+export function meteringBlocked(model: string, pathName = "chat"): boolean {
+  return hasActiveMeteringAlert(model, pathName);
+}
+
+export function noteMeteringAlert(
+  model: string,
+  pathName: string,
+  reason: string,
+  details = "",
+): void {
+  recordMeteringAlert(model, pathName, reason, details);
+}
+
+function validateUsage(
+  model: string,
+  usage: UpstreamUsage | undefined,
+  options: MeterUsageOptions,
+): UpstreamUsage | undefined {
+  if (!options.requirePositiveCost) return usage;
+  if (!usage) {
+    noteMeteringAlert(model, options.path ?? "chat", "missing_usage");
+    throw new MeteringError("OpenRouter response was missing usage data.", "missing_usage");
+  }
+  if (typeof usage.cost !== "number" || !Number.isFinite(usage.cost)) {
+    noteMeteringAlert(model, options.path ?? "chat", "missing_cost", JSON.stringify(usage));
+    throw new MeteringError("OpenRouter response was missing usage.cost.", "missing_cost");
+  }
+  if (usage.cost <= 0) {
+    noteMeteringAlert(model, options.path ?? "chat", "non_positive_cost", JSON.stringify(usage));
+    throw new MeteringError("OpenRouter response reported a non-positive paid cost.", "non_positive_cost");
+  }
+  return usage;
+}
+
+export function meterUsage(
+  userId: string,
+  model: string,
+  usage: UpstreamUsage | undefined,
+  options: MeterUsageOptions = {},
+): MeterUsageResult {
+  const checked = validateUsage(model, usage, options);
+  if (!checked) return { recorded: false, costMicros: 0 };
+  const rounded = Math.round((checked.cost ?? 0) * 1_000_000);
+  const costMicros = options.requirePositiveCost ? Math.max(1, rounded) : Math.max(0, rounded);
   recordUsage(
     userId,
     model,
-    usage.prompt_tokens ?? 0,
-    usage.completion_tokens ?? 0,
+    checked.prompt_tokens ?? 0,
+    checked.completion_tokens ?? 0,
     costMicros,
   );
+  return { recorded: true, costMicros };
 }
 
 // ─── Model catalog (cached) ──────────────────────────────────────────────────
@@ -98,9 +172,16 @@ export async function fetchModels(): Promise<ModelEntry[]> {
   });
   if (!res.ok) throw new Error(`OpenRouter /models failed: ${res.status}`);
   const payload = (await res.json()) as { data?: ModelEntry[] };
-  const data = Array.isArray(payload.data) ? payload.data : [];
+  const data = Array.isArray(payload.data) ? payload.data.filter(isTextOutputModel) : [];
   globalThis.__olpModelCache = { at: Date.now(), data };
   return data;
+}
+
+export function isTextOutputModel(model: ModelEntry): boolean {
+  const output = model.architecture && typeof model.architecture === "object"
+    ? (model.architecture as { output_modalities?: unknown }).output_modalities
+    : undefined;
+  return !Array.isArray(output) || output.includes("text");
 }
 
 /**
@@ -110,6 +191,7 @@ export async function fetchModels(): Promise<ModelEntry[]> {
 export function usageTapStream(
   onUsage: (usage: UpstreamUsage, model: string) => void,
   fallbackModel: string,
+  onMissingUsage?: (model: string) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   let lineBuf = "";
@@ -143,6 +225,7 @@ export function usageTapStream(
     flush() {
       scan(decoder.decode(), true);
       if (lastUsage) onUsage(lastUsage, lastModel);
+      else onMissingUsage?.(lastModel);
     },
   });
 }

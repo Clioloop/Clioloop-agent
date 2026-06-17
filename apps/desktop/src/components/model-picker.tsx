@@ -228,6 +228,7 @@ function ModelResults({
           const isCurrent = model === currentModel && provider.slug === currentProvider
           const price = provider.pricing?.[model]
           const locked = unavailable.has(model)
+          const warning = provider.model_warnings?.[model]
 
           return (
             <CommandItem
@@ -248,6 +249,17 @@ function ModelResults({
               value={`${provider.slug}:${model}`}
             >
               <span className="min-w-0 flex-1 truncate">{model}</span>
+              {warning ? (
+                <span
+                  className={cn(
+                    'shrink-0 text-[0.62rem] lowercase tracking-wide',
+                    isCurrent ? 'text-primary-foreground/80' : 'text-warning'
+                  )}
+                  title={warning}
+                >
+                  no tools
+                </span>
+              ) : null}
               {provider.slug === 'managed' && (
                 <span
                   className={cn(

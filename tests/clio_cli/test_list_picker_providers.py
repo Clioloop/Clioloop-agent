@@ -207,6 +207,23 @@ def test_max_models_caps_openrouter_live_output(monkeypatch):
     assert result[0]["total_models"] == 20
 
 
+def test_none_max_models_keeps_full_openrouter_live_output(monkeypatch):
+    """``max_models=None`` leaves OpenRouter uncapped for desktop pickers."""
+    live = [(f"vendor/model-{i}", "") for i in range(20)]
+    base = [_make_provider("openrouter", models=["placeholder"])]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("clio_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: list(live))
+
+    result = model_switch.list_picker_providers(max_models=None)
+
+    assert len(result) == 1
+    assert result[0]["models"] == [mid for mid, _ in live]
+    assert result[0]["total_models"] == 20
+
+
 def test_passthrough_kwargs_to_base(monkeypatch):
     """All kwargs must be forwarded to ``list_authenticated_providers`` unchanged.
 

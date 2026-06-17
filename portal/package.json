@@ -9,6 +9,8 @@
     "build": "next build",
     "start": "next start -p 4280",
     "lint": "eslint src next.config.mjs",
+    "audit:openrouter-pricing": "node scripts/audit-openrouter-pricing.mjs",
+    "check:openrouter-credits": "node scripts/check-openrouter-credits.mjs",
     "test": "vitest run"
   },
   "dependencies": {

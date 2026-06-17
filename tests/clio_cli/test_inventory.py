@@ -197,8 +197,12 @@ def test_build_models_payload_preserves_managed_curated_catalog():
     assert managed["total_models"] == 1
 
 
-def test_build_models_payload_does_not_expand_non_managed_providers():
-    """Non-managed providers keep their curated list — no live fetch."""
+def test_build_models_payload_delegates_provider_catalogs_to_substrate():
+    """Inventory must not call provider_model_ids per row.
+
+    The substrate decides which providers are curated and which are live/full
+    (OpenRouter is intentionally live now).
+    """
     rows = [{"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
              "total_models": 1, "is_current": False, "is_user_defined": False,
              "source": "built-in"}]
@@ -207,6 +211,39 @@ def test_build_models_payload_does_not_expand_non_managed_providers():
          patch("clio_cli.models.provider_model_ids") as mock_pm:
         build_models_payload(ctx)
     mock_pm.assert_not_called()
+
+
+def test_build_models_payload_can_request_uncapped_models():
+    rows = [{"slug": "openrouter", "name": "OpenRouter", "models": ["m1", "m2"],
+             "total_models": 2, "is_current": False, "is_user_defined": False,
+             "source": "built-in"}]
+    ctx = _empty_ctx(provider="openrouter")
+    with _list_auth_returning(rows) as listing:
+        build_models_payload(ctx, max_models=None)
+
+    assert listing.call_args.kwargs["max_models"] is None
+
+
+def test_capabilities_attach_openrouter_tool_warnings(monkeypatch):
+    rows = [{"slug": "openrouter", "name": "OpenRouter", "models": ["vendor/ok", "vendor/no-tools"],
+             "total_models": 2, "is_current": False, "is_user_defined": False,
+             "source": "built-in"}]
+    ctx = _empty_ctx(provider="openrouter")
+    monkeypatch.setattr(
+        "clio_cli.models.get_openrouter_model_metadata",
+        lambda: {
+            "vendor/ok": {"supports_tools": True},
+            "vendor/no-tools": {"supports_tools": False},
+        },
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, capabilities=True)
+
+    openrouter = payload["providers"][0]
+    assert openrouter["capabilities"]["vendor/ok"]["tools"] is True
+    assert openrouter["capabilities"]["vendor/no-tools"]["tools"] is False
+    assert "No tool support" in openrouter["model_warnings"]["vendor/no-tools"]
 
 
 def test_include_unconfigured_appends_canonical_skeletons():

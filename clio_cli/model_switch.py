@@ -1178,22 +1178,22 @@ def list_authenticated_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    max_models: int | None = 8,
     current_model: str = "",
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect which providers have credentials and list their picker models.
 
-    Uses the curated model lists from clio_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    Most providers still use curated agentic model lists. OpenRouter is the
+    deliberate exception: when live discovery succeeds, its full text-output
+    catalog is exposed so users can pick newly released models immediately.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
       - name: str — display name
       - is_current: bool
       - is_user_defined: bool
-      - models: list[str] — curated model IDs (up to max_models)
-      - total_models: int — total curated count
+      - models: list[str] — model IDs (up to max_models; None = uncapped)
+      - total_models: int — total model count before any cap
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
@@ -1223,6 +1223,11 @@ def list_authenticated_providers(
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
+
+    def _limit_models(model_ids: list[str]) -> list[str]:
+        if max_models is None:
+            return list(model_ids)
+        return model_ids[:max_models]
 
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
@@ -1395,7 +1400,7 @@ def list_authenticated_providers(
             if clio_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(clio_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = _limit_models(model_ids)
 
         slug = clio_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1558,7 +1563,7 @@ def list_authenticated_providers(
                 if clio_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(clio_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = _limit_models(model_ids)
 
         results.append({
             "slug": clio_slug,
@@ -1633,7 +1638,7 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
-        _cp_top = _cp_model_ids[:max_models]
+        _cp_top = _limit_models(_cp_model_ids)
 
         results.append({
             "slug": _cp.slug,
@@ -1963,20 +1968,17 @@ def list_picker_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    max_models: int | None = 8,
     current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
-    Post-processes the base list so the ``/model`` picker (Telegram/Discord
-    inline keyboards) only surfaces models that are actually callable in the
-    current install:
+    Post-processes the base list so interactive pickers can use the live
+    OpenRouter catalog while dropping empty/unconfigured provider rows:
 
     - OpenRouter's model list is replaced with the output of
-      :func:`clio_cli.models.fetch_openrouter_models`, which filters the
-      curated ``OPENROUTER_MODELS`` snapshot against the live OpenRouter
-      catalog.  IDs the live catalog no longer carries drop out, so the
-      picker never offers a model the user can't call.
+      :func:`clio_cli.models.fetch_openrouter_models`, which returns the full
+      live text-output catalog. ``max_models=None`` leaves it uncapped.
     - Provider rows whose model list ends up empty are dropped, except
       custom endpoints (``is_user_defined=True`` with an ``api_url``) where
       the user may supply their own model set through config.
@@ -2006,7 +2008,7 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models]
+            p["models"] = live_ids if max_models is None else live_ids[:max_models]
             p["total_models"] = len(live_ids)
 
         has_models = bool(p.get("models"))

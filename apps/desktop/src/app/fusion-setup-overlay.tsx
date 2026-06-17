@@ -90,6 +90,7 @@ function FusionSetupDialog({
   )
   const models = managed?.models ?? []
   const pricing = managed?.pricing ?? {}
+  const warnings = managed?.model_warnings ?? {}
   const loading = modelOptions.isPending && !modelOptions.data
 
   const submit = async (selectedReviewers = reviewers) => {
@@ -227,6 +228,7 @@ function FusionSetupDialog({
               <CommandGroup>
                 {visibleModels.map(model => {
                   const price: ModelPricing | undefined = pricing[model]
+                  const warning = warnings[model]
                   return (
                     <CommandItem
                       className="flex items-center gap-2 pl-6 font-mono"
@@ -235,6 +237,11 @@ function FusionSetupDialog({
                       value={model}
                     >
                       <span className="min-w-0 flex-1 truncate">{model}</span>
+                      {warning ? (
+                        <span className="shrink-0 text-[0.62rem] lowercase tracking-wide text-warning" title={warning}>
+                          no tools
+                        </span>
+                      ) : null}
                       <span className="shrink-0 text-[0.62rem] lowercase tracking-wide text-muted-foreground/70">
                         {managedModelTag(model, price)}
                       </span>

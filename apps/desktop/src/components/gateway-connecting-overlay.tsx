@@ -52,7 +52,7 @@ export function GatewayConnectingOverlay() {
   const [tail, setTail] = useState(TAIL)
   const [phase, setPhase] = useState<Phase>('live')
 
-  const connecting = gatewayState !== 'open' && !boot.error
+  const connecting = (gatewayState !== 'open' || boot.running || boot.visible) && !boot.error
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
   // kicks in doesn't unmount us and cause a flash.
@@ -107,11 +107,11 @@ export function GatewayConnectingOverlay() {
       return () => window.clearTimeout(id)
     }
 
-    if (gatewayState === 'open' && shownRef.current) {
+    if (gatewayState === 'open' && !boot.running && !boot.visible && shownRef.current) {
       setTail(TAIL)
       setPhase('text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [boot.running, boot.visible, phase, previewing, gatewayState])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {

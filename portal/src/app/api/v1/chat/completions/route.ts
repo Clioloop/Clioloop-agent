@@ -5,7 +5,11 @@ import { freeModelDayCount, incrFreeModelDay } from "@/lib/db";
 import { selectInferenceUpstream } from "@/lib/inference-upstream";
 import {
   checkEntitlement,
+  isFreeModelId,
+  MeteringError,
   meterUsage,
+  meteringBlocked,
+  noteMeteringAlert,
   usageTapStream,
 } from "@/lib/openrouter";
 import {
@@ -56,6 +60,7 @@ export async function POST(req: NextRequest) {
 
   const model = String(body.model ?? "");
   const planId = entitlement.plan.id;
+  const requirePaidMetering = planId !== "free" && !isFreeModelId(model);
 
   // Tier model-access gate.
   if (!modelAllowedForPlan(planId, model)) {
@@ -64,6 +69,13 @@ export async function POST(req: NextRequest) {
         ? "Your free plan includes one free model — upgrade in the Omni Loop Portal for more."
         : "This model isn't available on your plan — upgrade in the Omni Loop Portal.";
     return apiError(403, "model_not_in_plan", message);
+  }
+  if (requirePaidMetering && meteringBlocked(model, "chat")) {
+    return apiError(
+      503,
+      "metering_disabled",
+      "This model is temporarily unavailable while Omni Loop verifies upstream usage metering.",
+    );
   }
 
   // Shared free-model daily allotment (all tiers, abuse guard). Free users are
@@ -99,7 +111,10 @@ export async function POST(req: NextRequest) {
   body.usage = { ...(typeof body.usage === "object" && body.usage ? body.usage : {}), include: true };
 
   const meter = (usage: UpstreamUsage | undefined, usedModel: string) => {
-    meterUsage(userId, usedModel, usage);
+    meterUsage(userId, usedModel, usage, {
+      requirePositiveCost: planId !== "free" && !isFreeModelId(usedModel),
+      path: "chat",
+    });
   };
 
   const headers: Record<string, string> = {
@@ -121,7 +136,17 @@ export async function POST(req: NextRequest) {
     (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
 
   if (isStream && upstream.body) {
-    const tapped = upstream.body.pipeThrough(usageTapStream((usage, usedModel) => meter(usage, usedModel), model));
+    const tapped = upstream.body.pipeThrough(
+      usageTapStream(
+        (usage, usedModel) => meter(usage, usedModel),
+        model,
+        (usedModel) => {
+          if (planId !== "free" && !isFreeModelId(usedModel)) {
+            noteMeteringAlert(usedModel, "chat", "missing_stream_usage");
+          }
+        },
+      ),
+    );
     return new Response(tapped, {
       status: upstream.status,
       headers: {
@@ -137,8 +162,23 @@ export async function POST(req: NextRequest) {
     try {
       const json = JSON.parse(text) as { usage?: UpstreamUsage; model?: string };
       meter(json.usage, json.model ?? model);
-    } catch {
-      // non-JSON success body — pass through unmetered rather than failing the request
+    } catch (err) {
+      if (err instanceof MeteringError) {
+        return apiError(
+          502,
+          "metering_unverified",
+          "OpenRouter completed the request without billable usage data, so Omni Loop blocked the response.",
+        );
+      }
+      // non-JSON success body — pass through only for non-paid model paths.
+      if (requirePaidMetering) {
+        noteMeteringAlert(model, "chat", "non_json_success");
+        return apiError(
+          502,
+          "metering_unverified",
+          "OpenRouter returned a successful response that could not be metered.",
+        );
+      }
     }
   }
   return new Response(text, {

@@ -208,6 +208,7 @@ export interface ModelPricing {
 
 export interface ModelOptionProvider {
   is_current?: boolean
+  model_warnings?: Record<string, string>
   models?: string[]
   name: string
   slug: string
@@ -228,6 +229,7 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+  tools?: boolean
 }
 
 export interface ModelOptionsResponse {

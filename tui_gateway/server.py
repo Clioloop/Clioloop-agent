@@ -7194,9 +7194,8 @@ def _(rid, params: dict) -> dict:
         # CANONICAL_PROVIDERS declaration order. include_unconfigured=True
         # so the picker can show the full provider universe (with the
         # setup-hint warning attached) instead of only authed rows.
-        # Curated model lists are preserved — list_authenticated_providers
-        # populates `models` from the curated catalog, not provider_model_ids
-        # (which would pull non-agentic models like TTS/embeddings/etc.).
+        # list_authenticated_providers populates `models` from the right
+        # provider catalog: OpenRouter is live/full, managed remains curated.
         payload = build_models_payload(
             ctx,
             include_unconfigured=True,
@@ -7204,7 +7203,7 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
-            max_models=50,
+            max_models=None,
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -7270,7 +7269,7 @@ def _(rid, params: dict) -> dict:
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
         payload = build_models_payload(
-            ctx, picker_hints=True, max_models=50,
+            ctx, picker_hints=True, max_models=None,
         )
         provider_data = next(
             (p for p in payload["providers"] if p["slug"] == slug), None
@@ -7355,7 +7354,7 @@ def _(rid, params: dict) -> dict:
                     ),
                     current_base_url=getattr(agent, "base_url", "") if agent else "",
                 )
-                payload = build_models_payload(ctx, picker_hints=True, max_models=50)
+                payload = build_models_payload(ctx, picker_hints=True, max_models=None)
                 provider_data = next(
                     (p for p in payload["providers"] if p["slug"] == "managed"), None
                 )

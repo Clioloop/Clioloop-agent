@@ -23,6 +23,7 @@ import {
   touchSecondaryGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { refreshOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $attentionSessionIds,
@@ -347,6 +348,24 @@ export function useGatewayBoot({
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
+
+        if (cancelled) {
+          return
+        }
+
+        setDesktopBootStep({
+          phase: 'renderer.onboarding',
+          message: 'Checking provider setup',
+          progress: 99
+        })
+        await refreshOnboarding({
+          requestGateway: (method, params) => gateway.request(method, params)
+        })
+
+        if (cancelled) {
+          return
+        }
+
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

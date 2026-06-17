@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from clio_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
+    get_openrouter_model_metadata,
     union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
 )
@@ -71,7 +72,7 @@ class TestFetchOpenRouterModels:
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
-            ("anthropic/claude-opus-4.8", "recommended"),
+            ("anthropic/claude-opus-4.8", ""),
             ("qwen/qwen3.7-max", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
@@ -83,13 +84,8 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
-    def test_filters_out_models_without_tool_support(self, monkeypatch):
-        """Models whose supported_parameters omits 'tools' must not appear in the picker.
-
-        clio-agent is tool-calling-first — surfacing a non-tool model leads to
-        immediate runtime failures when the user selects it. Ported from
-        Kilo-Org/kilocode#9068.
-        """
+    def test_keeps_models_without_tool_support_and_records_warning_metadata(self, monkeypatch):
+        """The picker shows all text models, with metadata for no-tool warnings."""
         class _Resp:
             def __enter__(self):
                 return self
@@ -98,16 +94,16 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                # opus-4.6 advertises tools → kept
-                # nano-image has explicit supported_parameters that OMITS tools → dropped
-                # qwen3.7-max advertises tools → kept
+                # opus-4.6 advertises tools
+                # nano-image has explicit supported_parameters that OMITS tools
+                # qwen3.7-max advertises tools
                 return (
                     b'{"data":['
-                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'{"id":"anthropic/claude-opus-4.6","name":"Claude Opus","architecture":{"output_modalities":["text"]},"pricing":{"prompt":"0.000015","completion":"0.000075"},'
                     b'"supported_parameters":["temperature","tools","tool_choice"]},'
-                    b'{"id":"google/gemini-3-pro-image-preview","pricing":{"prompt":"0.00001","completion":"0.00003"},'
+                    b'{"id":"google/gemini-3-pro-image-preview","name":"Gemini Image","architecture":{"output_modalities":["text"]},"pricing":{"prompt":"0.00001","completion":"0.00003"},'
                     b'"supported_parameters":["temperature","response_format"]},'
-                    b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"},'
+                    b'{"id":"qwen/qwen3.7-max","name":"Qwen Max","architecture":{"output_modalities":["text"]},"pricing":{"prompt":"0.000000325","completion":"0.00000195"},'
                     b'"supported_parameters":["tools","temperature"]}'
                     b']}'
                 )
@@ -123,14 +119,45 @@ class TestFetchOpenRouterModels:
             ],
         )
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_metadata_cache", None)
         with patch("clio_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
         assert "anthropic/claude-opus-4.6" in ids
         assert "qwen/qwen3.7-max" in ids
-        # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
-        assert "google/gemini-3-pro-image-preview" not in ids
+        assert "google/gemini-3-pro-image-preview" in ids
+
+        meta = get_openrouter_model_metadata()
+        assert meta["anthropic/claude-opus-4.6"]["supports_tools"] is True
+        assert meta["google/gemini-3-pro-image-preview"]["supports_tools"] is False
+        assert dict(models)["google/gemini-3-pro-image-preview"] == "limited: no tool support"
+
+    def test_filters_out_non_text_output_models(self, monkeypatch):
+        """Non-text outputs are not useful for chat/model pickers."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"openai/gpt-chat","architecture":{"output_modalities":["text"]},'
+                    b'"pricing":{"prompt":"0.1","completion":"0.2"}},'
+                    b'{"id":"image/only","architecture":{"output_modalities":["image"]},'
+                    b'"pricing":{"prompt":"0.1","completion":"0.2"}}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_metadata_cache", None)
+        with patch("clio_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert [mid for mid, _ in models] == ["openai/gpt-chat"]
 
     def test_permissive_when_supported_parameters_missing(self, monkeypatch):
         """Models missing the supported_parameters field keep appearing in the picker.
@@ -297,4 +324,3 @@ class TestDetectProviderForModel:
             result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
         assert result[0] not in {"openrouter",}
-

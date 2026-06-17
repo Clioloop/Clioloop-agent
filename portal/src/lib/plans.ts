@@ -1,7 +1,9 @@
 // ─── Subscription tiers ──────────────────────────────────────────────────────
-// All inference usage is metered in "credit micros": 1_000_000 micros = €1 of
-// upstream model spend (OpenRouter reports cost per request when
-// `usage.include` is set). Adjust `monthlyCreditsMicros` to tune margins.
+// All inference usage is metered in "credit micros": 1_000_000 micros = one
+// OpenRouter USD credit of upstream model spend. Plan prices are charged in EUR,
+// so allowances intentionally leave room for FX movement, OpenRouter credit
+// fees, Stripe fees, and gross margin. Adjust `monthlyCreditsMicros` to tune
+// margins.
 //
 // Margin policy: allowances are set so a fully-drained subscription keeps a
 // 25–40% gross margin (Pro/Max 25%, Max 10x 40%) before Stripe fees. Most

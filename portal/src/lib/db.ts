@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_month ON usage_events(user_id, month);
 
+-- Billing safety alerts. Any unresolved missing-cost alert for a paid model
+-- blocks future requests for that model until production state is inspected.
+CREATE TABLE IF NOT EXISTS metering_alerts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  model       TEXT NOT NULL,
+  path        TEXT NOT NULL DEFAULT 'chat',
+  reason      TEXT NOT NULL,
+  details     TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_metering_alerts_active
+  ON metering_alerts(model, path, resolved_at);
+
 -- Per-user daily counter for the one free model (FREE_OPENROUTER_MODEL). The
 -- free daily allotment is an abuse guard: free users are blocked past it; paid
 -- tiers keep using the model. Keyed by UTC day; old rows pruned.
@@ -263,6 +277,31 @@ export function recordUsage(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(userId, currentMonth(), model, promptTokens, completionTokens, costMicros, now());
+}
+
+export function recordMeteringAlert(
+  model: string,
+  pathName: string,
+  reason: string,
+  details = "",
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO metering_alerts (model, path, reason, details, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(model, pathName, reason, details.slice(0, 2000), now());
+}
+
+export function hasActiveMeteringAlert(model: string, pathName = "chat"): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT id FROM metering_alerts
+       WHERE model = ? AND path = ? AND resolved_at IS NULL
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(model, pathName) as { id: number } | undefined;
+  return !!row;
 }
 
 // ---------------------------------------------------------------------------

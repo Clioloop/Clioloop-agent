@@ -2131,7 +2131,7 @@ def get_model_options():
         from clio_cli.inventory import build_models_payload, load_picker_context
 
         return build_models_payload(
-            load_picker_context(), max_models=50, pricing=True, capabilities=True
+            load_picker_context(), max_models=None, pricing=True, capabilities=True
         )
     except Exception:
         _log.exception("GET /api/model/options failed")
@@ -2199,7 +2199,7 @@ def get_recommended_default_model(provider: str = ""):
     try:
         from clio_cli.inventory import build_models_payload, load_picker_context
 
-        payload = build_models_payload(load_picker_context(), max_models=50)
+        payload = build_models_payload(load_picker_context(), max_models=None)
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = row.get("models") or []

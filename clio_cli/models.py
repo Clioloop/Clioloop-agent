@@ -79,6 +79,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_catalog_metadata_cache: dict[str, dict[str, Any]] | None = None
 
 
 
@@ -1201,21 +1202,7 @@ def _openrouter_model_is_free(pricing: Any) -> bool:
 
 
 def _openrouter_model_supports_tools(item: Any) -> bool:
-    """Return True when the model's ``supported_parameters`` advertise tool calling.
-
-    clio-agent is tool-calling-first — every provider path assumes the model
-    can invoke tools. Models that don't advertise ``tools`` in their
-    ``supported_parameters`` (e.g. image-only or completion-only models) cannot
-    be driven by the agent loop and would fail at the first tool call.
-
-    **Permissive when the field is missing.** Some OpenRouter-compatible gateways
-    (managed provider, private mirrors, older catalog snapshots) don't populate
-    ``supported_parameters`` at all. Treat that as "unknown capability → allow"
-    so the picker doesn't silently empty for those users. Only hide models
-    whose ``supported_parameters`` is an explicit list that omits ``tools``.
-
-    Ported from Kilo-Org/kilocode#9068.
-    """
+    """Return True when the model's ``supported_parameters`` advertise tools."""
     if not isinstance(item, dict):
         return True
     params = item.get("supported_parameters")
@@ -1225,33 +1212,96 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def _openrouter_model_has_text_output(item: Any) -> bool:
+    """Return True when the live OpenRouter row can produce text."""
+    if not isinstance(item, dict):
+        return False
+    arch = item.get("architecture")
+    if not isinstance(arch, dict):
+        return True
+    output = arch.get("output_modalities")
+    if not isinstance(output, list):
+        modality = str(arch.get("modality") or "").lower()
+        return not modality or "text" in modality
+    return any(str(part).lower() == "text" for part in output)
+
+
+def _openrouter_live_description(item: dict[str, Any], curated_desc: str = "") -> str:
+    """Picker suffix for a live OpenRouter model.
+
+    The live catalog is no longer filtered to tool-capable models. Keep every
+    text model visible, but tag risky selections so users understand why an
+    agent/tool-heavy turn may fail after selection.
+    """
+    if not _openrouter_model_supports_tools(item):
+        return "limited: no tool support"
+    if curated_desc == "recommended":
+        return "recommended"
+    if _openrouter_model_is_free(item.get("pricing")) or curated_desc == "free":
+        return "free"
+    return curated_desc or ""
+
+
+def _set_openrouter_metadata_from_items(items: list[dict[str, Any]]) -> None:
+    """Populate lightweight OpenRouter metadata for picker UIs."""
+    global _openrouter_catalog_metadata_cache
+
+    metadata: dict[str, dict[str, Any]] = {}
+    for item in items:
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        metadata[mid] = {
+            "display_name": str(item.get("name") or "").strip(),
+            "supports_tools": _openrouter_model_supports_tools(item),
+        }
+    _openrouter_catalog_metadata_cache = metadata
+
+
+def get_openrouter_model_metadata(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    """Return cached per-model OpenRouter picker metadata.
+
+    ``fetch_openrouter_models`` owns the network call; this helper just ensures
+    that callers enriching the shared model-options payload can read the same
+    catalog without performing another fetch.
+    """
+    global _openrouter_catalog_metadata_cache
+
+    if _openrouter_catalog_metadata_cache is None or force_refresh:
+        fetch_openrouter_models(force_refresh=force_refresh)
+    return dict(_openrouter_catalog_metadata_cache or {})
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    """Return the live OpenRouter text-model list for pickers.
+
+    OpenRouter's API response is treated as the authoritative, newest-first
+    ordering. The in-repo/docs curated lists are now only fallback/ranking hints;
+    they must not hide live models.
+    """
     global _openrouter_catalog_cache
 
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
-    # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
-    # snapshot when the manifest is unreachable. Both are curated lists that
-    # drive the picker; the OpenRouter live /v1/models filter (tool support,
-    # free pricing) is applied on top either way.
+    # Prefer the remotely-hosted catalog manifest as metadata only; fall back to
+    # the in-repo snapshot. Neither list filters the live catalog anymore.
     try:
         from clio_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-    preferred_ids = [mid for mid, _ in fallback]
+    fallback_desc = {mid: desc for mid, desc in fallback}
 
     try:
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/models",
-            headers={"Accept": "application/json"},
+            headers={"Accept": "application/json", "User-Agent": _CLIO_USER_AGENT},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
@@ -1262,35 +1312,27 @@ def fetch_openrouter_models(
     if not isinstance(live_items, list):
         return list(_openrouter_catalog_cache or fallback)
 
-    live_by_id: dict[str, dict[str, Any]] = {}
+    live_text_items: list[dict[str, Any]] = []
     for item in live_items:
         if not isinstance(item, dict):
             continue
         mid = str(item.get("id") or "").strip()
         if not mid:
             continue
-        live_by_id[mid] = item
-
-    curated: list[tuple[str, str]] = []
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
+        if not _openrouter_model_has_text_output(item):
             continue
-        # Hide models that don't advertise tool-calling support — clio-agent
-        # requires it and surfacing them leads to immediate runtime failures
-        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
-            continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
+        live_text_items.append(item)
 
-    if not curated:
+    if not live_text_items:
         return list(_openrouter_catalog_cache or fallback)
 
-    first_id, _ = curated[0]
-    curated[0] = (first_id, "recommended")
-    _openrouter_catalog_cache = curated
-    return list(curated)
+    _set_openrouter_metadata_from_items(live_text_items)
+    catalog: list[tuple[str, str]] = []
+    for item in live_text_items:
+        mid = str(item.get("id") or "").strip()
+        catalog.append((mid, _openrouter_live_description(item, fallback_desc.get(mid, ""))))
+    _openrouter_catalog_cache = catalog
+    return list(catalog)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:

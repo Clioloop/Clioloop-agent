@@ -20,15 +20,15 @@ the duplicates were hiding:
 - The TUI's canonical-merge keyed on ``is_user_defined`` to decide
   ordering. Section 3 of ``list_authenticated_providers`` sets
   ``is_user_defined=True`` even for canonical slugs that appear in the
-  ``providers:`` config dict, which silently demoted them to the tail of
-  the picker. ``_reorder_canonical`` keys on slug membership instead.
+    ``providers:`` config dict, which silently demoted them to the tail of
+    the picker. ``_reorder_canonical`` keys on slug membership instead.
 
 Substrate facts (verified May 2026):
-- ``list_authenticated_providers`` already populates each row's
-  ``models`` from the curated catalog (same source as the picker). Do
-  NOT call ``provider_model_ids()`` per row to "freshen" — that bypasses
-  curation and pulls in non-agentic models (managed provider /models returns ~400
-  IDs including TTS, embeddings, rerankers, image/video generators).
+- ``list_authenticated_providers`` already populates each row's ``models`` from
+  the right provider catalog. Do NOT call ``provider_model_ids()`` per row to
+  "freshen" — OpenRouter is intentionally live/full there, while managed
+  provider remains curated/tier-filtered so media/embedding/reranker models do
+  not leak into chat pickers.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def build_models_payload(
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
-    max_models: int = 50,
+    max_models: int | None = 50,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -136,9 +136,9 @@ def build_models_payload(
       mirroring the ``clio model`` CLI picker. Adds network calls
       (pricing fetch + managed-provider tier check); only set for interactive pickers.
     - ``capabilities``: add a per-row ``capabilities`` map
-      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
-      controls (fast toggle / reasoning) to what each model actually
-      supports, instead of offering knobs the backend would reject.
+      ``{model: {fast, reasoning, tools}}`` so pickers can gate the
+      model-options controls (fast toggle / reasoning) and warn on
+      OpenRouter models that do not advertise tools.
     """
     from clio_cli.model_switch import list_authenticated_providers
 
@@ -184,7 +184,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
     """
-    from clio_cli.models import model_supports_fast_mode
+    from clio_cli.models import get_openrouter_model_metadata, model_supports_fast_mode
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -193,7 +193,14 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
+        slug_lower = str(slug).lower()
+        openrouter_meta = (
+            get_openrouter_model_metadata()
+            if slug_lower in {"openrouter", "managed"}
+            else {}
+        )
         caps: dict[str, dict[str, bool]] = {}
+        warnings: dict[str, str] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -205,12 +212,22 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
+            supports_tools = True
+            if slug_lower in {"openrouter", "managed"} and "/" in str(model):
+                meta = openrouter_meta.get(model) or {}
+                supports_tools = bool(meta.get("supports_tools", True))
+                if not supports_tools:
+                    warnings[model] = "No tool support; agent and Fusion turns may fail."
+
             caps[model] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
+                "tools": supports_tools,
             }
 
         row["capabilities"] = caps
+        if warnings:
+            row["model_warnings"] = warnings
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

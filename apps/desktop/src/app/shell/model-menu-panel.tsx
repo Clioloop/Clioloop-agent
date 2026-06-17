@@ -164,6 +164,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Capabilities are looked up against the active/base id; the
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
+                const warning = group.provider.model_warnings?.[family.id]
 
                 // Single source of truth for the active row's fast state — keeps
                 // the row label in lock-step with the submenu's Fast toggle and
@@ -180,12 +181,15 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null,
-                      reasoningEffortLabel(currentReasoningEffort) || 'Med'
+                      reasoningEffortLabel(currentReasoningEffort) || 'Med',
+                      warning ? 'No tools' : null
                     ]
                       .filter(Boolean)
                       .join(' ')
                   : caps?.fast || family.fastId
                     ? 'Fast'
+                    : warning
+                      ? 'No tools'
                     : ''
 
                 // Every row is a hover-Edit submenu trigger. Activating it
@@ -213,7 +217,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     >
                       <span className="min-w-0 flex-1 truncate">
                         {name}
-                        {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                        {meta ? (
+                          <span className={warning ? 'text-warning' : 'text-(--ui-text-tertiary)'} title={warning}>
+                            {' '}
+                            {meta}
+                          </span>
+                        ) : null}
                       </span>
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
@@ -281,6 +290,10 @@ function groupModels(
       shown = new Set(
         allFamilies.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
       )
+    } else if (isOpenRouterProvider(provider)) {
+      // OpenRouter is intentionally a full live catalog; don't hide new models
+      // behind the Edit Models dialog by default.
+      shown = new Set(allFamilies.map(family => family.id))
     } else {
       // Default: curated top-N families per provider.
       shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
@@ -310,4 +323,8 @@ function groupModels(
   groups.sort((a, b) => compareOmniFirst(a.provider, b.provider) || a.provider.name.localeCompare(b.provider.name))
 
   return groups
+}
+
+function isOpenRouterProvider(provider: ModelOptionProvider): boolean {
+  return provider.slug === 'openrouter'
 }
