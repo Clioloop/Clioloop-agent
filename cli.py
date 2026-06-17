@@ -7863,6 +7863,7 @@ class ClioCLI:
         from agent.fusion_engine import (
             fusion_gate_check, get_fusion_config, set_fusion_config,
             status_notice, activation_notice, FusionConfig, parse_fusion_args,
+            main_model_is_managed, FUSION_NEEDS_MANAGED_NOTICE,
         )
 
         def _emit(text: str) -> None:
@@ -7888,6 +7889,11 @@ class ClioCLI:
         ok, reason = fusion_gate_check(force_fresh=True)
         if not ok:
             _emit(reason)
+            return
+        # Fusion is only available on a managed (subscription) main model, so the
+        # whole run is metered through the portal.
+        if not main_model_is_managed(self.agent):
+            _emit(FUSION_NEEDS_MANAGED_NOTICE)
             return
 
         # Explicit text form: `advisors=… reviewers=… judge=…` or legacy

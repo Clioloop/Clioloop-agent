@@ -118,6 +118,8 @@ class FakeClient:
 class FakeAgent:
     def __init__(self):
         self.model = "vendor/main"
+        # Fusion requires the main model to run on the managed subscription.
+        self.provider = "managed"
         self.tools = [
             {"type": "function", "function": {"name": "read_file", "description": "Read a file."}},
             {"type": "function", "function": {"name": "image_generate", "description": "Make an image."}},
@@ -177,6 +179,25 @@ def test_misconfigured_config_runs_normal_turn():
     assert out["final_response"] == "FINAL ANSWER"
     assert len(agent.calls) == 1
     assert agent.calls[0]["kwargs"].get("internal_turn") in (None, False)
+
+
+def test_main_model_is_managed_uses_agent_provider():
+    assert fusion.main_model_is_managed(types.SimpleNamespace(provider="managed")) is True
+    assert fusion.main_model_is_managed(types.SimpleNamespace(provider="ollama-cloud")) is False
+    assert fusion.main_model_is_managed(types.SimpleNamespace(provider="openrouter")) is False
+
+
+def test_non_managed_main_model_runs_normal_turn_without_panel(wire):
+    install, state = wire
+    agent = FakeAgent()
+    agent.provider = "ollama-cloud"  # main model from another provider
+    out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
+    # Fusion is unavailable on a foreign main model — falls back to a normal,
+    # visible turn and never opens the portal panel (so nothing is mis-metered).
+    assert out["final_response"] == "FINAL ANSWER"
+    assert len(agent.calls) == 1
+    assert agent.calls[0]["kwargs"].get("internal_turn") in (None, False)
+    assert state["client"] is None  # no portal /start call was made
 
 
 def test_gate_denied_returns_reason(monkeypatch):

@@ -11021,7 +11021,7 @@ class GatewayRunner:
         """
         from agent.fusion_engine import (
             fusion_gate_check, FusionConfig, activation_notice, label_model,
-            parse_fusion_args,
+            parse_fusion_args, main_model_is_managed, FUSION_NEEDS_MANAGED_NOTICE,
         )
 
         source = event.source
@@ -11060,6 +11060,10 @@ class GatewayRunner:
         ok, reason = fusion_gate_check(force_fresh=True)
         if not ok:
             return reason
+        # Fusion is only available on a managed (subscription) main model, so the
+        # whole run (panel + main turns) is metered through the portal.
+        if not main_model_is_managed():
+            return FUSION_NEEDS_MANAGED_NOTICE
 
         # Explicit text form: `advisors=… reviewers=…` (legacy judge/main
         # tokens are accepted by the parser but ignored by the runtime).

@@ -3539,6 +3539,7 @@ def test_slash_exec_handles_fusion_gate_and_config(monkeypatch):
     session = _session(agent=types.SimpleNamespace(model="main-model"))
     server._sessions["sid"] = session
     monkeypatch.setattr(fusion_engine, "fusion_gate_check", lambda force_fresh=True: (True, ""))
+    monkeypatch.setattr(fusion_engine, "main_model_is_managed", lambda agent=None: True)
 
     try:
         gate = server.handle_request(

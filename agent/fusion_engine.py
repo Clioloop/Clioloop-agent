@@ -228,6 +228,42 @@ def fusion_is_active(agent: Any) -> bool:
     return bool(isinstance(cfg, FusionConfig) and cfg.enabled and cfg.is_complete())
 
 
+def main_model_is_managed(agent: Any = None) -> bool:
+    """True when the current main model runs on the managed Omni Loop subscription.
+
+    Fusion is only available in this case: the whole pipeline — the server-side
+    advisor/reviewer/judge panel *and* the local main-model work/finalize turns —
+    must run through the portal so every call is metered at OpenRouter cost. When
+    the chat model is from another provider (e.g. a directly-configured Ollama
+    Cloud or OpenRouter key), the main-model turns bypass the portal and cannot
+    be metered, so fusion must stay off and only a normal chat turn may run.
+
+    The check uses the *runtime* provider (the one actually used for inference),
+    not the auth-store active provider — those can diverge (a managed login in
+    ``auth.json`` while ``config.yaml`` pins ``model.provider`` to a direct
+    provider), which is exactly the gap this guards. When an ``agent`` is given,
+    its live ``provider`` is authoritative; otherwise the runtime provider is
+    resolved from config (for the ``/fusion`` enable check, before a turn runs).
+    """
+    prov = (getattr(agent, "provider", "") or "").strip().lower() if agent is not None else ""
+    if not prov:
+        try:
+            from clio_cli.runtime_provider import resolve_runtime_provider
+            prov = str((resolve_runtime_provider() or {}).get("provider") or "").strip().lower()
+        except Exception:
+            prov = ""
+    return prov == "managed"
+
+
+# Shown when a user tries to enable fusion while their main model is from a
+# provider other than the managed Omni Loop subscription.
+FUSION_NEEDS_MANAGED_NOTICE = (
+    "🔮 Fusion needs an Omni Loop Portal Subscription model as your main model, "
+    "so the whole run is metered through the portal. Switch your chat model to a "
+    "managed model with  /model  first, then enable fusion."
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -528,6 +564,14 @@ def run_fusion_turn(
             or not isinstance(user_message, str):
         return _normal_turn()
 
+    # The main model must run on the managed Omni Loop subscription, otherwise
+    # the main-model work/finalize turns bypass the portal and can't be metered.
+    # If the current chat model is from another provider, fusion is unavailable —
+    # silently run a normal chat turn (no per-turn notice; the /fusion command
+    # already explains this when the user tries to enable it on a foreign model).
+    if not main_model_is_managed(agent):
+        return _normal_turn()
+
     allowed, reason = fusion_gate_check(force_fresh=False)
     if not allowed:
         return {
@@ -611,6 +655,10 @@ def run_fusion_turn(
                     "conversation_history": conversation_history or [],
                     "tools_summary": _summarize_agent_tools(agent),
                     "main_model": str(getattr(agent, "model", "") or ""),
+                    # The portal re-checks this server-side and refuses fusion
+                    # unless the main model runs on the managed subscription, so
+                    # the panel + main turns are all metered through the portal.
+                    "main_provider": (getattr(agent, "provider", "") or "").strip().lower(),
                 },
             )
             if resp.status_code == 403:
@@ -742,6 +790,8 @@ __all__ = [
     "clear_fusion_config",
     "parse_fusion_args",
     "fusion_is_active",
+    "main_model_is_managed",
+    "FUSION_NEEDS_MANAGED_NOTICE",
     "fusion_gate_check",
     "model_open_tag",
     "label_model",

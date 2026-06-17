@@ -7522,6 +7522,8 @@ def _handle_fusion_slash_for_session(sid: str, session: dict, command: str) -> s
         activation_notice,
         fusion_gate_check,
         parse_fusion_args,
+        main_model_is_managed,
+        FUSION_NEEDS_MANAGED_NOTICE,
     )
 
     raw = command.lstrip("/").split(None, 1)
@@ -7549,6 +7551,10 @@ def _handle_fusion_slash_for_session(sid: str, session: dict, command: str) -> s
     ok, reason = fusion_gate_check(force_fresh=True)
     if not ok:
         return reason
+    # Fusion is only available on a managed (subscription) main model, so the
+    # whole run is metered through the portal.
+    if not main_model_is_managed():
+        return FUSION_NEEDS_MANAGED_NOTICE
 
     if tokens:
         parsed = parse_fusion_args(tokens)
