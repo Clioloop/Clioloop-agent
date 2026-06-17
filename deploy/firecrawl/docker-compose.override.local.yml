@@ -1,0 +1,38 @@
+# Overrides layered on the upstream Firecrawl self-host compose
+# (github.com/firecrawl/firecrawl docker-compose.yaml), as deployed on the
+# portal box at /opt/firecrawl. Brings the stack up from PREBUILT images (no
+# source build) and adds a private SearXNG search backend on Firecrawl's own
+# `backend` network.
+#
+# Bring up:
+#   cd /opt/firecrawl
+#   docker compose -f docker-compose.yaml -f docker-compose.override.local.yml pull
+#   docker compose -f docker-compose.yaml -f docker-compose.override.local.yml up -d --no-build
+#
+# Localhost binding is handled in /opt/firecrawl/.env via PORT=127.0.0.1:3002
+# (the upstream compose maps "${PORT:-3002}:${INTERNAL_PORT:-3002}"), so the api
+# publishes only on 127.0.0.1:3002 — never public (auth is disabled).
+services:
+  api:
+    image: ghcr.io/firecrawl/firecrawl:latest
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service:latest
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+
+  # Private search backend for /v2/search, on Firecrawl's `backend` network so
+  # the api resolves it at http://searxng:8080 (SEARXNG_ENDPOINT in .env).
+  searxng-redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    networks: [backend]
+    restart: always
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_REDIS_URL=redis://searxng-redis:6379/0
+    networks: [backend]
+    depends_on: [searxng-redis]
+    restart: always

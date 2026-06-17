@@ -1,0 +1,5 @@
+name: clioloop
+version: 1.0.0
+description: "Clioloop self-hosted image generation — routes through the Omni Loop Portal Tool Gateway to a private image server (Pro plan)."
+author: Omni Loop Labs
+kind: backend

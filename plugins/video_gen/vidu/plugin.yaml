@@ -1,0 +1,7 @@
+name: vidu
+version: 1.0.0
+description: "Vidu Q3 Turbo video generation backend. Supports text-to-video and image-to-video with native audio through the Vidu async API."
+author: Omni Loop Labs
+kind: backend
+requires_env:
+  - VIDU_API_KEY

@@ -1,0 +1,132 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate: workflow_dispatch is already restricted to users with write access,
+  # but we want ADMIN-only. Explicitly check the triggering actor's repo
+  # permission via the API and fail fast for anyone below admin.
+  authorize:
+    name: Authorize (admins only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check actor is a repo admin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          perm=$(gh api \
+            "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+            --jq '.permission')
+          echo "Actor '${ACTOR}' has permission: ${perm}"
+          if [ "${perm}" != "admin" ]; then
+            echo "::error::'${ACTOR}' is not a repo admin (permission=${perm}). Refusing to build/sign."
+            exit 1
+          fi
+          echo "Authorized: '${ACTOR}' is an admin."
+
+  build:
+    name: Clioloop Setup for Windows
+    needs: authorize
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      # write is required to publish the installer to a GitHub Release so the
+      # website's "Download for Windows" button has a stable public URL
+      # (/releases/latest/download/Clioloop-Setup.exe).
+      contents: write
+    env:
+      # Azure/Windows code signing is intentionally disabled for the launch
+      # bootstrap build. Signing credentials will be wired in a later release.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      WIN_CSC_LINK: ""
+      WIN_CSC_KEY_PASSWORD: ""
+      AZURE_CLIENT_ID: ""
+      AZURE_TENANT_ID: ""
+      AZURE_CLIENT_SECRET: ""
+      AZURE_FEDERATED_TOKEN_FILE: ""
+      TAURI_SIGNING_PRIVATE_KEY: ""
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Cache Rust targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: apps/bootstrap-installer/src-tauri
+
+      - name: Build installer
+        run: npm run tauri:build
+        working-directory: apps/bootstrap-installer
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Clioloop-Setup-installer
+          path: apps/bootstrap-installer/src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload raw exe
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Clioloop-Setup-exe
+          path: apps/bootstrap-installer/src-tauri/target/release/Clio-Setup.exe
+
+      # Publish the NSIS installer to a rolling "windows-latest" Release under a
+      # stable asset name so the website can link to
+      # https://github.com/<owner>/<repo>/releases/latest/download/Clioloop-Setup.exe
+      # The release is recreated each run so /latest always serves this build.
+      - name: Stage installer with a stable name
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          base="apps/bootstrap-installer/src-tauri/target/release"
+          # Prefer an NSIS bundle if Tauri produced one; otherwise ship the
+          # raw setup exe (the default Tauri output for this installer).
+          nsis="$(ls "$base"/bundle/nsis/*.exe 2>/dev/null | head -1 || true)"
+          if [ -n "$nsis" ]; then
+            src="$nsis"
+          elif [ -f "$base/Clio-Setup.exe" ]; then
+            src="$base/Clio-Setup.exe"
+          else
+            echo "::error::No installer found under $base (no NSIS bundle, no Clio-Setup.exe)"
+            ls -R "$base" | head -50 || true
+            exit 1
+          fi
+          echo "Staging '$src' -> Clioloop-Setup.exe"
+          cp "$src" dist-release/Clioloop-Setup.exe
+
+      - name: Publish installer to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="windows-latest"
+          # Recreate the rolling release so the /latest/download URL stays stable.
+          gh release delete "$tag" --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
+          gh release create "$tag" dist-release/Clioloop-Setup.exe \
+            --repo "${{ github.repository }}" \
+            --latest \
+            --title "Clioloop Setup for Windows" \
+            --notes "Windows installer (bootstrap setup). Unsigned — Windows SmartScreen may warn; this is expected (see the website note). Built from ${{ github.sha }}."

@@ -1,0 +1,15 @@
+# SearXNG settings for the self-hosted Firecrawl search backend.
+# Mounted at /etc/searxng/settings.yml (see docker-compose.override.local.yml).
+# Firecrawl's /v2/search needs the JSON output format enabled. Internal-only
+# service (no host port); the api reaches it over the Docker `backend` network.
+#
+# NOTE: set a unique secret_key on deploy (e.g. `openssl rand -hex 32`); the
+# committed value below is a placeholder.
+use_default_settings: true
+server:
+  secret_key: "REPLACE_WITH_RANDOM_HEX"
+  limiter: false
+  image_proxy: false
+search:
+  formats: [html, json]
+  safe_search: 0

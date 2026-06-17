@@ -1,0 +1,25 @@
+# systemd unit: bring the self-hosted Firecrawl + SearXNG stack up at boot.
+# Installed at /etc/systemd/system/firecrawl.service on the portal box.
+#   systemctl daemon-reload && systemctl enable --now firecrawl
+#
+# Assumes:
+#   /opt/firecrawl                              -> clone of github.com/firecrawl/firecrawl
+#   /opt/firecrawl/.env                         -> see firecrawl.env.example
+#   /opt/firecrawl/docker-compose.override.local.yml -> see this dir
+#   /opt/firecrawl/searxng-settings.yml         -> see this dir
+[Unit]
+Description=Self-hosted Firecrawl + SearXNG (Omni Loop Portal web gateway)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/firecrawl
+ExecStart=/usr/bin/docker compose -f docker-compose.yaml -f docker-compose.override.local.yml up -d --no-build
+ExecStop=/usr/bin/docker compose -f docker-compose.yaml -f docker-compose.override.local.yml down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

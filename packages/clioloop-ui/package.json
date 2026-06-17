@@ -1,0 +1,485 @@
+{
+  "name": "@clioloop-agent/ui",
+  "version": "1.0.1",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./fonts": {
+      "types": "./dist/fonts.d.ts",
+      "import": "./dist/fonts.js"
+    },
+    "./hooks/use-below-breakpoint": {
+      "types": "./dist/hooks/use-below-breakpoint.d.ts",
+      "import": "./dist/hooks/use-below-breakpoint.js"
+    },
+    "./hooks/use-capped-frame": {
+      "types": "./dist/hooks/use-capped-frame.d.ts",
+      "import": "./dist/hooks/use-capped-frame.js"
+    },
+    "./hooks/use-confirm-delete": {
+      "types": "./dist/hooks/use-confirm-delete.d.ts",
+      "import": "./dist/hooks/use-confirm-delete.js"
+    },
+    "./hooks/use-css-var-dims": {
+      "types": "./dist/hooks/use-css-var-dims.d.ts",
+      "import": "./dist/hooks/use-css-var-dims.js"
+    },
+    "./hooks/use-gpu-tier": {
+      "types": "./dist/hooks/use-gpu-tier.d.ts",
+      "import": "./dist/hooks/use-gpu-tier.js"
+    },
+    "./hooks/use-render-loop": {
+      "types": "./dist/hooks/use-render-loop.d.ts",
+      "import": "./dist/hooks/use-render-loop.js"
+    },
+    "./hooks/use-smooth-controls": {
+      "types": "./dist/hooks/use-smooth-controls.d.ts",
+      "import": "./dist/hooks/use-smooth-controls.js"
+    },
+    "./hooks/use-toast": {
+      "types": "./dist/hooks/use-toast.d.ts",
+      "import": "./dist/hooks/use-toast.js"
+    },
+    "./ui/basic-page": {
+      "types": "./dist/ui/basic-page.d.ts",
+      "import": "./dist/ui/basic-page.js"
+    },
+    "./ui/components/animated-count": {
+      "types": "./dist/ui/components/animated-count.d.ts",
+      "import": "./dist/ui/components/animated-count.js"
+    },
+    "./ui/components/ascii": {
+      "types": "./dist/ui/components/ascii.d.ts",
+      "import": "./dist/ui/components/ascii.js"
+    },
+    "./ui/components/badge": {
+      "types": "./dist/ui/components/badge.d.ts",
+      "import": "./dist/ui/components/badge.js"
+    },
+    "./ui/components/blend-mode": {
+      "types": "./dist/ui/components/blend-mode.d.ts",
+      "import": "./dist/ui/components/blend-mode.js"
+    },
+    "./ui/components/blink": {
+      "types": "./dist/ui/components/blink.d.ts",
+      "import": "./dist/ui/components/blink.js"
+    },
+    "./ui/components/bottom-sheet": {
+      "types": "./dist/ui/components/bottom-sheet.d.ts",
+      "import": "./dist/ui/components/bottom-sheet.js"
+    },
+    "./ui/components/button": {
+      "types": "./dist/ui/components/button.d.ts",
+      "import": "./dist/ui/components/button.js"
+    },
+    "./ui/components/card": {
+      "types": "./dist/ui/components/card.d.ts",
+      "import": "./dist/ui/components/card.js"
+    },
+    "./ui/components/checkbox": {
+      "types": "./dist/ui/components/checkbox.d.ts",
+      "import": "./dist/ui/components/checkbox.js"
+    },
+    "./ui/components/command-block": {
+      "types": "./dist/ui/components/command-block.d.ts",
+      "import": "./dist/ui/components/command-block.js"
+    },
+    "./ui/components/confirm-dialog": {
+      "types": "./dist/ui/components/confirm-dialog.d.ts",
+      "import": "./dist/ui/components/confirm-dialog.js"
+    },
+    "./ui/components/cursor": {
+      "types": "./dist/ui/components/cursor.d.ts",
+      "import": "./dist/ui/components/cursor.js"
+    },
+    "./ui/components/dialog": {
+      "types": "./dist/ui/components/dialog.d.ts",
+      "import": "./dist/ui/components/dialog.js"
+    },
+    "./ui/components/dropdown-menu": {
+      "types": "./dist/ui/components/dropdown-menu.d.ts",
+      "import": "./dist/ui/components/dropdown-menu.js"
+    },
+    "./ui/components/fit-text/index": {
+      "types": "./dist/ui/components/fit-text/index.d.ts",
+      "import": "./dist/ui/components/fit-text/index.js"
+    },
+    "./ui/components/graphs/bar-chart": {
+      "types": "./dist/ui/components/graphs/bar-chart.d.ts",
+      "import": "./dist/ui/components/graphs/bar-chart.js"
+    },
+    "./ui/components/graphs/index": {
+      "types": "./dist/ui/components/graphs/index.d.ts",
+      "import": "./dist/ui/components/graphs/index.js"
+    },
+    "./ui/components/graphs/line-chart": {
+      "types": "./dist/ui/components/graphs/line-chart.d.ts",
+      "import": "./dist/ui/components/graphs/line-chart.js"
+    },
+    "./ui/components/graphs/utils": {
+      "types": "./dist/ui/components/graphs/utils.d.ts",
+      "import": "./dist/ui/components/graphs/utils.js"
+    },
+    "./ui/components/grid/index": {
+      "types": "./dist/ui/components/grid/index.d.ts",
+      "import": "./dist/ui/components/grid/index.js"
+    },
+    "./ui/components/hover-bg": {
+      "types": "./dist/ui/components/hover-bg.d.ts",
+      "import": "./dist/ui/components/hover-bg.js"
+    },
+    "./ui/components/icons/arrow": {
+      "types": "./dist/ui/components/icons/arrow.d.ts",
+      "import": "./dist/ui/components/icons/arrow.js"
+    },
+    "./ui/components/icons/check": {
+      "types": "./dist/ui/components/icons/check.d.ts",
+      "import": "./dist/ui/components/icons/check.js"
+    },
+    "./ui/components/icons/chevron": {
+      "types": "./dist/ui/components/icons/chevron.d.ts",
+      "import": "./dist/ui/components/icons/chevron.js"
+    },
+    "./ui/components/icons/discord": {
+      "types": "./dist/ui/components/icons/discord.d.ts",
+      "import": "./dist/ui/components/icons/discord.js"
+    },
+    "./ui/components/icons/eye": {
+      "types": "./dist/ui/components/icons/eye.d.ts",
+      "import": "./dist/ui/components/icons/eye.js"
+    },
+    "./ui/components/icons/gear": {
+      "types": "./dist/ui/components/icons/gear.d.ts",
+      "import": "./dist/ui/components/icons/gear.js"
+    },
+    "./ui/components/icons/github": {
+      "types": "./dist/ui/components/icons/github.d.ts",
+      "import": "./dist/ui/components/icons/github.js"
+    },
+    "./ui/components/icons/hamburger": {
+      "types": "./dist/ui/components/icons/hamburger.d.ts",
+      "import": "./dist/ui/components/icons/hamburger.js"
+    },
+    "./ui/components/icons/heart": {
+      "types": "./dist/ui/components/icons/heart.d.ts",
+      "import": "./dist/ui/components/icons/heart.js"
+    },
+    "./ui/components/icons/index": {
+      "types": "./dist/ui/components/icons/index.d.ts",
+      "import": "./dist/ui/components/icons/index.js"
+    },
+    "./ui/components/icons/link": {
+      "types": "./dist/ui/components/icons/link.d.ts",
+      "import": "./dist/ui/components/icons/link.js"
+    },
+    "./ui/components/icons/minus": {
+      "types": "./dist/ui/components/icons/minus.d.ts",
+      "import": "./dist/ui/components/icons/minus.js"
+    },
+    "./ui/components/icons/search": {
+      "types": "./dist/ui/components/icons/search.d.ts",
+      "import": "./dist/ui/components/icons/search.js"
+    },
+    "./ui/components/image-distortion": {
+      "types": "./dist/ui/components/image-distortion.d.ts",
+      "import": "./dist/ui/components/image-distortion.js"
+    },
+    "./ui/components/input": {
+      "types": "./dist/ui/components/input.d.ts",
+      "import": "./dist/ui/components/input.js"
+    },
+    "./ui/components/label": {
+      "types": "./dist/ui/components/label.d.ts",
+      "import": "./dist/ui/components/label.js"
+    },
+    "./ui/components/leva-client": {
+      "types": "./dist/ui/components/leva-client.d.ts",
+      "import": "./dist/ui/components/leva-client.js"
+    },
+    "./ui/components/list-item": {
+      "types": "./dist/ui/components/list-item.d.ts",
+      "import": "./dist/ui/components/list-item.js"
+    },
+    "./ui/components/overlays/blend-modes": {
+      "types": "./dist/ui/components/overlays/blend-modes.d.ts",
+      "import": "./dist/ui/components/overlays/blend-modes.js"
+    },
+    "./ui/components/overlays/glitch": {
+      "types": "./dist/ui/components/overlays/glitch.d.ts",
+      "import": "./dist/ui/components/overlays/glitch.js"
+    },
+    "./ui/components/overlays/greys": {
+      "types": "./dist/ui/components/overlays/greys.d.ts",
+      "import": "./dist/ui/components/overlays/greys.js"
+    },
+    "./ui/components/overlays/index": {
+      "types": "./dist/ui/components/overlays/index.d.ts",
+      "import": "./dist/ui/components/overlays/index.js"
+    },
+    "./ui/components/overlays/lens-layers": {
+      "types": "./dist/ui/components/overlays/lens-layers.d.ts",
+      "import": "./dist/ui/components/overlays/lens-layers.js"
+    },
+    "./ui/components/overlays/lens": {
+      "types": "./dist/ui/components/overlays/lens.d.ts",
+      "import": "./dist/ui/components/overlays/lens.js"
+    },
+    "./ui/components/overlays/noise": {
+      "types": "./dist/ui/components/overlays/noise.d.ts",
+      "import": "./dist/ui/components/overlays/noise.js"
+    },
+    "./ui/components/overlays/vignette": {
+      "types": "./dist/ui/components/overlays/vignette.d.ts",
+      "import": "./dist/ui/components/overlays/vignette.js"
+    },
+    "./ui/components/poster": {
+      "types": "./dist/ui/components/poster.d.ts",
+      "import": "./dist/ui/components/poster.js"
+    },
+    "./ui/components/progress": {
+      "types": "./dist/ui/components/progress.d.ts",
+      "import": "./dist/ui/components/progress.js"
+    },
+    "./ui/components/scene-canvas": {
+      "types": "./dist/ui/components/scene-canvas.d.ts",
+      "import": "./dist/ui/components/scene-canvas.js"
+    },
+    "./ui/components/scramble": {
+      "types": "./dist/ui/components/scramble.d.ts",
+      "import": "./dist/ui/components/scramble.js"
+    },
+    "./ui/components/segmented": {
+      "types": "./dist/ui/components/segmented.d.ts",
+      "import": "./dist/ui/components/segmented.js"
+    },
+    "./ui/components/select": {
+      "types": "./dist/ui/components/select.d.ts",
+      "import": "./dist/ui/components/select.js"
+    },
+    "./ui/components/selection-switcher": {
+      "types": "./dist/ui/components/selection-switcher.d.ts",
+      "import": "./dist/ui/components/selection-switcher.js"
+    },
+    "./ui/components/separator": {
+      "types": "./dist/ui/components/separator.d.ts",
+      "import": "./dist/ui/components/separator.js"
+    },
+    "./ui/components/shader": {
+      "types": "./dist/ui/components/shader.d.ts",
+      "import": "./dist/ui/components/shader.js"
+    },
+    "./ui/components/socials": {
+      "types": "./dist/ui/components/socials.d.ts",
+      "import": "./dist/ui/components/socials.js"
+    },
+    "./ui/components/spinner": {
+      "types": "./dist/ui/components/spinner.d.ts",
+      "import": "./dist/ui/components/spinner.js"
+    },
+    "./ui/components/stats": {
+      "types": "./dist/ui/components/stats.d.ts",
+      "import": "./dist/ui/components/stats.js"
+    },
+    "./ui/components/switch": {
+      "types": "./dist/ui/components/switch.d.ts",
+      "import": "./dist/ui/components/switch.js"
+    },
+    "./ui/components/tabs": {
+      "types": "./dist/ui/components/tabs.d.ts",
+      "import": "./dist/ui/components/tabs.js"
+    },
+    "./ui/components/terminal-demo": {
+      "types": "./dist/ui/components/terminal-demo.d.ts",
+      "import": "./dist/ui/components/terminal-demo.js"
+    },
+    "./ui/components/theme-toggle": {
+      "types": "./dist/ui/components/theme-toggle.d.ts",
+      "import": "./dist/ui/components/theme-toggle.js"
+    },
+    "./ui/components/tier-card": {
+      "types": "./dist/ui/components/tier-card.d.ts",
+      "import": "./dist/ui/components/tier-card.js"
+    },
+    "./ui/components/toast": {
+      "types": "./dist/ui/components/toast.d.ts",
+      "import": "./dist/ui/components/toast.js"
+    },
+    "./ui/components/tv": {
+      "types": "./dist/ui/components/tv.d.ts",
+      "import": "./dist/ui/components/tv.js"
+    },
+    "./ui/components/typography/h1": {
+      "types": "./dist/ui/components/typography/h1.d.ts",
+      "import": "./dist/ui/components/typography/h1.js"
+    },
+    "./ui/components/typography/h2": {
+      "types": "./dist/ui/components/typography/h2.d.ts",
+      "import": "./dist/ui/components/typography/h2.js"
+    },
+    "./ui/components/typography/index": {
+      "types": "./dist/ui/components/typography/index.d.ts",
+      "import": "./dist/ui/components/typography/index.js"
+    },
+    "./ui/components/typography/legend": {
+      "types": "./dist/ui/components/typography/legend.d.ts",
+      "import": "./dist/ui/components/typography/legend.js"
+    },
+    "./ui/components/typography/small": {
+      "types": "./dist/ui/components/typography/small.d.ts",
+      "import": "./dist/ui/components/typography/small.js"
+    },
+    "./ui/components/watchlist": {
+      "types": "./dist/ui/components/watchlist.d.ts",
+      "import": "./dist/ui/components/watchlist.js"
+    },
+    "./ui/footer": {
+      "types": "./dist/ui/footer.d.ts",
+      "import": "./dist/ui/footer.js"
+    },
+    "./ui/header": {
+      "types": "./dist/ui/header.d.ts",
+      "import": "./dist/ui/header.js"
+    },
+    "./ui/layout-wrapper": {
+      "types": "./dist/ui/layout-wrapper.d.ts",
+      "import": "./dist/ui/layout-wrapper.js"
+    },
+    "./utils/color": {
+      "types": "./dist/utils/color.d.ts",
+      "import": "./dist/utils/color.js"
+    },
+    "./utils/index": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js"
+    },
+    "./utils/poly": {
+      "types": "./dist/utils/poly.d.ts",
+      "import": "./dist/utils/poly.js"
+    },
+    "./ui/components/fit-text": {
+      "types": "./dist/ui/components/fit-text/index.d.ts",
+      "import": "./dist/ui/components/fit-text/index.js"
+    },
+    "./ui/components/graphs": {
+      "types": "./dist/ui/components/graphs/index.d.ts",
+      "import": "./dist/ui/components/graphs/index.js"
+    },
+    "./ui/components/grid": {
+      "types": "./dist/ui/components/grid/index.d.ts",
+      "import": "./dist/ui/components/grid/index.js"
+    },
+    "./ui/components/icons": {
+      "types": "./dist/ui/components/icons/index.d.ts",
+      "import": "./dist/ui/components/icons/index.js"
+    },
+    "./ui/components/overlays": {
+      "types": "./dist/ui/components/overlays/index.d.ts",
+      "import": "./dist/ui/components/overlays/index.js"
+    },
+    "./ui/components/typography": {
+      "types": "./dist/ui/components/typography/index.d.ts",
+      "import": "./dist/ui/components/typography/index.js"
+    },
+    "./ui/*": "./dist/ui/*",
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js"
+    }
+  },
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "build": "node scripts/build-package.mjs",
+    "test": "npm run type-check",
+    "type-check": "tsc -p tsconfig.build.json --noEmit"
+  },
+  "dependencies": {
+    "@nanostores/react": "^1.1.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "nanostores": "^1.3.0",
+    "radix-ui": "^1.4.0",
+    "sanitize-html": "^2.17.4",
+    "tailwind-merge": "^3.6.0",
+    "tw-animate-css": "^1.4.0",
+    "unicode-animations": "^1.0.3"
+  },
+  "devDependencies": {
+    "@observablehq/plot": "^0.6.17",
+    "@react-three/fiber": "^9.6.1",
+    "@tailwindcss/cli": "^4.3.0",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "25.8.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/three": "^0.184.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "glob": "^13.0.6",
+    "gsap": "^3.15.0",
+    "leva": "^0.10.1",
+    "mockdate": "^3.0.5",
+    "motion": "^12.38.0",
+    "msw": "^2.14.6",
+    "playwright": "^1.60.0",
+    "tailwindcss": "^4.3.0",
+    "three": "^0.184.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vite-plugin-static-copy": "^4.1.0",
+    "vitest": "^4.1.9"
+  },
+  "peerDependencies": {
+    "@observablehq/plot": "^0.6.17",
+    "@react-three/fiber": "^9.4.0",
+    "gsap": "^3.13.0",
+    "leva": "^0.10.1",
+    "motion": "^12.38.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.180.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    },
+    "@react-three/fiber": {
+      "optional": true
+    },
+    "@observablehq/plot": {
+      "optional": true
+    },
+    "leva": {
+      "optional": true
+    },
+    "gsap": {
+      "optional": true
+    }
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  },
+  "description": "Clioloop Agent design system by Omni Loop Labs.",
+  "author": "Omni Loop Labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Clioloop/Clioloop-agent.git",
+    "directory": "packages/clioloop-ui"
+  }
+}
