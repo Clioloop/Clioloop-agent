@@ -163,6 +163,25 @@ def prefers_gateway(config_section: str) -> bool:
     return False
 
 
+def force_gateway(vendor: str, *, force_fresh: bool = False) -> bool:
+    """Return True when subscription users should route this paid tool via the portal.
+
+    A personal vendor key may still exist in the environment, but managed
+    subscription usage must be metered by the Omni Loop Portal whenever the
+    portal has a gateway for that vendor. Never raises: tools can safely call
+    this during availability checks and fall back to their normal direct-key
+    behavior when managed state cannot be resolved.
+    """
+    if not managed_tools_enabled(force_fresh=force_fresh):
+        return False
+    try:
+        from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+        return resolve_managed_tool_gateway(vendor) is not None
+    except Exception:
+        return False
+
+
 def fal_key_is_configured() -> bool:
     """Return True when FAL_KEY is set to a non-whitespace value.
 

@@ -23,6 +23,8 @@ import inspect
 
 import pytest
 
+from clio_cli.portal_account import ManagedProviderAccountInfo
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -218,6 +220,40 @@ class TestIsAvailable:
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
+
+    def test_firecrawl_gateway_overrides_direct_key_for_subscriber(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from plugins.web.firecrawl import provider as firecrawl_provider
+        import tools.web_tools as web_tools
+
+        captured = {}
+
+        class FakeFirecrawl:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(
+            "clio_cli.portal_account.get_managed_portal_account_info",
+            lambda force_fresh=False: ManagedProviderAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=force_fresh,
+                paid_service_access=True,
+            ),
+        )
+        monkeypatch.setattr(web_tools, "Firecrawl", FakeFirecrawl)
+        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
+        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "direct-key")
+        monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-token")
+
+        firecrawl_provider._get_firecrawl_client()
+
+        assert captured["api_key"] == "managed-token"
+        assert captured["api_url"] == "https://portal.clioloop.com/api/gateway/firecrawl"
 
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.

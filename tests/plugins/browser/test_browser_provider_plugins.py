@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import pytest
 
+from clio_cli.portal_account import ManagedProviderAccountInfo
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -188,6 +190,33 @@ class TestIsAvailable:
         assert p.is_available() is False
         monkeypatch.setenv("BROWSER_USE_API_KEY", "key")
         assert p.is_available() is True
+
+    def test_browser_use_gateway_overrides_direct_key_for_subscriber(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        monkeypatch.setattr(
+            "clio_cli.portal_account.get_managed_portal_account_info",
+            lambda force_fresh=False: ManagedProviderAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=force_fresh,
+                paid_service_access=True,
+            ),
+        )
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "direct-key")
+        monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-token")
+
+        p = get_provider("browser-use")
+        assert p is not None
+        config = p._get_config_or_none()
+
+        assert config["managed_mode"] is True
+        assert config["api_key"] == "managed-token"
+        assert config["base_url"] == "https://portal.clioloop.com/api/gateway/browser-use/api/v3"
 
     def test_firecrawl_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()

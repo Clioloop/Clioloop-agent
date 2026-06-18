@@ -6,10 +6,7 @@ import { selectInferenceUpstream } from "@/lib/inference-upstream";
 import {
   checkEntitlement,
   isFreeModelId,
-  MeteringError,
   meterUsage,
-  meteringBlocked,
-  noteMeteringAlert,
   usageTapStream,
 } from "@/lib/openrouter";
 import {
@@ -70,13 +67,9 @@ export async function POST(req: NextRequest) {
         : "This model isn't available on your plan — upgrade in the Omni Loop Portal.";
     return apiError(403, "model_not_in_plan", message);
   }
-  if (requirePaidMetering && meteringBlocked(model, "chat")) {
-    return apiError(
-      503,
-      "metering_disabled",
-      "This model is temporarily unavailable while Omni Loop verifies upstream usage metering.",
-    );
-  }
+  // No metering pre-block: meterUsage self-heals a missing/zero upstream cost via
+  // the catalog price (see lib/openrouter.meterUsage), so a model is never made
+  // unavailable for a metering hiccup.
 
   // Shared free-model daily allotment (all tiers, abuse guard). Free users are
   // blocked past it; paid tiers keep using the free model.
@@ -140,11 +133,9 @@ export async function POST(req: NextRequest) {
       usageTapStream(
         (usage, usedModel) => meter(usage, usedModel),
         model,
-        (usedModel) => {
-          if (planId !== "free" && !isFreeModelId(usedModel)) {
-            noteMeteringAlert(usedModel, "chat", "missing_stream_usage");
-          }
-        },
+        // No final usage chunk: still record the call (meterUsage falls back to
+        // the catalog price, or a floor) so a streamed turn is never unbilled.
+        (usedModel) => meter(undefined, usedModel),
       ),
     );
     return new Response(tapped, {
@@ -159,26 +150,15 @@ export async function POST(req: NextRequest) {
 
   const text = await upstream.text();
   if (upstream.ok) {
+    // meterUsage never throws — it self-heals a missing/zero cost via the
+    // catalog price (or a floor), so we always bill and never block the response.
     try {
       const json = JSON.parse(text) as { usage?: UpstreamUsage; model?: string };
       meter(json.usage, json.model ?? model);
-    } catch (err) {
-      if (err instanceof MeteringError) {
-        return apiError(
-          502,
-          "metering_unverified",
-          "OpenRouter completed the request without billable usage data, so Omni Loop blocked the response.",
-        );
-      }
-      // non-JSON success body — pass through only for non-paid model paths.
-      if (requirePaidMetering) {
-        noteMeteringAlert(model, "chat", "non_json_success");
-        return apiError(
-          502,
-          "metering_unverified",
-          "OpenRouter returned a successful response that could not be metered.",
-        );
-      }
+    } catch {
+      // Non-JSON success body (no parseable usage) — still record the call so a
+      // paid response is never delivered unbilled.
+      if (requirePaidMetering) meter(undefined, model);
     }
   }
   return new Response(text, {

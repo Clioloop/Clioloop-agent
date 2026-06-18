@@ -98,6 +98,7 @@ from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names
     resolve_managed_tool_gateway,
 )
 from tools.tool_backend_helpers import (  # noqa: F401
+    force_gateway,
     managed_tools_enabled,
     managed_tool_gateway_unavailable_message,
     prefers_gateway,

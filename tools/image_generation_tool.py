@@ -67,6 +67,7 @@ from agent.image_gen_provider import save_b64_image, save_url_image
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
+    force_gateway,
     managed_tools_enabled,
     managed_tool_gateway_unavailable_message,
     prefers_gateway,
@@ -409,8 +410,16 @@ _managed_fal_client_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    if fal_key_is_configured() and not prefers_gateway("image_gen"):
+    or direct FAL credentials are absent.
+
+    Managed subscription users route through the portal gateway whenever it is
+    available, even if a direct FAL key exists, so usage is metered on-account.
+    """
+    if (
+        fal_key_is_configured()
+        and not prefers_gateway("image_gen")
+        and not force_gateway("fal-queue")
+    ):
         return None
     return resolve_managed_tool_gateway("fal-queue")
 

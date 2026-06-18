@@ -222,6 +222,25 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
     assert captured["http_client"] is first_client
 
 
+def test_managed_image_fal_gateway_overrides_direct_key_for_subscriber(monkeypatch):
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    monkeypatch.setenv("FAL_KEY", "direct-key-present")
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-token")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+
+    image_generation_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "meter me"})
+
+    assert captured["submit_via"] == "managed_client"
+    assert captured["client_key"] == "managed-token"
+
+
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()
@@ -244,7 +263,7 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     assert captured["close_calls"] == 1
 
 
-def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_path):
+def test_openai_tts_gateway_overrides_direct_key_for_subscriber(monkeypatch, tmp_path):
     captured = {}
     _install_fake_tools_package()
     _install_fake_openai_module(captured)
@@ -257,9 +276,56 @@ def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_p
     output_path = tmp_path / "speech.mp3"
     tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
 
+    assert captured["api_key"] == "managed-token"
+    assert captured["base_url"] == "https://portal.clioloop.com/api/gateway/openai-audio/v1"
+    assert captured["close_calls"] == 1
+
+
+def test_openai_tts_accepts_openai_api_key_as_direct_fallback_without_subscription(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_openai_module(captured)
+    monkeypatch.setattr(
+        "clio_cli.portal_account.get_managed_portal_account_info",
+        lambda: ManagedProviderAccountInfo(logged_in=False, source="none", fresh=False),
+    )
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-direct-key")
+    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-token")
+
+    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
+    output_path = tmp_path / "speech.mp3"
+    tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
+
     assert captured["api_key"] == "openai-direct-key"
     assert captured["base_url"] == "https://api.openai.com/v1"
     assert captured["close_calls"] == 1
+
+
+def test_transcription_openai_audio_gateway_overrides_direct_key_for_subscriber(
+    monkeypatch, tmp_path
+):
+    _install_fake_tools_package()
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("stt:\n  provider: openai\n")
+    monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-direct-key")
+    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "managed-token")
+
+    transcription_tools = _load_tool_module(
+        "tools.transcription_tools",
+        "transcription_tools.py",
+    )
+    transcription_tools._load_stt_config = lambda: {"provider": "openai", "openai": {}}
+
+    api_key, base_url = transcription_tools._resolve_openai_audio_client_config()
+
+    assert api_key == "managed-token"
+    assert base_url == "https://portal.clioloop.com/api/gateway/openai-audio/v1"
 
 
 def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_path):

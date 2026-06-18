@@ -40,6 +40,7 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    force_gateway,
     managed_tools_enabled,
     managed_tool_gateway_unavailable_message,
     resolve_openai_audio_api_key,
@@ -1748,11 +1749,12 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     openai_cfg = stt_config.get("openai", {})
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
-    if cfg_api_key:
+    prefer_managed = force_gateway("openai-audio")
+    if cfg_api_key and not prefer_managed:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
 
     direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
+    if direct_api_key and not prefer_managed:
         return direct_api_key, OPENAI_BASE_URL
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")

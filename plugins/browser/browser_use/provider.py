@@ -133,12 +133,13 @@ class BrowserUseBrowserProvider(BrowserProvider):
             peek_managed_access_token,
             resolve_managed_tool_gateway,
         )
-        from tools.tool_backend_helpers import prefers_gateway
+        from tools.tool_backend_helpers import force_gateway, prefers_gateway
 
         # Direct API key wins unless the user has explicitly opted into the
-        # managed provider gateway via ``tool_gateway.browser: gateway``.
+        # managed provider gateway, or the current Omni Loop subscription
+        # account has a Browser Use gateway that should meter usage on-account.
         api_key = os.environ.get("BROWSER_USE_API_KEY")
-        if api_key and not prefers_gateway("browser"):
+        if api_key and not prefers_gateway("browser") and not force_gateway("browser-use"):
             return {
                 "api_key": api_key,
                 "base_url": _BASE_URL,
@@ -155,7 +156,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
 
         return {
             "api_key": managed.managed_user_token,
-            "base_url": managed.gateway_origin.rstrip("/"),
+            "base_url": f"{managed.gateway_origin.rstrip('/')}/api/v3",
             "managed_mode": True,
         }
 

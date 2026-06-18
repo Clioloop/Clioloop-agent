@@ -13,7 +13,7 @@ vi.mock("./db", () => db);
 import {
   isTextOutputModel,
   meterUsage,
-  MeteringError,
+  modelPriceMicros,
   modelAllowed,
   meteringBlocked,
   usageTapStream,
@@ -24,6 +24,7 @@ describe("OpenRouter metering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.hasActiveMeteringAlert.mockReturnValue(false);
+    globalThis.__olpModelCache = undefined;
   });
 
   it("records OpenRouter cost in credit micros", () => {
@@ -45,33 +46,67 @@ describe("OpenRouter metering", () => {
     expect(db.recordMeteringAlert).not.toHaveBeenCalled();
   });
 
-  it("fails safe and records an alert when paid usage.cost is missing", () => {
-    expect(() =>
-      meterUsage(
-        "user-1",
-        "anthropic/claude-sonnet-4.6",
-        { prompt_tokens: 10, completion_tokens: 4 },
-        { requirePositiveCost: true, path: "chat" },
-      ),
-    ).toThrow(MeteringError);
-
-    expect(db.recordUsage).not.toHaveBeenCalled();
-    expect(db.recordMeteringAlert).toHaveBeenCalledWith(
+  it("falls back to the catalog price when paid usage.cost is missing (no throw)", () => {
+    globalThis.__olpModelCache = {
+      at: Date.now(),
+      data: [
+        {
+          id: "anthropic/claude-sonnet-4.6",
+          pricing: { prompt: "0.000003", completion: "0.000015" },
+        },
+      ],
+    };
+    const result = meterUsage(
+      "user-1",
       "anthropic/claude-sonnet-4.6",
-      "chat",
-      "missing_cost",
-      expect.stringContaining("prompt_tokens"),
+      { prompt_tokens: 1000, completion_tokens: 500 },
+      { requirePositiveCost: true, path: "chat" },
+    );
+    // 1000*0.000003 + 500*0.000015 = 0.0105 USD → 10500 micros
+    expect(result).toEqual({ recorded: true, costMicros: 10500 });
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "anthropic/claude-sonnet-4.6",
+      1000,
+      500,
+      10500,
     );
   });
 
-  it("checks unresolved metering alerts before allowing future paid calls", () => {
-    db.hasActiveMeteringAlert.mockReturnValue(true);
-
-    expect(meteringBlocked("anthropic/claude-sonnet-4.6", "chat")).toBe(true);
-    expect(db.hasActiveMeteringAlert).toHaveBeenCalledWith(
-      "anthropic/claude-sonnet-4.6",
-      "chat",
+  it("records a 1µ floor when both cost and catalog price are unavailable", () => {
+    const result = meterUsage(
+      "user-1",
+      "some/unknown-model",
+      { prompt_tokens: 10, completion_tokens: 4 },
+      { requirePositiveCost: true, path: "chat" },
     );
+    expect(result).toEqual({ recorded: true, costMicros: 1 });
+    expect(db.recordUsage).toHaveBeenCalledWith("user-1", "some/unknown-model", 10, 4, 1);
+  });
+
+  it("records zero for free models/tier without throwing", () => {
+    const result = meterUsage(
+      "user-1",
+      "openai/gpt-oss-120b:free",
+      { prompt_tokens: 5, completion_tokens: 2 },
+      { requirePositiveCost: false },
+    );
+    expect(result).toEqual({ recorded: true, costMicros: 0 });
+    expect(db.recordUsage).toHaveBeenCalledWith("user-1", "openai/gpt-oss-120b:free", 5, 2, 0);
+  });
+
+  it("modelPriceMicros computes from the cached catalog", () => {
+    globalThis.__olpModelCache = {
+      at: Date.now(),
+      data: [{ id: "m", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+    };
+    expect(modelPriceMicros("m", 1000, 1000)).toBe(3000); // (0.001 + 0.002) USD → micros
+    expect(modelPriceMicros("unknown", 1000, 1000)).toBeNull();
+  });
+
+  it("meteringBlocked is always false — metering self-heals", () => {
+    db.hasActiveMeteringAlert.mockReturnValue(true);
+    expect(meteringBlocked("anything", "chat")).toBe(false);
   });
 
   it("captures streaming final usage exactly once", async () => {

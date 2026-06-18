@@ -19,6 +19,7 @@ import pytest
 from clio_cli.portal_account import ManagedProviderAccessInfo, ManagedProviderAccountInfo
 from tools.tool_backend_helpers import (
     coerce_modal_mode,
+    force_gateway,
     has_direct_modal_credentials,
     managed_tools_enabled,
     managed_tool_gateway_unavailable_message,
@@ -285,6 +286,49 @@ class TestPrefersGateway:
             lambda: {"web": {"use_gateway": "true"}},
         )
         assert prefers_gateway("web") is True
+
+
+# ---------------------------------------------------------------------------
+# force_gateway
+# ---------------------------------------------------------------------------
+class TestForceGateway:
+    """Subscription users should use the portal gateway when the vendor exists."""
+
+    def test_true_for_paid_account_with_gateway(self, monkeypatch):
+        monkeypatch.setattr(
+            "clio_cli.portal_account.get_managed_portal_account_info",
+            lambda force_fresh=False: ManagedProviderAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=force_fresh,
+                paid_service_access=True,
+            ),
+        )
+        monkeypatch.setattr(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+            lambda vendor: object() if vendor == "firecrawl" else None,
+        )
+
+        assert force_gateway("firecrawl") is True
+        assert force_gateway("unknown") is False
+
+    def test_false_without_managed_entitlement(self, monkeypatch):
+        monkeypatch.setattr(
+            "clio_cli.portal_account.get_managed_portal_account_info",
+            lambda force_fresh=False: ManagedProviderAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=force_fresh,
+                paid_service_access=False,
+                tool_gateway_entitled=False,
+            ),
+        )
+        monkeypatch.setattr(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+            lambda vendor: object(),
+        )
+
+        assert force_gateway("firecrawl") is False
 
 
 # ---------------------------------------------------------------------------

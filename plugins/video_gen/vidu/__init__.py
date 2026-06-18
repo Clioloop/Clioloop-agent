@@ -140,9 +140,13 @@ def _image_ref_to_vidu_image(value: str) -> str:
 
 
 def _resolve_managed_vidu_gateway():
-    from tools.tool_backend_helpers import prefers_gateway
+    from tools.tool_backend_helpers import force_gateway, prefers_gateway
 
-    if vidu_key_is_configured() and not prefers_gateway("video_gen"):
+    if (
+        vidu_key_is_configured()
+        and not prefers_gateway("video_gen")
+        and not force_gateway("vidu")
+    ):
         return None
     from tools.managed_tool_gateway import resolve_managed_tool_gateway
 

@@ -210,3 +210,27 @@ def test_managed_gateway_uses_bearer_token(monkeypatch):
     assert managed is True
     assert base_url == "https://portal.example/api/gateway/vidu"
     assert headers["Authorization"] == "Bearer managed-token"
+
+
+def test_managed_gateway_overrides_direct_vidu_key_for_subscriber(monkeypatch):
+    import plugins.video_gen.vidu as vidu_plugin
+
+    class ManagedGateway:
+        gateway_origin = "https://portal.example/api/gateway/vidu"
+        managed_user_token = "managed-token"
+
+    monkeypatch.setenv("VIDU_API_KEY", "direct-vidu-key")
+    monkeypatch.setattr(
+        "tools.tool_backend_helpers.force_gateway",
+        lambda vendor: vendor == "vidu",
+    )
+    monkeypatch.setattr(
+        "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+        lambda vendor: ManagedGateway() if vendor == "vidu" else None,
+    )
+
+    base_url, headers, managed = vidu_plugin._resolve_vidu_client_config()
+
+    assert managed is True
+    assert base_url == "https://portal.example/api/gateway/vidu"
+    assert headers["Authorization"] == "Bearer managed-token"

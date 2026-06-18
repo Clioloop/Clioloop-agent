@@ -304,6 +304,16 @@ export function hasActiveMeteringAlert(model: string, pathName = "chat"): boolea
   return !!row;
 }
 
+/** Mark all currently-active metering alerts resolved. Returns the count.
+ *  Used after deploying the metering pricing-fallback so models that were
+ *  blocked by stale alerts are immediately freed. */
+export function resolveMeteringAlerts(): number {
+  const res = getDb()
+    .prepare("UPDATE metering_alerts SET resolved_at = ? WHERE resolved_at IS NULL")
+    .run(now());
+  return res.changes ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Telegram managed-bot onboarding pairings.
 // ---------------------------------------------------------------------------

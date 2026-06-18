@@ -265,9 +265,10 @@ def _route_firecrawl_client_through_gateway(client: Any) -> None:
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
-    When ``web.use_gateway`` is set in config, the managed Tool Gateway is
-    preferred even if direct Firecrawl credentials are present. Otherwise
-    direct Firecrawl takes precedence when explicitly configured.
+    When ``web.use_gateway`` is set in config, or the current account is an
+    entitled Omni Loop subscription user with a Firecrawl gateway, the managed
+    Tool Gateway is preferred even if direct Firecrawl credentials are present.
+    Otherwise direct Firecrawl takes precedence when explicitly configured.
 
     Raises ValueError when neither path is usable.
 
@@ -284,7 +285,11 @@ def _get_firecrawl_client() -> Any:
 
     direct_config = _get_direct_firecrawl_config()
     is_gateway = False
-    if direct_config is not None and not _wt.prefers_gateway("web"):
+    if (
+        direct_config is not None
+        and not _wt.prefers_gateway("web")
+        and not _wt.force_gateway("firecrawl")
+    ):
         kwargs, client_config = direct_config
     else:
         managed_gateway = _wt.resolve_managed_tool_gateway(

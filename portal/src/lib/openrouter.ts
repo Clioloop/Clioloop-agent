@@ -69,16 +69,6 @@ interface UpstreamUsage {
   cost?: number; // USD credits, present when usage.include is requested
 }
 
-export class MeteringError extends Error {
-  constructor(
-    message: string,
-    public readonly reason: "missing_usage" | "missing_cost" | "non_positive_cost",
-  ) {
-    super(message);
-    this.name = "MeteringError";
-  }
-}
-
 export interface MeterUsageOptions {
   requirePositiveCost?: boolean;
   path?: string;
@@ -93,8 +83,14 @@ export function isFreeModelId(model: string): boolean {
   return model.endsWith(":free");
 }
 
-export function meteringBlocked(model: string, pathName = "chat"): boolean {
-  return hasActiveMeteringAlert(model, pathName);
+export function meteringBlocked(...args: unknown[]): boolean {
+  // Metering now self-heals: when OpenRouter omits a usable cost we charge from
+  // the catalog price (see meterUsage), so a model is never blocked for a
+  // missing/zero upstream cost. Kept for call-site compatibility — always false.
+  // (hasActiveMeteringAlert stays available as an informational query.)
+  void args;
+  void hasActiveMeteringAlert;
+  return false;
 }
 
 export function noteMeteringAlert(
@@ -106,44 +102,89 @@ export function noteMeteringAlert(
   recordMeteringAlert(model, pathName, reason, details);
 }
 
-function validateUsage(
+/**
+ * Best-effort cost in micros for a model, computed from the cached OpenRouter
+ * catalog price (per-token USD) × token counts. Returns null when the model or
+ * its pricing isn't in the cache, or the result isn't a usable positive number.
+ * Synchronous: it only reads the already-cached catalog (warmed by fetchModels).
+ */
+export function modelPriceMicros(
   model: string,
-  usage: UpstreamUsage | undefined,
-  options: MeterUsageOptions,
-): UpstreamUsage | undefined {
-  if (!options.requirePositiveCost) return usage;
-  if (!usage) {
-    noteMeteringAlert(model, options.path ?? "chat", "missing_usage");
-    throw new MeteringError("OpenRouter response was missing usage data.", "missing_usage");
-  }
-  if (typeof usage.cost !== "number" || !Number.isFinite(usage.cost)) {
-    noteMeteringAlert(model, options.path ?? "chat", "missing_cost", JSON.stringify(usage));
-    throw new MeteringError("OpenRouter response was missing usage.cost.", "missing_cost");
-  }
-  if (usage.cost <= 0) {
-    noteMeteringAlert(model, options.path ?? "chat", "non_positive_cost", JSON.stringify(usage));
-    throw new MeteringError("OpenRouter response reported a non-positive paid cost.", "non_positive_cost");
-  }
-  return usage;
+  promptTokens: number,
+  completionTokens: number,
+): number | null {
+  const cache = globalThis.__olpModelCache;
+  if (!cache) return null;
+  const pricing = cache.data.find((m) => m.id === model)?.pricing;
+  if (!pricing) return null;
+  const promptPrice = Number(pricing.prompt);
+  const completionPrice = Number(pricing.completion);
+  if (!Number.isFinite(promptPrice) || !Number.isFinite(completionPrice)) return null;
+  const usd = promptTokens * promptPrice + completionTokens * completionPrice;
+  if (!Number.isFinite(usd) || usd <= 0) return null;
+  return Math.max(1, Math.round(usd * 1_000_000));
 }
 
+let _warmingCatalog = false;
+/** Populate the model-price cache in the background (5-min TTL) without blocking. */
+function warmModelCatalog(): void {
+  if (_warmingCatalog) return;
+  _warmingCatalog = true;
+  void fetchModels()
+    .catch(() => {})
+    .finally(() => {
+      _warmingCatalog = false;
+    });
+}
+
+/**
+ * Record a usage event for an inference call. Cost comes from OpenRouter's
+ * `usage.cost` when present and positive; otherwise — for paid models — it falls
+ * back to the catalog price × tokens, and finally to a 1-micro floor. It never
+ * throws and never blocks a model: a missing/zero upstream cost is self-healed
+ * so the call is always billed and the model stays available.
+ */
 export function meterUsage(
   userId: string,
   model: string,
   usage: UpstreamUsage | undefined,
   options: MeterUsageOptions = {},
 ): MeterUsageResult {
-  const checked = validateUsage(model, usage, options);
-  if (!checked) return { recorded: false, costMicros: 0 };
-  const rounded = Math.round((checked.cost ?? 0) * 1_000_000);
-  const costMicros = options.requirePositiveCost ? Math.max(1, rounded) : Math.max(0, rounded);
-  recordUsage(
-    userId,
-    model,
-    checked.prompt_tokens ?? 0,
-    checked.completion_tokens ?? 0,
-    costMicros,
-  );
+  const requirePositive = !!options.requirePositiveCost;
+  const path = options.path ?? "chat";
+  const promptTokens = usage?.prompt_tokens ?? 0;
+  const completionTokens = usage?.completion_tokens ?? 0;
+  const upstreamCost =
+    typeof usage?.cost === "number" && Number.isFinite(usage.cost) ? usage.cost : null;
+
+  let costMicros: number;
+  if (upstreamCost !== null && upstreamCost > 0) {
+    // Authoritative cost from OpenRouter.
+    costMicros = Math.max(requirePositive ? 1 : 0, Math.round(upstreamCost * 1_000_000));
+  } else if (!requirePositive) {
+    // Free model / free tier — zero cost is expected and fine.
+    costMicros = 0;
+  } else {
+    // Paid model but OpenRouter omitted or zeroed the cost. Charge from the
+    // catalog price so the call is still billed and the model never blocks.
+    const fallback = modelPriceMicros(model, promptTokens, completionTokens);
+    if (fallback !== null) {
+      costMicros = fallback;
+      console.warn(
+        `[metering] ${path}: ${model} missing upstream cost — charged catalog fallback ${fallback}µ ` +
+          `(${promptTokens}/${completionTokens} tok)`,
+      );
+    } else {
+      costMicros = 1; // floor so the usage row always exists; warm for next time
+      warmModelCatalog();
+      console.warn(
+        `[metering] ${path}: ${model} missing upstream cost and no catalog price — charged 1µ floor ` +
+          `(${promptTokens}/${completionTokens} tok)`,
+      );
+    }
+  }
+
+  recordUsage(userId, model, promptTokens, completionTokens, costMicros);
   return { recorded: true, costMicros };
 }
 

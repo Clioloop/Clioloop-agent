@@ -70,6 +70,7 @@ def get_env_value(name, default=None):
     return default if value is None else value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    force_gateway,
     managed_tools_enabled,
     managed_tool_gateway_unavailable_message,
     prefers_gateway,
@@ -2315,11 +2316,12 @@ def check_tts_requirements() -> bool:
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback.
 
-    When ``tts.use_gateway`` is set in config, the Tool Gateway is preferred
-    even if direct OpenAI credentials are present.
+    When ``tts.use_gateway`` is set in config, or the current Omni Loop
+    subscription account has an OpenAI audio gateway, the Tool Gateway is
+    preferred even if direct OpenAI credentials are present.
     """
     direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key and not prefers_gateway("tts"):
+    if direct_api_key and not prefers_gateway("tts") and not force_gateway("openai-audio"):
         return direct_api_key, DEFAULT_OPENAI_BASE_URL
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
