@@ -22,7 +22,24 @@ export function portalBaseUrl(): string {
 }
 
 async function ensureStripeCustomer(user: UserRow): Promise<string> {
-  if (user.stripe_customer_id) return user.stripe_customer_id;
+  // Reuse a stored customer only if it still exists in the *current* Stripe
+  // account. A stale id — created under test keys before going live, or a
+  // customer later deleted — would otherwise make every checkout fail with
+  // "No such customer". In that case transparently create a fresh one and
+  // re-point the user to it.
+  if (user.stripe_customer_id) {
+    try {
+      const existing = await stripe().customers.retrieve(user.stripe_customer_id);
+      if (!(existing as Stripe.DeletedCustomer).deleted) {
+        return user.stripe_customer_id;
+      }
+    } catch (err) {
+      const missing =
+        err instanceof Stripe.errors.StripeError && err.code === "resource_missing";
+      if (!missing) throw err;
+      // fall through to recreate the customer
+    }
+  }
   const customer = await stripe().customers.create({
     email: user.email,
     name: user.name || undefined,
@@ -62,6 +79,10 @@ export async function startCheckout(user: UserRow, planId: PlanId): Promise<Chec
   if (plan.id === "free") {
     const session = await stripe().checkout.sessions.create({
       mode: "setup",
+      // Required by the current Stripe API for setup-mode Checkout sessions —
+      // without it the free-plan card verification fails with
+      // "Missing required param: currency".
+      currency: "eur",
       customer: customerId,
       success_url: `${base}/api/billing/confirm?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${base}/pricing?cancelled=1`,
