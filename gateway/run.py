@@ -18472,52 +18472,51 @@ class GatewayRunner:
                         and getattr(_fusion_cfg, "is_complete", lambda: False)() \
                         and isinstance(_api_run_message, str):
                     from agent.fusion_engine import run_fusion_turn
-                    # Surface fusion stages as distinct chat bubbles. The main
-                    # model's work streams normally (committed stream_callback in
-                    # _conversation_kwargs); on top of that we show a staging
-                    # bubble (planning/working/finalizing) and, crucially, a NEW
-                    # reviewer bubble per round that updates in place to the
-                    # reviewers' critique/approval. Conversation-scoped keys make
-                    # each bubble edit in place on Telegram; resetting them at the
-                    # start of the turn forces fresh bubbles per request instead
-                    # of re-editing the previous turn's (now scrolled-up) ones.
-                    _fusion_base = f"fusion:{session_key or _status_chat_id}"
-                    _reset_status = getattr(_status_adapter, "reset_status_message", None)
-                    if callable(_reset_status):
-                        # plan staging bubble + a reviewer bubble per possible
-                        # round (bounded; a few extra keys are harmless).
-                        for _fk in ([f"{_fusion_base}:plan"]
-                                    + [f"{_fusion_base}:review:{_i}" for _i in range(6)]):
-                            try:
-                                _reset_status(_status_chat_id, _fk)
-                            except Exception:
-                                pass
+                    # Fusion progress: deliver EACH update as its own fresh
+                    # message so it always lands at the bottom of the chat, in
+                    # chronological order. The timeline then reads top-to-bottom
+                    # (working → the main model's tool calls → judge/critique →
+                    # finalizing → final answer) and the user can always see the
+                    # latest fusion status below the work. The previous design
+                    # edited a single staging bubble in place, so later updates
+                    # were stranded ABOVE the tool calls and the final answer.
+                    # These are plain sends (not keyed status edits) and are not
+                    # tracked for progress cleanup, so the run's fusion timeline
+                    # stays visible after the answer is delivered.
+                    def _fusion_send_sync(content: str) -> None:
+                        if not _status_adapter or not _run_still_current():
+                            return
+                        prepared = _prepare_gateway_status_message(
+                            source.platform, "fusion", content,
+                        )
+                        if prepared is None:
+                            return
+                        safe_schedule_threadsafe(
+                            _status_adapter.send(
+                                _status_chat_id, prepared,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                            logger=logger,
+                            log_message="fusion status send error",
+                        )
 
-                    def _fusion_progress(_ev, _base=_fusion_base):
-                        # _ev is a FusionEvent (str() yields its label). Route the
-                        # reviewer phases to a per-round bubble; everything else
-                        # (planning/working/revising/finalizing) to the staging
-                        # bubble. The final fused answer arrives via the normal
-                        # committed stream, not here.
+                    def _fusion_progress(_ev):
+                        # _ev is a FusionEvent (str() yields its label). Every
+                        # phase change is its own bubble. Working/finalizing/judge
+                        # labels show text only; critique/approval also carry the
+                        # reviewers' notes. The final fused answer arrives via the
+                        # normal committed stream, not here.
                         _phase = getattr(_ev, "phase", "") or ""
                         _text = getattr(_ev, "text", None)
                         if _text is None:
                             _text = str(_ev)
                         _detail = getattr(_ev, "detail", "") or ""
-                        _round = getattr(_ev, "round", 0) or 0
-                        if _phase in ("reviewing", "critique", "approved"):
-                            _key = f"{_base}:review:{_round}"
-                            # The "being reviewed" confirmation shows only the
-                            # status label — never the draft or reviewer
-                            # internals. Critique/approval carry reviewer notes.
-                            if _phase == "reviewing":
-                                _content = _text
-                            else:
-                                _content = _text if not _detail else f"{_text}\n\n{_detail}"
+                        if _detail and _phase in ("critique", "approved"):
+                            _content = f"{_text}\n\n{_detail}"
                         else:
-                            _key = f"{_base}:plan"
                             _content = _text
-                        _status_callback_sync(_key, _content)
+                        _fusion_send_sync(_content)
 
                     result = run_fusion_turn(
                         agent, _api_run_message, config=_fusion_cfg,
