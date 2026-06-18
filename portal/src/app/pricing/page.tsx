@@ -28,8 +28,13 @@ const FEATURES: Record<PlanId, Line[]> = {
   ],
   pro: [
     { text: "Full 300+ OpenRouter model catalog" },
-    { text: "Agentic Fusion — planners + reviewers fuse one answer", kind: "fusion" },
-    { text: "Tool gateway: web search & extract · image gen · premium TTS · cloud browser" },
+    {
+      text: "Agentic Fusion — planners + reviewers fuse one answer",
+      kind: "fusion",
+    },
+    {
+      text: "Tool gateway: web search & extract · image gen · premium TTS · cloud browser",
+    },
     { text: "Unlimited devices" },
     { text: "Usage dashboard" },
     { text: "Email support" },
@@ -58,7 +63,7 @@ const FAQ = [
   },
   {
     q: "What does Agentic Fusion cost?",
-    a: "Fusion is included from Pro upward at no extra fee. The planner and reviewer model calls are metered against your normal monthly usage allowance, like any other inference.",
+    a: "Fusion is included from Pro upward at no extra fee. The planner and reviewer model calls are metered against your normal monthly usage allowance, like any other inference. Run Fusion in a fresh session, then reset after the final fused answer so the next planner/reviewer panel does not inherit stale context.",
   },
   {
     q: "What does “usage” mean?",
@@ -92,10 +97,10 @@ export default function PricingPage() {
           <span className="eyebrow">pricing</span>
           <h2>One login. Every model. Agentic Fusion.</h2>
           <p>
-            Every plan includes the full Clioloop experience: one-click setup on CLI,
-            TUI, desktop and dashboard, streaming inference, usage metering and rotating
-            device tokens. No API keys — your subscription is the credential. Hosted tools
-            and Agentic Fusion unlock on Pro.
+            Every plan includes the full Clioloop experience: one-click setup on
+            CLI, TUI, desktop and dashboard, streaming inference, usage metering
+            and rotating device tokens. No API keys — your subscription is the
+            credential. Hosted tools and Agentic Fusion unlock on Pro.
           </p>
         </div>
 
@@ -104,7 +109,10 @@ export default function PricingPage() {
             const plan = PLANS[id];
             const featured = id === "pro";
             return (
-              <div key={id} className={`price-card ${featured ? "featured" : ""}`}>
+              <div
+                key={id}
+                className={`price-card ${featured ? "featured" : ""}`}
+              >
                 {FLAGS[id] && <span className="plan-flag">{FLAGS[id]}</span>}
                 <h3>{plan.name}</h3>
                 <p className="plan-tagline">{plan.tagline}</p>
@@ -116,7 +124,13 @@ export default function PricingPage() {
                   {FEATURES[id].map((f) => (
                     <li
                       key={f.text}
-                      className={f.kind === "fusion" ? "li-fusion" : f.kind === "off" ? "li-off" : undefined}
+                      className={
+                        f.kind === "fusion"
+                          ? "li-fusion"
+                          : f.kind === "off"
+                            ? "li-off"
+                            : undefined
+                      }
                     >
                       {f.text}
                     </li>
