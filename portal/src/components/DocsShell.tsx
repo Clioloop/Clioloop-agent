@@ -30,6 +30,7 @@ export const DOCS_NAV: { group: string; items: { slug: string; title: string }[]
       { slug: "skills", title: "Skills & memory" },
       { slug: "security", title: "Security & tokens" },
       { slug: "commands", title: "Command reference" },
+      { slug: "research", title: "Research Paper" },
     ],
   },
 ];

@@ -20,6 +20,7 @@ const TILES: { slug: string; icon: string; title: string; blurb: string }[] = [
   { slug: "skills", icon: "✨", title: "Skills & memory", blurb: "Persistent memory plus skills the agent generates, curates and evolves over time." },
   { slug: "security", icon: "🔐", title: "Security & tokens", blurb: "Device-code OAuth, rotating single-use tokens and read-only fusion panels." },
   { slug: "commands", icon: "⌨️", title: "Command reference", blurb: "Every clio subcommand and in-session slash command in one place." },
+  { slug: "research", icon: "📊", title: "Research Paper", blurb: "Benchmark study: GLM 5.2 + Agentic Fusion matches Claude Fable 5 and exceeds Opus 4.8 and GPT-5.5." },
 ];
 
 export default function DocsHub() {

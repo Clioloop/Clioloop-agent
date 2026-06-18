@@ -17,6 +17,7 @@ const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.S
   { path: "/docs/skills", priority: 0.6, changeFrequency: "monthly" },
   { path: "/docs/security", priority: 0.6, changeFrequency: "monthly" },
   { path: "/docs/commands", priority: 0.7, changeFrequency: "monthly" },
+  { path: "/docs/research", priority: 0.8, changeFrequency: "monthly" },
   { path: "/terms", priority: 0.3, changeFrequency: "yearly" },
   { path: "/privacy", priority: 0.3, changeFrequency: "yearly" },
 ];

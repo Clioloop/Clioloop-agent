@@ -272,6 +272,9 @@ export default function LandingPage() {
             </div>
           </div>
           <div className="hero-actions" style={{ marginTop: 28 }}>
+            <Link href="/docs/research" className="btn btn-primary btn-lg">
+              📊 Read the Research →
+            </Link>
             <Link href="/docs/fusion" className="btn btn-ghost btn-lg">
               How Agentic Fusion works →
             </Link>
