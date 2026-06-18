@@ -177,11 +177,12 @@ def test_build_models_payload_promotes_managed_first():
 
 
 def test_build_models_payload_preserves_managed_curated_catalog():
-    """The shared model.options payload keeps the curated managed picker list.
+    """``build_models_payload`` is a pure passthrough over the rows it is given.
 
-    Fusion's dedicated picker can fetch the full live managed catalog, but the
-    normal model picker should stay in lock-step with ``clio model`` and avoid
-    replacing curated chat models with the raw live /models endpoint.
+    The curated-prefix + live-catalog merge for the managed provider happens
+    upstream in ``list_authenticated_providers`` (stubbed here). The inventory
+    layer must not do its own live ``/v1/models`` fetch — it just enriches and
+    forwards whatever rows it receives, keeping a single source of truth.
     """
     rows = [{"slug": "managed", "name": "Omni Loop Portal", "models": ["clio-4-405b"],
              "total_models": 1, "is_current": False, "is_user_defined": False,

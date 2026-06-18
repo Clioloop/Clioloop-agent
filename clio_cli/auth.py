@@ -7608,6 +7608,17 @@ def _login_managed(args, pconfig: ProviderConfig) -> None:
                 union_with_portal_paid_recommendations,
             )
             model_ids = get_curated_managed_model_ids()
+            # Append the rest of the live managed catalog after the curated
+            # "recommended" prefix so the CLI login picker shows every entitled
+            # model — matching the Telegram /model picker and the GUI/TUI list.
+            try:
+                from clio_cli.models import provider_model_ids as _live_managed_ids
+                _live = _live_managed_ids("managed")
+                if _live:
+                    _seen = set(model_ids)
+                    model_ids = list(model_ids) + [m for m in _live if m not in _seen]
+            except Exception:
+                pass
 
             print()
             unavailable_models: list = []

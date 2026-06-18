@@ -46,8 +46,13 @@ FUSION_REVIEWER_TOOL_NAMES = frozenset({"read_file", "web_search", "vision_analy
 _MAX_LOCAL_TURNS = 6
 
 # How long to wait on the portal fusion endpoints (the work draft runs locally;
-# these timeouts cover only the server-side panel calls).
-_FUSION_HTTP_TIMEOUT = 300.0
+# these timeouts cover only the server-side panel calls). The server bounds each
+# advisor/reviewer/judge sub-call individually, so the panel completes well
+# inside this window; the generous overall ceiling (and its headroom over the
+# server's own maxDuration) lets the server return its graceful degraded result
+# on a slow run instead of the client aborting and silently dropping the
+# reviewers/judge — the failure mode this replaces.
+_FUSION_HTTP_TIMEOUT = 600.0
 _FUSION_CONNECT_TIMEOUT = 15.0
 
 

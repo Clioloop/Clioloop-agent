@@ -1518,16 +1518,25 @@ def list_authenticated_providers(
                 model_ids = curated.get(clio_slug, []) or curated.get(pid, [])
         elif clio_slug == "managed":
             # managed provider serves a large live /v1/models catalog (vendor-prefixed
-            # models from many providers, returned alphabetically). The
-            # `clio model` picker deliberately shows ONLY the curated agentic
-            # list — augmented with the Portal's free/paid recommendations so
-            # newly-launched models surface without a CLI release — in curated
-            # order. Mirror that exactly (see _model_flow_managed in main.py) so
-            # the GUI picker matches the CLI. Was: falling through to
-            # cached_provider_model_ids, which dumped the full alphabetical
-            # catalog; then: curated-only, which dropped the 4 Portal
-            # recommendations (e.g. stepfun/step-3.7-flash:free).
+            # models from many providers, returned alphabetically). The picker shows
+            # the curated agentic list FIRST (the "recommended" prefix) — augmented
+            # with the Portal's free/paid recommendations — then appends the rest of
+            # the live catalog so every entitled model surfaces. This matches the
+            # Telegram `/model` picker, which re-fetches the full live list; previously
+            # this branch was curated-only, so Desktop/TUI/web/CLI showed ~7 models
+            # while Telegram showed all (the discrepancy this unifies).
             model_ids = curated.get("managed", [])
+            try:
+                _live_managed = cached_provider_model_ids("managed")
+                if _live_managed:
+                    _seen_managed = set(model_ids)
+                    model_ids = list(model_ids) + [
+                        m for m in _live_managed if m not in _seen_managed
+                    ]
+            except Exception:
+                # Live catalog fetch failed — fall back to the curated list alone
+                # (still correct, just may lag newly launched models).
+                pass
             try:
                 from clio_cli.models import (
                     get_pricing_for_provider as _managed_pricing,
@@ -1563,7 +1572,11 @@ def list_authenticated_providers(
                 if clio_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(clio_slug, model_ids)
         total = len(model_ids)
-        top = _limit_models(model_ids)
+        # The managed (Omni Loop Portal) provider is the one surface where every
+        # entitled model should be visible everywhere — Desktop/TUI/web/CLI must
+        # match the Telegram /model picker, which shows the full live catalog.
+        # Never cap it; all other providers honour max_models.
+        top = list(model_ids) if clio_slug == "managed" else _limit_models(model_ids)
 
         results.append({
             "slug": clio_slug,

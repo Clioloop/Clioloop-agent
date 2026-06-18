@@ -370,10 +370,10 @@ class TestIntegrationWithModelsModule:
 
     def test_picker_managed_row_uses_curated_list(self, tmp_path, monkeypatch):
         """The /model picker surfaces the curated ``_PROVIDER_MODELS["managed"]``
-        list in curated order — matching the ``clio model`` CLI — not the live
-        ``/v1/models`` catalog or the manifest. Portal free/paid recommendations
-        are unioned in when reachable; offline (as here, with the Portal calls
-        stubbed out) it's exactly the curated list.
+        list FIRST (the recommended prefix), then appends the rest of the live
+        ``/v1/models`` catalog (deduped) so every entitled model shows up —
+        matching the Telegram ``/model`` picker. Portal free/paid recommendations
+        are unioned into the curated prefix when reachable.
         """
         # We deliberately do NOT use the ``isolated_home`` fixture here:
         # that fixture monkeypatches ``Path.home`` to ``tmp_path``, which
@@ -403,6 +403,16 @@ class TestIntegrationWithModelsModule:
             # is computed from the same source the picker uses internally
             # (``curated["managed"] = get_curated_managed_model_ids()``), so the test
             # stays an invariant — it can't rot as the curated/manifest list grows.
+            # Two new models that only the live /v1/models endpoint knows about.
+            new_live = ["zzz-vendor/new-model-a", "zzz-vendor/new-model-b"]
+
+            def _live_managed(slug):
+                # Live catalog = first curated id (to prove dedup) + the new ids.
+                # Computed inside the manifest patch so it matches the curated
+                # list list_authenticated_providers builds internally.
+                cur = get_curated_managed_model_ids()
+                return (cur[:1] + new_live) if slug == "managed" else []
+
             with patch.object(
                 model_catalog, "_fetch_manifest", return_value=_valid_manifest()
             ), patch("clio_cli.models.check_managed_free_tier", return_value=False), patch(
@@ -411,8 +421,14 @@ class TestIntegrationWithModelsModule:
             ), patch(
                 "clio_cli.models.union_with_portal_paid_recommendations",
                 side_effect=lambda ids, *a, **k: (ids, {}),
+            ), patch(
+                "clio_cli.models.cached_provider_model_ids",
+                side_effect=_live_managed,
             ):
-                expected = get_curated_managed_model_ids()
+                # Curated prefix first, then live-only models appended (deduped):
+                # the curated dup in the live list must not appear twice.
+                curated = get_curated_managed_model_ids()
+                expected = curated + new_live
                 picker = list_picker_providers(
                     current_provider="managed", max_models=99
                 )
