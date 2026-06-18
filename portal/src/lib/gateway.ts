@@ -28,6 +28,7 @@ export interface GatewayVendor {
   costMicros: number;
 }
 
+export const FIRECRAWL_WEB_COST_MICROS = 10_000; // €0.01 = 1 cent per search/extract.
 export const VIDU_DEFAULT_DURATION_SECONDS = 5;
 export const VIDU_MAX_DURATION_SECONDS = 10;
 export const VIDU_DEFAULT_RESOLUTION = "540p";
@@ -50,10 +51,9 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     upstreamEnv: "FIRECRAWL_UPSTREAM_URL",
     authHeaders: (key) => ({ Authorization: `Bearer ${key}` }),
     service: "web",
-    // Self-hosted Firecrawl (FIRECRAWL_UPSTREAM_URL) → no upstream bill, so web
-    // search/extract does not consume the subscriber's credit allowance. Access
-    // is still gated to Pro+ via the "web" service entitlement.
-    costMicros: 0,
+    // Charged only for web search/extract operations (see
+    // firecrawlRequestCostMicros), not for incidental vendor routes.
+    costMicros: FIRECRAWL_WEB_COST_MICROS,
   },
   "vidu": {
     id: "vidu",
@@ -140,6 +140,9 @@ export function gatewayRequestCostMicros(
   path: string[] = [],
   requestBody?: Buffer | string | null,
 ): number {
+  if (vendor.id === "firecrawl") {
+    return firecrawlRequestCostMicros(method, path);
+  }
   if (vendor.id === "clioloop-image") {
     return method.toUpperCase() === "POST" && path[0] === "generate" ? vendor.costMicros : 0;
   }
@@ -147,6 +150,19 @@ export function gatewayRequestCostMicros(
     return viduRequestCostMicros(method, path, requestBody);
   }
   return vendor.costMicros;
+}
+
+export function firecrawlRequestCostMicros(
+  method: string,
+  path: string[] = [],
+): number {
+  if (method.toUpperCase() !== "POST") return 0;
+  const normalized = path.map((part) => String(part || "").toLowerCase());
+  const endpoint =
+    normalized[0] === "v1" || normalized[0] === "v2" ? normalized[1] : normalized[0];
+  return endpoint && ["search", "scrape", "extract"].includes(endpoint)
+    ? FIRECRAWL_WEB_COST_MICROS
+    : 0;
 }
 
 function parseGatewayJsonBody(requestBody?: Buffer | string | null): Record<string, unknown> {

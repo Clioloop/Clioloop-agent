@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  FIRECRAWL_WEB_COST_MICROS,
   GATEWAY_VENDORS,
   gatewayRequestCostMicros,
   gatewayShouldRecordUsage,
@@ -17,9 +18,15 @@ describe("web (Firecrawl) entitlement", () => {
     expect(PLANS.max20x.services).toContain("web");
   });
 
-  it("does not bill the subscriber allowance for self-hosted Firecrawl", () => {
+  it("charges one cent for Firecrawl web search and extract calls", () => {
     expect(GATEWAY_VENDORS.firecrawl.service).toBe("web");
-    expect(GATEWAY_VENDORS.firecrawl.costMicros).toBe(0);
+    expect(GATEWAY_VENDORS.firecrawl.costMicros).toBe(10_000);
+    expect(FIRECRAWL_WEB_COST_MICROS).toBe(10_000);
+    expect(gatewayRequestCostMicros(GATEWAY_VENDORS.firecrawl, "POST", ["v2", "search"])).toBe(10_000);
+    expect(gatewayRequestCostMicros(GATEWAY_VENDORS.firecrawl, "POST", ["v2", "scrape"])).toBe(10_000);
+    expect(gatewayRequestCostMicros(GATEWAY_VENDORS.firecrawl, "POST", ["extract"])).toBe(10_000);
+    expect(gatewayRequestCostMicros(GATEWAY_VENDORS.firecrawl, "GET", ["v2", "search"])).toBe(0);
+    expect(gatewayRequestCostMicros(GATEWAY_VENDORS.firecrawl, "POST", ["v2", "map"])).toBe(0);
     // Self-host support: an upstream override env is defined.
     expect(GATEWAY_VENDORS.firecrawl.upstreamEnv).toBe("FIRECRAWL_UPSTREAM_URL");
   });
