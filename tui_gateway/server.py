@@ -558,6 +558,20 @@ def _fusion_event(sid: str, ev: Any) -> None:
     )
 
 
+def _fusion_reset_reminder_event(sid: str) -> None:
+    from agent.fusion_engine import FUSION_RESET_SESSION_NOTICE
+
+    _emit(
+        "status.update",
+        sid,
+        {
+            "kind": "fusion",
+            "phase": "reset_reminder",
+            "text": FUSION_RESET_SESSION_NOTICE,
+        },
+    )
+
+
 def _emit_goal_event(
     sid: str,
     state: Any,
@@ -4795,6 +4809,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
+            if isinstance(result, dict) and result.get("fusion_completed"):
+                _fusion_reset_reminder_event(sid)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge

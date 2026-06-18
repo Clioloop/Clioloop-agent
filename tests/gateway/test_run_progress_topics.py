@@ -283,7 +283,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-                "content": '⚡ terminal: "pwd"',
+            "content": '💻 terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -596,6 +596,33 @@ class PreviewedResponseAgent:
         return {
             "final_response": "You're welcome.",
             "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FusionCompleteAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "fused final",
+            "fusion_completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FailedFusionCompleteAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "fusion failed",
+            "failed": True,
+            "fusion_completed": True,
             "messages": [],
             "api_calls": 1,
         }
@@ -916,6 +943,69 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_sends_fusion_reset_reminder_after_final_delivery(monkeypatch, tmp_path):
+    from agent.fusion_engine import FUSION_RESET_SESSION_NOTICE
+
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FusionCompleteAgent,
+        session_id="sess-fusion-complete",
+    )
+
+    assert result["final_response"] == "fused final"
+    assert result["fusion_completed"] is True
+
+    await adapter.send("-1001", result["final_response"], metadata={"thread_id": "17585"})
+    callback = adapter.pop_post_delivery_callback(session_key)
+    assert callable(callback)
+
+    callback()
+    await asyncio.sleep(0.05)
+
+    assert [call["content"] for call in adapter.sent] == [
+        "fused final",
+        FUSION_RESET_SESSION_NOTICE,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_does_not_schedule_fusion_reset_reminder_for_failed_or_non_fusion_turns(
+    monkeypatch,
+    tmp_path,
+):
+    session_key = "agent:main:telegram:group:-1001:17585"
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-non-fusion",
+    )
+    assert result.get("fusion_completed") is not True
+    await adapter.send("-1001", result["final_response"], metadata={"thread_id": "17585"})
+    callback = adapter.pop_post_delivery_callback(session_key)
+    if callable(callback):
+        callback()
+        await asyncio.sleep(0.05)
+    assert all("Fusion run complete" not in call["content"] for call in adapter.sent)
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FailedFusionCompleteAgent,
+        session_id="sess-fusion-failed",
+    )
+    await adapter.send("-1001", result["final_response"], metadata={"thread_id": "17585"})
+    callback = adapter.pop_post_delivery_callback(session_key)
+    if callable(callback):
+        callback()
+        await asyncio.sleep(0.05)
+    assert all("Fusion run complete" not in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio

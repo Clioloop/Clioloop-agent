@@ -493,7 +493,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // decision (critique/approved). planning/working/finalizing stay as
         // transient status.
         if (p.kind === 'fusion') {
-          if (p.phase === 'reviewing') {
+          if (p.phase === 'reset_reminder') {
+            sys(p.text)
+          } else if (p.phase === 'reviewing') {
             // Status label only — never the draft or reviewer internals.
             sys(`🔍 ${p.text}`)
           } else if (p.phase === 'critique' || p.phase === 'approved') {

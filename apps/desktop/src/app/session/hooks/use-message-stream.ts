@@ -112,6 +112,43 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+interface FusionStatusPayload {
+  data?: Record<string, unknown>
+  detail?: string
+  kind?: string
+  phase?: string
+  run_id?: string
+  text?: string
+}
+
+export function fusionStatusMessageBody(fusion: FusionStatusPayload | undefined): string | null {
+  if (
+    fusion?.kind !== 'fusion' ||
+    (fusion.phase !== 'reset_reminder' &&
+      fusion.phase !== 'reviewing' &&
+      fusion.phase !== 'critique' &&
+      fusion.phase !== 'approved')
+  ) {
+    return null
+  }
+
+  const head =
+    fusion.phase === 'reset_reminder'
+      ? ''
+      : fusion.phase === 'approved'
+        ? '✅ '
+        : fusion.phase === 'reviewing'
+          ? '🔍 '
+          : '📝 '
+
+  const body =
+    fusion.phase !== 'reviewing' && fusion.phase !== 'reset_reminder' && fusion.detail
+      ? `${head}${fusion.text ?? ''}\n\n${fusion.detail}`
+      : `${head}${fusion.text ?? ''}`
+
+  return body.trim()
+}
+
 function parseMaybeRecord(value: unknown): Record<string, unknown> {
   if (typeof value === 'string') {
     try {
@@ -927,39 +964,10 @@ export function useMessageStream({
           // Fusion: the main model's work + final answer render through the
           // normal assistant stream. Surface the otherwise-invisible reviewer
           // step here — one message per round when reviewers report a decision
-          // (critique/approved). planning/working/finalizing stay transient.
-          const fusion = event.payload as
-            | {
-                data?: Record<string, unknown>
-                detail?: string
-                kind?: string
-                phase?: string
-                run_id?: string
-                text?: string
-              }
-            | undefined
-
-          if (
-            fusion?.kind === 'fusion' &&
-            (fusion.phase === 'reviewing' ||
-              fusion.phase === 'critique' ||
-              fusion.phase === 'approved')
-          ) {
-            const head =
-              fusion.phase === 'approved'
-                ? '✅ '
-                : fusion.phase === 'reviewing'
-                  ? '🔍 '
-                  : '📝 '
-
-            // The "being reviewed" bubble shows only the status label — never
-            // the draft or the reviewers' internals. Critique/approval carry the
-            // reviewer notes in `detail`.
-            const body =
-              fusion.phase !== 'reviewing' && fusion.detail
-                ? `${head}${fusion.text ?? ''}\n\n${fusion.detail}`
-                : `${head}${fusion.text ?? ''}`
-
+          // (critique/approved), plus the post-completion reset reminder.
+          // planning/working/finalizing stay transient.
+          const body = fusionStatusMessageBody(event.payload as FusionStatusPayload | undefined)
+          if (body) {
             updateSessionState(sessionId, state => ({
               ...state,
               messages: [
@@ -967,7 +975,7 @@ export function useMessageStream({
                 {
                   id: `fusion-review-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                   role: 'system',
-                  parts: [assistantTextPart(body.trim())]
+                  parts: [assistantTextPart(body)]
                 }
               ]
             }))

@@ -18737,6 +18737,7 @@ class GatewayRunner:
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                "fusion_completed": bool(result.get("fusion_completed")),
             }
         
         # Start progress message sender if enabled
@@ -19121,7 +19122,56 @@ class GatewayRunner:
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
+
+            if (
+                result
+                and result.get("fusion_completed")
+                and not result.get("failed")
+                and adapter
+                and session_key
+                and hasattr(adapter, "register_post_delivery_callback")
+            ):
+                try:
+                    from agent.fusion_engine import FUSION_RESET_SESSION_NOTICE
+
+                    _fusion_notice_chat_id = source.chat_id
+                    _fusion_notice_metadata = _status_thread_metadata
+                    _fusion_notice_adapter = adapter
+                    _fusion_notice_loop = asyncio.get_running_loop()
+
+                    def _send_fusion_reset_notice() -> None:
+                        prepared = _prepare_gateway_status_message(
+                            source.platform,
+                            "fusion",
+                            FUSION_RESET_SESSION_NOTICE,
+                        )
+                        if prepared is None:
+                            return
+                        try:
+                            safe_schedule_threadsafe(
+                                _fusion_notice_adapter.send(
+                                    _fusion_notice_chat_id,
+                                    prepared,
+                                    metadata=_fusion_notice_metadata,
+                                ),
+                                _fusion_notice_loop,
+                                logger=logger,
+                                log_message="fusion reset reminder send error",
+                            )
+                        except Exception:
+                            pass
+
+                    adapter.register_post_delivery_callback(
+                        session_key,
+                        _send_fusion_reset_notice,
+                        generation=run_generation,
+                    )
+                except Exception as _fusion_notice_err:
+                    logger.debug(
+                        "Fusion reset reminder registration failed: %s",
+                        _fusion_notice_err,
+                    )
+
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None

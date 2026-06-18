@@ -30,6 +30,14 @@ MAX_PLAN_IDS = {"max", "max20x"}
 # Plans entitled to Model Fusion (Pro and up). The portal enforces this too.
 FUSION_PLAN_IDS = {"pro", "max", "max20x"}
 
+# Shown after a full Fusion run finishes. Keep this shared so Telegram,
+# desktop, TUI, and classic CLI all use exactly the same reset guidance.
+FUSION_RESET_SESSION_NOTICE = (
+    "🔮 Fusion run complete. Start a fresh session before your next Fusion run "
+    "(/new or /reset) so advisors and reviewers get a clean context and do not "
+    "waste usage."
+)
+
 # Upper bound on how many planner (advisor) and reviewer models a user may pick.
 FUSION_MAX_MODELS_PER_GROUP = 5
 
@@ -742,6 +750,7 @@ def run_fusion_turn(
                     "api_calls": 0,
                     "completed": True,
                     "failed": False,
+                    "fusion_completed": True,
                 }
                 if isinstance(last_meta, dict):
                     result["fusion"] = last_meta
@@ -760,8 +769,16 @@ def run_fusion_turn(
                     )
                 finally:
                     _restore_tools(agent, orig_tools, orig_valid)
-                if isinstance(result, dict) and isinstance(last_meta, dict):
-                    result["fusion"] = last_meta
+                if isinstance(result, dict):
+                    if (
+                        result.get("completed", True) is not False
+                        and not result.get("failed")
+                        and not result.get("interrupted")
+                        and not result.get("error")
+                    ):
+                        result["fusion_completed"] = True
+                    if isinstance(last_meta, dict):
+                        result["fusion"] = last_meta
                 return result
 
             # Unknown/exhausted: deliver the local draft if we have one.
@@ -797,6 +814,7 @@ __all__ = [
     "fusion_is_active",
     "main_model_is_managed",
     "FUSION_NEEDS_MANAGED_NOTICE",
+    "FUSION_RESET_SESSION_NOTICE",
     "fusion_gate_check",
     "model_open_tag",
     "label_model",

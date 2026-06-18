@@ -3608,6 +3608,7 @@ def test_prompt_submit_routes_active_fusion(monkeypatch):
         return {
             "final_response": "fused",
             "messages": [{"role": "assistant", "content": "fused"}],
+            "fusion_completed": True,
         }
 
     cfg = fusion_engine.FusionConfig(advisors=["a"], reviewers=["b"], enabled=True)
@@ -3655,6 +3656,23 @@ def test_prompt_submit_routes_active_fusion(monkeypatch):
             event[0] == "message.complete" and event[2]["text"] == "fused"
             for event in emitted
         )
+        complete_idx = next(
+            i for i, event in enumerate(emitted)
+            if event[0] == "message.complete" and event[2]["text"] == "fused"
+        )
+        reminder_idx = next(
+            i for i, event in enumerate(emitted)
+            if event == (
+                "status.update",
+                "sid",
+                {
+                    "kind": "fusion",
+                    "phase": "reset_reminder",
+                    "text": fusion_engine.FUSION_RESET_SESSION_NOTICE,
+                },
+            )
+        )
+        assert complete_idx < reminder_idx
     finally:
         server._sessions.pop("sid", None)
 

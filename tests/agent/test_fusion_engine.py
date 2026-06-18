@@ -179,6 +179,7 @@ def test_misconfigured_config_runs_normal_turn():
     assert out["final_response"] == "FINAL ANSWER"
     assert len(agent.calls) == 1
     assert agent.calls[0]["kwargs"].get("internal_turn") in (None, False)
+    assert "fusion_completed" not in out
 
 
 def test_main_model_is_managed_uses_agent_provider():
@@ -198,6 +199,7 @@ def test_non_managed_main_model_runs_normal_turn_without_panel(wire):
     assert len(agent.calls) == 1
     assert agent.calls[0]["kwargs"].get("internal_turn") in (None, False)
     assert state["client"] is None  # no portal /start call was made
+    assert "fusion_completed" not in out
 
 
 def test_gate_denied_returns_reason(monkeypatch):
@@ -206,6 +208,7 @@ def test_gate_denied_returns_reason(monkeypatch):
     out = fusion.run_fusion_turn(agent, "do the thing", config=_cfg())
     assert out["failed"] is True
     assert out["final_response"] == "nope"
+    assert "fusion_completed" not in out
     assert agent.calls == []
 
 
@@ -217,6 +220,7 @@ def test_auto_gate_skips_panel_for_tiny_message(wire):
     assert out["final_response"] == "FINAL ANSWER"
     # No portal client was installed/used for a trivially small message.
     assert state["client"] is None
+    assert "fusion_completed" not in out
 
 
 def test_full_protocol_start_work_finalize(wire):
@@ -240,6 +244,7 @@ def test_full_protocol_start_work_finalize(wire):
     )
     assert out["final_response"] == "FINAL ANSWER"
     assert out["fusion"] == meta
+    assert out["fusion_completed"] is True
     # One internal work turn + one visible finalize turn.
     assert agent.calls[0]["kwargs"].get("internal_turn") is True
     assert agent.calls[0]["message"] == "WORK PROMPT"
@@ -314,6 +319,7 @@ def test_deliver_action_returns_final_response(wire):
     out = fusion.run_fusion_turn(agent, "long task", config=_cfg())
     assert out["final_response"] == "DRAFT+footer"
     assert out["completed"] is True
+    assert out["fusion_completed"] is True
     # Only the work turn ran locally; deliver does not start a new turn.
     assert len(agent.calls) == 1
 
@@ -325,6 +331,7 @@ def test_start_fallback_runs_normal_turn(wire):
     out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
     assert out["final_response"] == "FINAL ANSWER"
     assert len(agent.calls) == 1
+    assert "fusion_completed" not in out
     assert agent.calls[0]["kwargs"].get("internal_turn") in (None, False)
 
 
@@ -335,6 +342,7 @@ def test_403_returns_plan_message(wire):
     out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
     assert out["failed"] is True
     assert "Pro-plan" in out["final_response"]
+    assert "fusion_completed" not in out
     assert agent.calls == []
 
 
@@ -345,6 +353,7 @@ def test_404_old_portal_falls_back(wire):
     out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
     assert out["final_response"] == "FINAL ANSWER"
     assert len(agent.calls) == 1
+    assert "fusion_completed" not in out
 
 
 def test_no_token_falls_back(monkeypatch):

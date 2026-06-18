@@ -162,6 +162,19 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).not.toHaveBeenCalled()
   })
 
+  it('surfaces a fusion reset reminder as a persistent system line', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    const reminder = '🔮 Fusion run complete. Start a fresh session before your next Fusion run (/new or /reset).'
+
+    onEvent({
+      payload: { kind: 'fusion', phase: 'reset_reminder', text: reminder },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(reminder)
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
@@ -213,9 +226,7 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith(
-      "💾 Clioloop completed: Skill 'clio-release' patched"
-    )
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Clioloop completed: Skill 'clio-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {

@@ -13010,6 +13010,13 @@ class ClioCLI:
                         width=self._scrollback_box_width(),
                     ))
 
+            if result and result.get("fusion_completed") and not result.get("failed"):
+                try:
+                    from agent.fusion_engine import FUSION_RESET_SESSION_NOTICE
+
+                    _cprint(f"\n  {FUSION_RESET_SESSION_NOTICE}")
+                except Exception:
+                    pass
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
