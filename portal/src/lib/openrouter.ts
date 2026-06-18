@@ -218,11 +218,41 @@ export async function fetchModels(): Promise<ModelEntry[]> {
   return data;
 }
 
+const KNOWN_UNSAFE_CHAT_MODEL_IDS = new Set([
+  // OpenRouter pseudo/limited-access entries that are not callable as normal chat.
+  "openrouter/fusion",
+  "~anthropic/claude-fable-latest",
+  "anthropic/claude-fable-5",
+  "allenai/olmo-3-32b-think",
+  "arcee-ai/virtuoso-large",
+  "arcee-ai/coder-large",
+  "openai/gpt-4-turbo-preview",
+  "openai/o3-deep-research",
+  "openai/o4-mini-deep-research",
+  "relace/relace-apply-3",
+
+  // Timed out or quota/rate-limit blocked during live portal smoke testing.
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "google/gemma-4-31b-it:free",
+  "qwen/qwen3-vl-32b-instruct",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "openai/gpt-oss-20b:free",
+  "qwen/qwen3-coder:free",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+  "qwen/qwen3-30b-a3b",
+  "rekaai/reka-flash-3",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+]);
+
 export function isTextOutputModel(model: ModelEntry): boolean {
+  if (KNOWN_UNSAFE_CHAT_MODEL_IDS.has(model.id)) return false;
   const output = model.architecture && typeof model.architecture === "object"
     ? (model.architecture as { output_modalities?: unknown }).output_modalities
     : undefined;
-  return !Array.isArray(output) || output.includes("text");
+  return !Array.isArray(output) || (output.length === 1 && output[0] === "text");
 }
 
 /**

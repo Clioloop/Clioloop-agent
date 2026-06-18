@@ -159,7 +159,7 @@ describe("OpenRouter metering", () => {
 });
 
 describe("OpenRouter catalog filtering", () => {
-  it("keeps text-output models and excludes explicit non-text outputs", () => {
+  it("keeps plain text-output models and excludes non-chat outputs", () => {
     expect(
       isTextOutputModel({
         id: "text/model",
@@ -172,7 +172,34 @@ describe("OpenRouter catalog filtering", () => {
         architecture: { output_modalities: ["image"] },
       }),
     ).toBe(false);
+    expect(
+      isTextOutputModel({
+        id: "audio/model",
+        architecture: { output_modalities: ["text", "audio"] },
+      }),
+    ).toBe(false);
     expect(isTextOutputModel({ id: "legacy/model" })).toBe(true);
+  });
+
+  it("excludes known unsafe normal-chat catalog entries", () => {
+    expect(
+      isTextOutputModel({
+        id: "openrouter/fusion",
+        architecture: { output_modalities: ["text"] },
+      }),
+    ).toBe(false);
+    expect(
+      isTextOutputModel({
+        id: "arcee-ai/virtuoso-large",
+        architecture: { output_modalities: ["text"] },
+      }),
+    ).toBe(false);
+    expect(
+      isTextOutputModel({
+        id: "openai/o3-deep-research",
+        architecture: { output_modalities: ["text"] },
+      }),
+    ).toBe(false);
   });
 });
 
