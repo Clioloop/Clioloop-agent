@@ -636,14 +636,9 @@ a.card .card-more {
 .plan-price {
   font-family: var(--mono);
   font-size: 40px; font-weight: 600; letter-spacing: -0.02em;
-  margin: 12px 0 8px;
+  margin: 12px 0 24px;
 }
 .plan-price span { font-size: 13px; color: var(--text-faint); font-weight: 400; letter-spacing: 0; }
-.plan-allowance {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--text-faint);
-  margin-bottom: 18px;
-}
 .price-card ul { list-style: none; margin-bottom: 26px; flex: 1; }
 .price-card li {
   color: var(--text-dim); font-size: 13.5px;

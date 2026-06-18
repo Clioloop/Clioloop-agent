@@ -14,14 +14,6 @@ const FLAGS: Record<string, string | undefined> = {
   max20x: "Best for fleets",
 };
 
-// Monthly upstream allowance shown under each price (from monthlyCreditsMicros).
-const ALLOWANCE: Record<PlanId, string> = {
-  free: "~€1 / mo of usage",
-  pro: "~€15 / mo of usage",
-  max: "~€75 / mo of usage · 5× Pro",
-  max20x: "~€150 / mo of usage · 10× Pro",
-};
-
 // Per-tier feature lines tuned for the cards. Each line carries an optional
 // kind: "fusion" highlights Agentic Fusion (Pro+), "off" marks a not-included
 // line (Free → no hosted tools). Data mirrors lib/plans.ts.
@@ -120,7 +112,6 @@ export default function PricingPage() {
                   €{plan.priceEur}
                   <span> /month</span>
                 </div>
-                <div className="plan-allowance">{ALLOWANCE[id]}</div>
                 <ul>
                   {FEATURES[id].map((f) => (
                     <li
