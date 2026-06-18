@@ -5,6 +5,7 @@ import { freeModelDayCount, incrFreeModelDay } from "@/lib/db";
 import { selectInferenceUpstream } from "@/lib/inference-upstream";
 import {
   checkEntitlement,
+  fetchModels,
   isFreeModelId,
   meterUsage,
   usageTapStream,
@@ -20,7 +21,10 @@ export const maxDuration = 300;
 
 function apiError(status: number, code: string, message: string) {
   // OpenAI-style error envelope — what Clioloop's chat-completions client expects.
-  return NextResponse.json({ error: { message, type: code, code } }, { status });
+  return NextResponse.json(
+    { error: { message, type: code, code } },
+    { status },
+  );
 }
 
 interface UpstreamUsage {
@@ -37,20 +41,35 @@ interface UpstreamUsage {
 export async function POST(req: NextRequest) {
   const identity = resolveBearer(req.headers.get("authorization"));
   if (!identity) {
-    return apiError(401, "invalid_token", "Provide a valid Omni Loop Portal token.");
+    return apiError(
+      401,
+      "invalid_token",
+      "Provide a valid Omni Loop Portal token.",
+    );
   }
   const userId = identity.user.id;
 
   const retry = rateLimit("inference", userId);
   if (retry !== null) {
-    return apiError(429, "rate_limited", `Too many requests — try again in ${retry}s.`);
+    return apiError(
+      429,
+      "rate_limited",
+      `Too many requests — try again in ${retry}s.`,
+    );
   }
   const entitlement = checkEntitlement(identity.user);
   if (!entitlement.ok) {
-    return apiError(402, entitlement.errorCode ?? "entitlement", entitlement.error ?? "Not entitled.");
+    return apiError(
+      402,
+      entitlement.errorCode ?? "entitlement",
+      entitlement.error ?? "Not entitled.",
+    );
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const body = (await req.json().catch(() => null)) as Record<
+    string,
+    unknown
+  > | null;
   if (!body || typeof body !== "object") {
     return apiError(400, "invalid_request", "Request body must be JSON.");
   }
@@ -67,9 +86,16 @@ export async function POST(req: NextRequest) {
         : "This model isn't available on your plan — upgrade in the Omni Loop Portal.";
     return apiError(403, "model_not_in_plan", message);
   }
-  // No metering pre-block: meterUsage self-heals a missing/zero upstream cost via
-  // the catalog price (see lib/openrouter.meterUsage), so a model is never made
-  // unavailable for a metering hiccup.
+  // Warm the catalog before paid calls so missing upstream costs can be priced
+  // from current OpenRouter rates instead of the conservative anomaly fallback.
+  if (requirePaidMetering) {
+    await fetchModels().catch((err) => {
+      console.warn(
+        "[metering] could not warm model catalog before paid inference:",
+        err,
+      );
+    });
+  }
 
   // Shared free-model daily allotment (all tiers, abuse guard). Free users are
   // blocked past it; paid tiers keep using the free model.
@@ -90,18 +116,27 @@ export async function POST(req: NextRequest) {
   const upstreamBase = selectedUpstream.base;
   const upstreamKey = selectedUpstream.key;
   if (!upstreamKey) {
-    return apiError(503, "portal_not_configured", "The portal has no upstream key configured.");
+    return apiError(
+      503,
+      "portal_not_configured",
+      "The portal has no upstream key configured.",
+    );
   }
 
   // Usage accounting: ask OpenRouter to emit a final usage object (incl. `cost`)
   // on streams and non-streams.
   if (body.stream) {
     body.stream_options = {
-      ...(typeof body.stream_options === "object" && body.stream_options ? body.stream_options : {}),
+      ...(typeof body.stream_options === "object" && body.stream_options
+        ? body.stream_options
+        : {}),
       include_usage: true,
     };
   }
-  body.usage = { ...(typeof body.usage === "object" && body.usage ? body.usage : {}), include: true };
+  body.usage = {
+    ...(typeof body.usage === "object" && body.usage ? body.usage : {}),
+    include: true,
+  };
 
   const meter = (usage: UpstreamUsage | undefined, usedModel: string) => {
     meterUsage(userId, usedModel, usage, {
@@ -134,7 +169,8 @@ export async function POST(req: NextRequest) {
         (usage, usedModel) => meter(usage, usedModel),
         model,
         // No final usage chunk: still record the call (meterUsage falls back to
-        // the catalog price, or a floor) so a streamed turn is never unbilled.
+        // catalog pricing, then a conservative anomaly price) so a streamed turn
+        // is never unbilled.
         (usedModel) => meter(undefined, usedModel),
       ),
     );
@@ -151,9 +187,13 @@ export async function POST(req: NextRequest) {
   const text = await upstream.text();
   if (upstream.ok) {
     // meterUsage never throws — it self-heals a missing/zero cost via the
-    // catalog price (or a floor), so we always bill and never block the response.
+    // catalog price or conservative anomaly pricing, so we always bill and never
+    // block the response.
     try {
-      const json = JSON.parse(text) as { usage?: UpstreamUsage; model?: string };
+      const json = JSON.parse(text) as {
+        usage?: UpstreamUsage;
+        model?: string;
+      };
       meter(json.usage, json.model ?? model);
     } catch {
       // Non-JSON success body (no parseable usage) — still record the call so a
@@ -163,6 +203,9 @@ export async function POST(req: NextRequest) {
   }
   return new Response(text, {
     status: upstream.status,
-    headers: { "Content-Type": upstream.headers.get("content-type") ?? "application/json" },
+    headers: {
+      "Content-Type":
+        upstream.headers.get("content-type") ?? "application/json",
+    },
   });
 }

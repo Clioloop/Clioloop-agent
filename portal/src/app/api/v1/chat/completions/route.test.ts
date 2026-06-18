@@ -46,6 +46,7 @@ describe("chat completion metering safety", () => {
     db.getSubscription.mockReturnValue({ plan: "pro", status: "active" });
     db.hasActiveMeteringAlert.mockReturnValue(false);
     db.monthUsageMicros.mockReturnValue(0);
+    globalThis.__olpModelCache = undefined;
     tokens.resolveBearer.mockReturnValue({
       user: {
         id: "user-1",
@@ -64,15 +65,16 @@ describe("chat completion metering safety", () => {
   it("records usage for a paid non-streaming response with cost", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            model: "anthropic/claude-sonnet-4.6",
-            choices: [{ message: { content: "ok" } }],
-            usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.00003 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "anthropic/claude-sonnet-4.6",
+              choices: [{ message: { content: "ok" } }],
+              usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.00003 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
       ),
     );
 
@@ -98,20 +100,24 @@ describe("chat completion metering safety", () => {
     globalThis.__olpModelCache = {
       at: Date.now(),
       data: [
-        { id: "anthropic/claude-sonnet-4.6", pricing: { prompt: "0.000003", completion: "0.000015" } },
+        {
+          id: "anthropic/claude-sonnet-4.6",
+          pricing: { prompt: "0.000003", completion: "0.000015" },
+        },
       ],
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            model: "anthropic/claude-sonnet-4.6",
-            choices: [{ message: { content: "ok" } }],
-            usage: { prompt_tokens: 1000, completion_tokens: 500 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              model: "anthropic/claude-sonnet-4.6",
+              choices: [{ message: { content: "ok" } }],
+              usage: { prompt_tokens: 1000, completion_tokens: 500 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
       ),
     );
 
@@ -135,15 +141,16 @@ describe("chat completion metering safety", () => {
 
   it("does not block a model that has an unresolved metering alert (self-heals)", async () => {
     db.hasActiveMeteringAlert.mockReturnValue(true);
-    const fetchSpy = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          model: "anthropic/claude-sonnet-4.6",
-          choices: [{ message: { content: "ok" } }],
-          usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.00003 },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            model: "anthropic/claude-sonnet-4.6",
+            choices: [{ message: { content: "ok" } }],
+            usage: { prompt_tokens: 2, completion_tokens: 1, cost: 0.00003 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
     );
     vi.stubGlobal("fetch", fetchSpy);
 

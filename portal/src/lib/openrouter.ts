@@ -33,7 +33,10 @@ export function checkEntitlement(user: UserRow): Entitlement {
 
   if (plan.requiresCardVerification && !user.card_verified) {
     return {
-      ok: false, plan, usedMicros, limitMicros,
+      ok: false,
+      plan,
+      usedMicros,
+      limitMicros,
       errorCode: "card_verification_required",
       error:
         "Your free plan needs a one-time card verification (you will never be charged). " +
@@ -42,14 +45,21 @@ export function checkEntitlement(user: UserRow): Entitlement {
   }
   if (sub?.status === "past_due") {
     return {
-      ok: false, plan, usedMicros, limitMicros,
+      ok: false,
+      plan,
+      usedMicros,
+      limitMicros,
       errorCode: "payment_past_due",
-      error: "Your subscription payment is past due. Update your payment method in the portal.",
+      error:
+        "Your subscription payment is past due. Update your payment method in the portal.",
     };
   }
   if (usedMicros >= limitMicros) {
     return {
-      ok: false, plan, usedMicros, limitMicros,
+      ok: false,
+      plan,
+      usedMicros,
+      limitMicros,
       errorCode: "quota_exhausted",
       error:
         `You've used your ${plan.name} plan's monthly allowance. ` +
@@ -77,6 +87,63 @@ export interface MeterUsageOptions {
 export interface MeterUsageResult {
   recorded: boolean;
   costMicros: number;
+}
+
+const DEFAULT_MISSING_USAGE_PROMPT_TOKEN_FLOOR = 8_192;
+const DEFAULT_MISSING_USAGE_COMPLETION_TOKEN_FLOOR = 8_192;
+const DEFAULT_UNKNOWN_PAID_PROMPT_PRICE_USD = 0.00002; // $20 / 1M tokens.
+const DEFAULT_UNKNOWN_PAID_COMPLETION_PRICE_USD = 0.0001; // $100 / 1M tokens.
+
+function positiveEnvNumber(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function paidMeteringTokenFloors(
+  promptTokens: number,
+  completionTokens: number,
+) {
+  return {
+    promptTokens:
+      promptTokens > 0
+        ? promptTokens
+        : positiveEnvNumber(
+            "METERING_MISSING_USAGE_PROMPT_TOKEN_FLOOR",
+            DEFAULT_MISSING_USAGE_PROMPT_TOKEN_FLOOR,
+          ),
+    completionTokens:
+      completionTokens > 0
+        ? completionTokens
+        : positiveEnvNumber(
+            "METERING_MISSING_USAGE_COMPLETION_TOKEN_FLOOR",
+            DEFAULT_MISSING_USAGE_COMPLETION_TOKEN_FLOOR,
+          ),
+  };
+}
+
+function modelPriceLookupIds(model: string): string[] {
+  const ids = [model];
+  const withoutDatedSuffix = model.replace(/-\d{8}$/, "");
+  if (withoutDatedSuffix !== model) ids.push(withoutDatedSuffix);
+  return ids;
+}
+
+function unknownPaidModelPriceMicros(
+  promptTokens: number,
+  completionTokens: number,
+): number {
+  const promptPrice = positiveEnvNumber(
+    "METERING_UNKNOWN_PAID_PROMPT_PRICE_USD",
+    DEFAULT_UNKNOWN_PAID_PROMPT_PRICE_USD,
+  );
+  const completionPrice = positiveEnvNumber(
+    "METERING_UNKNOWN_PAID_COMPLETION_PRICE_USD",
+    DEFAULT_UNKNOWN_PAID_COMPLETION_PRICE_USD,
+  );
+  const usd = promptTokens * promptPrice + completionTokens * completionPrice;
+  return Math.max(1, Math.round(usd * 1_000_000));
 }
 
 export function isFreeModelId(model: string): boolean {
@@ -115,11 +182,13 @@ export function modelPriceMicros(
 ): number | null {
   const cache = globalThis.__olpModelCache;
   if (!cache) return null;
-  const pricing = cache.data.find((m) => m.id === model)?.pricing;
+  const ids = new Set(modelPriceLookupIds(model));
+  const pricing = cache.data.find((m) => ids.has(m.id))?.pricing;
   if (!pricing) return null;
   const promptPrice = Number(pricing.prompt);
   const completionPrice = Number(pricing.completion);
-  if (!Number.isFinite(promptPrice) || !Number.isFinite(completionPrice)) return null;
+  if (!Number.isFinite(promptPrice) || !Number.isFinite(completionPrice))
+    return null;
   const usd = promptTokens * promptPrice + completionTokens * completionPrice;
   if (!Number.isFinite(usd) || usd <= 0) return null;
   return Math.max(1, Math.round(usd * 1_000_000));
@@ -140,9 +209,9 @@ function warmModelCatalog(): void {
 /**
  * Record a usage event for an inference call. Cost comes from OpenRouter's
  * `usage.cost` when present and positive; otherwise — for paid models — it falls
- * back to the catalog price × tokens, and finally to a 1-micro floor. It never
- * throws and never blocks a model: a missing/zero upstream cost is self-healed
- * so the call is always billed and the model stays available.
+ * back to the catalog price × tokens. If OpenRouter returns an uncataloged paid
+ * model or omits token counts, a conservative no-loss fallback is used and a
+ * metering alert is recorded. It never throws and never blocks a model.
  */
 export function meterUsage(
   userId: string,
@@ -155,31 +224,50 @@ export function meterUsage(
   const promptTokens = usage?.prompt_tokens ?? 0;
   const completionTokens = usage?.completion_tokens ?? 0;
   const upstreamCost =
-    typeof usage?.cost === "number" && Number.isFinite(usage.cost) ? usage.cost : null;
+    typeof usage?.cost === "number" && Number.isFinite(usage.cost)
+      ? usage.cost
+      : null;
 
   let costMicros: number;
   if (upstreamCost !== null && upstreamCost > 0) {
     // Authoritative cost from OpenRouter.
-    costMicros = Math.max(requirePositive ? 1 : 0, Math.round(upstreamCost * 1_000_000));
+    costMicros = Math.max(
+      requirePositive ? 1 : 0,
+      Math.round(upstreamCost * 1_000_000),
+    );
   } else if (!requirePositive) {
     // Free model / free tier — zero cost is expected and fine.
     costMicros = 0;
   } else {
     // Paid model but OpenRouter omitted or zeroed the cost. Charge from the
     // catalog price so the call is still billed and the model never blocks.
-    const fallback = modelPriceMicros(model, promptTokens, completionTokens);
+    const billable = paidMeteringTokenFloors(promptTokens, completionTokens);
+    const fallback = modelPriceMicros(
+      model,
+      billable.promptTokens,
+      billable.completionTokens,
+    );
     if (fallback !== null) {
       costMicros = fallback;
       console.warn(
         `[metering] ${path}: ${model} missing upstream cost — charged catalog fallback ${fallback}µ ` +
-          `(${promptTokens}/${completionTokens} tok)`,
+          `(${billable.promptTokens}/${billable.completionTokens} tok)`,
       );
     } else {
-      costMicros = 1; // floor so the usage row always exists; warm for next time
+      costMicros = unknownPaidModelPriceMicros(
+        billable.promptTokens,
+        billable.completionTokens,
+      );
       warmModelCatalog();
+      recordMeteringAlert(
+        model,
+        path,
+        "missing_paid_model_price",
+        `${billable.promptTokens}/${billable.completionTokens} tok charged ${costMicros}µ conservative fallback`,
+      );
       console.warn(
-        `[metering] ${path}: ${model} missing upstream cost and no catalog price — charged 1µ floor ` +
-          `(${promptTokens}/${completionTokens} tok)`,
+        `[metering] ${path}: ${model} missing upstream cost and no catalog price — charged conservative fallback ` +
+          `${costMicros}µ (${billable.promptTokens}/${billable.completionTokens} tok)`,
       );
     }
   }
@@ -209,11 +297,15 @@ export async function fetchModels(): Promise<ModelEntry[]> {
   const cache = globalThis.__olpModelCache;
   if (cache && Date.now() - cache.at < MODEL_CACHE_TTL_MS) return cache.data;
   const res = await fetch(`${OPENROUTER_BASE}/models`, {
-    headers: openRouterKey() ? { Authorization: `Bearer ${openRouterKey()}` } : {},
+    headers: openRouterKey()
+      ? { Authorization: `Bearer ${openRouterKey()}` }
+      : {},
   });
   if (!res.ok) throw new Error(`OpenRouter /models failed: ${res.status}`);
   const payload = (await res.json()) as { data?: ModelEntry[] };
-  const data = Array.isArray(payload.data) ? payload.data.filter(isTextOutputModel) : [];
+  const data = Array.isArray(payload.data)
+    ? payload.data.filter(isTextOutputModel)
+    : [];
   globalThis.__olpModelCache = { at: Date.now(), data };
   return data;
 }
@@ -249,10 +341,14 @@ const KNOWN_UNSAFE_CHAT_MODEL_IDS = new Set([
 
 export function isTextOutputModel(model: ModelEntry): boolean {
   if (KNOWN_UNSAFE_CHAT_MODEL_IDS.has(model.id)) return false;
-  const output = model.architecture && typeof model.architecture === "object"
-    ? (model.architecture as { output_modalities?: unknown }).output_modalities
-    : undefined;
-  return !Array.isArray(output) || (output.length === 1 && output[0] === "text");
+  const output =
+    model.architecture && typeof model.architecture === "object"
+      ? (model.architecture as { output_modalities?: unknown })
+          .output_modalities
+      : undefined;
+  return (
+    !Array.isArray(output) || (output.length === 1 && output[0] === "text")
+  );
 }
 
 /**
@@ -272,12 +368,15 @@ export function usageTapStream(
   const scan = (text: string, final = false) => {
     lineBuf += text;
     const lines = lineBuf.split("\n");
-    lineBuf = final ? "" : lines.pop() ?? "";
+    lineBuf = final ? "" : (lines.pop() ?? "");
     for (const line of lines) {
       const data = line.startsWith("data:") ? line.slice(5).trim() : "";
       if (!data || data === "[DONE]") continue;
       try {
-        const obj = JSON.parse(data) as { usage?: UpstreamUsage; model?: string };
+        const obj = JSON.parse(data) as {
+          usage?: UpstreamUsage;
+          model?: string;
+        };
         if (obj.usage) lastUsage = obj.usage;
         if (obj.model) lastModel = obj.model;
       } catch {

@@ -25,6 +25,10 @@ describe("OpenRouter metering", () => {
     vi.clearAllMocks();
     db.hasActiveMeteringAlert.mockReturnValue(false);
     globalThis.__olpModelCache = undefined;
+    delete process.env.METERING_UNKNOWN_PAID_PROMPT_PRICE_USD;
+    delete process.env.METERING_UNKNOWN_PAID_COMPLETION_PRICE_USD;
+    delete process.env.METERING_MISSING_USAGE_PROMPT_TOKEN_FLOOR;
+    delete process.env.METERING_MISSING_USAGE_COMPLETION_TOKEN_FLOOR;
   });
 
   it("records OpenRouter cost in credit micros", () => {
@@ -73,15 +77,84 @@ describe("OpenRouter metering", () => {
     );
   });
 
-  it("records a 1µ floor when both cost and catalog price are unavailable", () => {
+  it("uses catalog pricing for dated model aliases returned by the upstream", () => {
+    globalThis.__olpModelCache = {
+      at: Date.now(),
+      data: [
+        {
+          id: "z-ai/glm-5.2",
+          pricing: { prompt: "0.0000014", completion: "0.0000044" },
+        },
+      ],
+    };
+    const result = meterUsage(
+      "user-1",
+      "z-ai/glm-5.2-20260616",
+      { prompt_tokens: 13, completion_tokens: 6 },
+      { requirePositiveCost: true, path: "chat" },
+    );
+    expect(result).toEqual({ recorded: true, costMicros: 45 });
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "z-ai/glm-5.2-20260616",
+      13,
+      6,
+      45,
+    );
+    expect(db.recordMeteringAlert).not.toHaveBeenCalled();
+  });
+
+  it("records a conservative alerting charge when both cost and catalog price are unavailable", () => {
     const result = meterUsage(
       "user-1",
       "some/unknown-model",
       { prompt_tokens: 10, completion_tokens: 4 },
       { requirePositiveCost: true, path: "chat" },
     );
-    expect(result).toEqual({ recorded: true, costMicros: 1 });
-    expect(db.recordUsage).toHaveBeenCalledWith("user-1", "some/unknown-model", 10, 4, 1);
+    expect(result).toEqual({ recorded: true, costMicros: 600 });
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "some/unknown-model",
+      10,
+      4,
+      600,
+    );
+    expect(db.recordMeteringAlert).toHaveBeenCalledWith(
+      "some/unknown-model",
+      "chat",
+      "missing_paid_model_price",
+      "10/4 tok charged 600µ conservative fallback",
+    );
+  });
+
+  it("uses missing-usage token floors instead of a symbolic floor for paid anomalies", () => {
+    process.env.METERING_MISSING_USAGE_PROMPT_TOKEN_FLOOR = "100";
+    process.env.METERING_MISSING_USAGE_COMPLETION_TOKEN_FLOOR = "50";
+    globalThis.__olpModelCache = {
+      at: Date.now(),
+      data: [
+        {
+          id: "anthropic/claude-sonnet-4.6",
+          pricing: { prompt: "0.000003", completion: "0.000015" },
+        },
+      ],
+    };
+
+    const result = meterUsage(
+      "user-1",
+      "anthropic/claude-sonnet-4.6",
+      undefined,
+      { requirePositiveCost: true, path: "chat" },
+    );
+
+    expect(result).toEqual({ recorded: true, costMicros: 1050 });
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "anthropic/claude-sonnet-4.6",
+      0,
+      0,
+      1050,
+    );
   });
 
   it("records zero for free models/tier without throwing", () => {
@@ -92,13 +165,21 @@ describe("OpenRouter metering", () => {
       { requirePositiveCost: false },
     );
     expect(result).toEqual({ recorded: true, costMicros: 0 });
-    expect(db.recordUsage).toHaveBeenCalledWith("user-1", "openai/gpt-oss-120b:free", 5, 2, 0);
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "openai/gpt-oss-120b:free",
+      5,
+      2,
+      0,
+    );
   });
 
   it("modelPriceMicros computes from the cached catalog", () => {
     globalThis.__olpModelCache = {
       at: Date.now(),
-      data: [{ id: "m", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+      data: [
+        { id: "m", pricing: { prompt: "0.000001", completion: "0.000002" } },
+      ],
     };
     expect(modelPriceMicros("m", 1000, 1000)).toBe(3000); // (0.001 + 0.002) USD → micros
     expect(modelPriceMicros("unknown", 1000, 1000)).toBeNull();
@@ -112,7 +193,11 @@ describe("OpenRouter metering", () => {
   it("captures streaming final usage exactly once", async () => {
     const onUsage = vi.fn();
     const onMissing = vi.fn();
-    const stream = usageTapStream(onUsage, "anthropic/claude-sonnet-4.6", onMissing);
+    const stream = usageTapStream(
+      onUsage,
+      "anthropic/claude-sonnet-4.6",
+      onMissing,
+    );
     const writer = stream.writable.getWriter();
     const reader = stream.readable.getReader();
     const drain = (async () => {
@@ -140,7 +225,11 @@ describe("OpenRouter metering", () => {
   it("alerts when a stream ends without usage", async () => {
     const onUsage = vi.fn();
     const onMissing = vi.fn();
-    const stream = usageTapStream(onUsage, "anthropic/claude-sonnet-4.6", onMissing);
+    const stream = usageTapStream(
+      onUsage,
+      "anthropic/claude-sonnet-4.6",
+      onMissing,
+    );
     const writer = stream.writable.getWriter();
     const reader = stream.readable.getReader();
     const drain = (async () => {
@@ -149,7 +238,11 @@ describe("OpenRouter metering", () => {
       }
     })();
 
-    await writer.write(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+    await writer.write(
+      new TextEncoder().encode(
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+      ),
+    );
     await writer.close();
     await drain;
 
@@ -206,7 +299,9 @@ describe("OpenRouter catalog filtering", () => {
 describe("legacy OpenRouter plan helper", () => {
   it("keeps free-only plans limited to the selected free model", () => {
     expect(modelAllowed(PLANS.free, "openai/gpt-oss-120b:free")).toBe(true);
-    expect(modelAllowed(PLANS.free, "meta-llama/llama-4-free:free")).toBe(false);
+    expect(modelAllowed(PLANS.free, "meta-llama/llama-4-free:free")).toBe(
+      false,
+    );
     expect(modelAllowed(PLANS.pro, "meta-llama/llama-4-free:free")).toBe(true);
   });
 });
