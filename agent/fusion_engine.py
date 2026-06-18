@@ -486,8 +486,17 @@ def _restore_tools(agent: Any, original_tools: Any, original_valid: Any) -> None
 # Portal connection helpers
 # ---------------------------------------------------------------------------
 
-def _managed_access_token() -> Optional[str]:
+def _managed_access_token(force_refresh: bool = False) -> Optional[str]:
     """The managed-provider OAuth access token used to authenticate fusion calls."""
+    if force_refresh:
+        try:
+            from clio_cli.auth import resolve_managed_access_token
+
+            token = resolve_managed_access_token(refresh_skew_seconds=3600)
+            if token:
+                return str(token).strip()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("fusion: forced access token refresh failed: %s", exc)
     try:
         from tools.managed_tool_gateway import read_managed_access_token
         return read_managed_access_token()
@@ -607,9 +616,8 @@ def run_fusion_turn(
             _emit("gate", "🔮 Fusion: simple request — answering directly…", data={"decision": "skip"})
             return _normal_turn()
 
-    token = _managed_access_token()
     base = _portal_base_url()
-    if not token or not base:
+    if not base:
         _emit("fallback", "🔮 Fusion: not connected to the Omni Loop Portal — answering directly…")
         return _normal_turn()
 
@@ -652,17 +660,33 @@ def run_fusion_turn(
             persist_user_message=persist_user_message or user_message,
         )
 
-    headers = {"Authorization": f"Bearer {token}"}
+    def _portal_headers(force_refresh: bool = False) -> Optional[Dict[str, str]]:
+        token = _managed_access_token(force_refresh=force_refresh)
+        if not token:
+            return None
+        return {"Authorization": f"Bearer {token}"}
+
+    def _portal_post(client: Any, path: str, payload: Dict[str, Any]) -> Any:
+        headers = _portal_headers(force_refresh=False)
+        if not headers:
+            return None
+        resp = client.post(f"{base}{path}", headers=headers, json=payload)
+        if getattr(resp, "status_code", None) == 401:
+            refreshed = _portal_headers(force_refresh=True)
+            if refreshed:
+                resp = client.post(f"{base}{path}", headers=refreshed, json=payload)
+        return resp
+
     timeout = httpx.Timeout(_FUSION_HTTP_TIMEOUT, connect=_FUSION_CONNECT_TIMEOUT)
     last_draft = ""
     last_meta: Optional[dict] = None
 
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(
-                f"{base}/api/v1/fusion/start",
-                headers=headers,
-                json={
+            resp = _portal_post(
+                client,
+                "/api/v1/fusion/start",
+                {
                     "user_message": user_message,
                     "fusion_config": cfg.to_dict(),
                     "conversation_history": conversation_history or [],
@@ -674,6 +698,9 @@ def run_fusion_turn(
                     "main_provider": (getattr(agent, "provider", "") or "").strip().lower(),
                 },
             )
+            if resp is None:
+                _emit("fallback", "🔮 Fusion: not connected to the Omni Loop Portal — answering directly…")
+                return _normal_turn()
             if resp.status_code == 403:
                 msg = _error_message(resp, "🔮 Fusion is a Pro-plan feature — upgrade in the Omni Loop Portal.")
                 _emit("fallback", msg)
@@ -723,19 +750,60 @@ def run_fusion_turn(
                     with contextlib.suppress(Exception):
                         agent._fusion_hide_draft = False
                 last_draft = str((draft_result or {}).get("final_response") or "").strip()
-                resp = client.post(
-                    f"{base}/api/v1/fusion/step",
-                    headers=headers,
-                    json={"session_id": session_id, "draft": last_draft},
+                resp = _portal_post(
+                    client,
+                    "/api/v1/fusion/step",
+                    {"session_id": session_id, "draft": last_draft},
                 )
-                if resp.status_code != 200:
-                    # We already did the work locally — deliver that draft.
+                if resp is None:
+                    _emit(
+                        "degraded",
+                        "⚠️ Fusion review did not complete; delivering the local draft without reviewer/judge approval.",
+                        data={"reason": "missing_token"},
+                    )
                     return {
-                        "final_response": last_draft,
+                        "final_response": (
+                            f"{last_draft}\n\n"
+                            "⚠️ Fusion review did not complete; this is the local main-worker draft, "
+                            "not a reviewed Fusion final. Start a fresh session and run Fusion again "
+                            "for reviewer/judge review."
+                        ).strip(),
                         "messages": list(conversation_history or []),
                         "api_calls": 0,
                         "completed": True,
                         "failed": False,
+                        "fusion": {"reviewed": False, "degraded": "missing portal token"},
+                    }
+                if resp.status_code != 200:
+                    # We already did the work locally — deliver that draft.
+                    reason = _error_message(resp, f"portal step failed with HTTP {resp.status_code}")
+                    logger.warning(
+                        "fusion: /step failed status=%s reason=%s; delivering unreviewed draft",
+                        resp.status_code,
+                        reason,
+                    )
+                    _emit(
+                        "degraded",
+                        "⚠️ Fusion review did not complete; delivering the local draft without reviewer/judge approval.",
+                        data={"status": resp.status_code, "reason": reason},
+                    )
+                    return {
+                        "final_response": (
+                            f"{last_draft}\n\n"
+                            "⚠️ Fusion review did not complete; this is the local main-worker draft, "
+                            "not a reviewed Fusion final. Start a fresh session and run Fusion again "
+                            "for reviewer/judge review."
+                        ).strip(),
+                        "messages": list(conversation_history or []),
+                        "api_calls": 0,
+                        "completed": True,
+                        "failed": False,
+                        "fusion": {
+                            "reviewed": False,
+                            "degraded": "portal step failed",
+                            "status": resp.status_code,
+                            "reason": reason,
+                        },
                     }
                 data = resp.json()
                 _forward(data.get("events"))
@@ -744,14 +812,16 @@ def run_fusion_turn(
                 last_meta = data.get("fusion") if isinstance(data.get("fusion"), dict) else last_meta
 
             if action == "deliver":
+                fusion_reviewed = not (isinstance(last_meta, dict) and last_meta.get("reviewed") is False)
                 result: Dict[str, Any] = {
                     "final_response": str(data.get("final_response") or last_draft),
                     "messages": list(conversation_history or []),
                     "api_calls": 0,
                     "completed": True,
                     "failed": False,
-                    "fusion_completed": True,
                 }
+                if fusion_reviewed:
+                    result["fusion_completed"] = True
                 if isinstance(last_meta, dict):
                     result["fusion"] = last_meta
                 return result
@@ -770,7 +840,10 @@ def run_fusion_turn(
                 finally:
                     _restore_tools(agent, orig_tools, orig_valid)
                 if isinstance(result, dict):
+                    fusion_reviewed = not (isinstance(last_meta, dict) and last_meta.get("reviewed") is False)
                     if (
+                        fusion_reviewed
+                        and
                         result.get("completed", True) is not False
                         and not result.get("failed")
                         and not result.get("interrupted")

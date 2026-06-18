@@ -15,14 +15,38 @@ describe('fusionStatusMessageBody', () => {
     ).toBe(reminder)
   })
 
-  it('keeps planning transient and preserves reviewer note formatting', () => {
+  it('renders portal progress phases as persistent system message bodies', () => {
     expect(
       fusionStatusMessageBody({
         kind: 'fusion',
         phase: 'planning',
         text: 'Planning route...'
       })
-    ).toBeNull()
+    ).toBe('🔮 Planning route...')
+
+    expect(
+      fusionStatusMessageBody({
+        kind: 'fusion',
+        phase: 'working',
+        text: 'Main model is working...'
+      })
+    ).toBe('🛠️ Main model is working...')
+
+    expect(
+      fusionStatusMessageBody({
+        kind: 'fusion',
+        phase: 'judge',
+        text: 'Judge analyzing...'
+      })
+    ).toBe('⚖️ Judge analyzing...')
+
+    expect(
+      fusionStatusMessageBody({
+        kind: 'fusion',
+        phase: 'degraded',
+        text: '⚠️ Review incomplete'
+      })
+    ).toBe('⚠️ Review incomplete')
 
     expect(
       fusionStatusMessageBody({

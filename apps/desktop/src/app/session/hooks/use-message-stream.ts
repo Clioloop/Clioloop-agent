@@ -122,29 +122,33 @@ interface FusionStatusPayload {
 }
 
 export function fusionStatusMessageBody(fusion: FusionStatusPayload | undefined): string | null {
-  if (
-    fusion?.kind !== 'fusion' ||
-    (fusion.phase !== 'reset_reminder' &&
-      fusion.phase !== 'reviewing' &&
-      fusion.phase !== 'critique' &&
-      fusion.phase !== 'approved')
-  ) {
+  if (fusion?.kind !== 'fusion' || !fusion.phase) {
     return null
   }
 
-  const head =
-    fusion.phase === 'reset_reminder'
-      ? ''
-      : fusion.phase === 'approved'
-        ? '✅ '
-        : fusion.phase === 'reviewing'
-          ? '🔍 '
-          : '📝 '
+  const phasePrefixes: Record<string, string> = {
+    approved: '✅ ',
+    critique: '📝 ',
+    degraded: '⚠️ ',
+    fallback: '⚠️ ',
+    finalizing: '🧬 ',
+    judge: '⚖️ ',
+    planning: '🔮 ',
+    reset_reminder: '',
+    reviewing: '🔍 ',
+    revising: '🔁 ',
+    working: '🛠️ '
+  }
+  const prefix = phasePrefixes[fusion.phase]
 
-  const body =
-    fusion.phase !== 'reviewing' && fusion.phase !== 'reset_reminder' && fusion.detail
-      ? `${head}${fusion.text ?? ''}\n\n${fusion.detail}`
-      : `${head}${fusion.text ?? ''}`
+  if (prefix === undefined) {
+    return null
+  }
+
+  const text = fusion.text ?? ''
+  const head = prefix && !text.trimStart().startsWith(prefix.trim()) ? prefix : ''
+
+  const body = fusion.detail ? `${head}${text}\n\n${fusion.detail}` : `${head}${text}`
 
   return body.trim()
 }
@@ -962,10 +966,9 @@ export function useMessageStream({
           applyGoalEvent(sessionId, goalPayload)
         } else if (sessionId) {
           // Fusion: the main model's work + final answer render through the
-          // normal assistant stream. Surface the otherwise-invisible reviewer
-          // step here — one message per round when reviewers report a decision
-          // (critique/approved), plus the post-completion reset reminder.
-          // planning/working/finalizing stay transient.
+          // normal assistant stream. Surface the otherwise-invisible portal
+          // panel phases as persistent system lines so planner/reviewer/judge
+          // progress and degraded states are visible after the turn.
           const body = fusionStatusMessageBody(event.payload as FusionStatusPayload | undefined)
           if (body) {
             updateSessionState(sessionId, state => ({

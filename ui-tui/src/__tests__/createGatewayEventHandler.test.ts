@@ -144,7 +144,7 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('🔍 Reviewing draft (2 reviewers)…')
   })
 
-  it('surfaces a fusion critique with reviewer notes; planning stays transient', () => {
+  it('surfaces fusion progress and critique phases as persistent lines', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -159,7 +159,14 @@ describe('createGatewayEventHandler', () => {
       payload: { kind: 'fusion', phase: 'planning', text: 'Planning route…' },
       type: 'status.update'
     } as any)
-    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(ctx.system.sys).toHaveBeenCalledWith('🔮 Planning route…')
+
+    ctx.system.sys.mockClear()
+    onEvent({
+      payload: { kind: 'fusion', phase: 'degraded', text: '⚠️ Review incomplete' },
+      type: 'status.update'
+    } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('⚠️ Review incomplete')
   })
 
   it('surfaces a fusion reset reminder as a persistent system line', () => {

@@ -487,20 +487,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         // Fusion: the main model's work + final answer render through the
-        // normal message stream. Here we surface the otherwise-invisible
-        // panel steps: a "being reviewed" line when the draft is shipped to the
-        // reviewers, then a persistent line per round when reviewers report a
-        // decision (critique/approved). planning/working/finalizing stay as
-        // transient status.
+        // normal message stream. Here we surface the otherwise-invisible portal
+        // panel phases as persistent system lines so planner/reviewer/judge
+        // progress and degraded states remain visible after the turn.
         if (p.kind === 'fusion') {
-          if (p.phase === 'reset_reminder') {
-            sys(p.text)
-          } else if (p.phase === 'reviewing') {
-            // Status label only — never the draft or reviewer internals.
-            sys(`🔍 ${p.text}`)
-          } else if (p.phase === 'critique' || p.phase === 'approved') {
-            const head = p.phase === 'approved' ? '✅ ' : '📝 '
-            sys(p.detail ? `${head}${p.text}\n${p.detail}` : `${head}${p.text}`)
+          const phasePrefixes: Record<string, string> = {
+            approved: '✅ ',
+            critique: '📝 ',
+            degraded: '⚠️ ',
+            fallback: '⚠️ ',
+            finalizing: '🧬 ',
+            judge: '⚖️ ',
+            planning: '🔮 ',
+            reset_reminder: '',
+            reviewing: '🔍 ',
+            revising: '🔁 ',
+            working: '🛠️ '
+          }
+          const prefix = phasePrefixes[String(p.phase || '')]
+          if (prefix !== undefined) {
+            const text = String(p.text || '')
+            const head = prefix && !text.trimStart().startsWith(prefix.trim()) ? prefix : ''
+            sys(p.detail ? `${head}${text}\n${p.detail}` : `${head}${text}`)
           }
 
           restoreStatusAfter(4000)

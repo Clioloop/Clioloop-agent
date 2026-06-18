@@ -146,7 +146,7 @@ class FakeAgent:
 def wire(monkeypatch):
     """Allow fusion, provide a token + base, and inject a fake httpx with queued responses."""
     monkeypatch.setattr(fusion, "fusion_gate_check", lambda force_fresh=False: (True, ""))
-    monkeypatch.setattr(fusion, "_managed_access_token", lambda: "tok")
+    monkeypatch.setattr(fusion, "_managed_access_token", lambda force_refresh=False: "tok2" if force_refresh else "tok")
     monkeypatch.setattr(fusion, "_portal_base_url", lambda: "https://portal.test")
 
     state = {"client": None}
@@ -226,7 +226,7 @@ def test_auto_gate_skips_panel_for_tiny_message(wire):
 def test_full_protocol_start_work_finalize(wire):
     install, state = wire
     agent = FakeAgent()
-    meta = {"version": 2, "main_model": "vendor/main"}
+    meta = {"version": 2, "main_model": "vendor/main", "reviewed": True}
     install([
         FakeResp(200, {
             "action": "work", "session_id": "s1",
@@ -314,7 +314,7 @@ def test_deliver_action_returns_final_response(wire):
     install([
         FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
         FakeResp(200, {"action": "deliver", "final_response": "DRAFT+footer",
-                       "fusion": {"degraded": "fusion budget reached"}, "events": []}),
+                       "fusion": {"degraded": "fusion budget reached", "reviewed": True}, "events": []}),
     ])
     out = fusion.run_fusion_turn(agent, "long task", config=_cfg())
     assert out["final_response"] == "DRAFT+footer"
@@ -322,6 +322,56 @@ def test_deliver_action_returns_final_response(wire):
     assert out["fusion_completed"] is True
     # Only the work turn ran locally; deliver does not start a new turn.
     assert len(agent.calls) == 1
+
+
+def test_unreviewed_deliver_does_not_mark_fusion_completed(wire):
+    install, state = wire
+    agent = FakeAgent()
+    install([
+        FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
+        FakeResp(200, {"action": "deliver", "final_response": "UNREVIEWED",
+                       "fusion": {"degraded": "fusion session expired before review", "reviewed": False}, "events": []}),
+    ])
+    out = fusion.run_fusion_turn(agent, "long task", config=_cfg())
+    assert out["final_response"] == "UNREVIEWED"
+    assert out["fusion"]["reviewed"] is False
+    assert "fusion_completed" not in out
+
+
+def test_step_401_refreshes_token_and_retries(wire):
+    install, state = wire
+    agent = FakeAgent()
+    install([
+        FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
+        FakeResp(401, {"error": {"message": "expired"}}),
+        FakeResp(200, {
+            "action": "finalize", "message": "F", "hide_image_tool": False,
+            "fusion": {"version": 2, "reviewed": True}, "events": [],
+        }),
+    ])
+    out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
+    assert out["fusion_completed"] is True
+    step_requests = [req for req in state["client"].requests if "/step" in req[0]]
+    assert len(step_requests) == 2
+
+
+def test_step_failure_delivers_warning_without_fusion_completed(wire):
+    install, state = wire
+    agent = FakeAgent()
+    progress = []
+    install([
+        FakeResp(200, {"action": "work", "session_id": "s1", "message": "W", "events": []}),
+        FakeResp(503, {"error": {"message": "unavailable"}}),
+    ])
+    out = fusion.run_fusion_turn(
+        agent, "build the feature", config=_cfg(),
+        progress=lambda e: progress.append(e),
+    )
+    assert out["completed"] is True
+    assert out["fusion"]["reviewed"] is False
+    assert "Fusion review did not complete" in out["final_response"]
+    assert "fusion_completed" not in out
+    assert [e.phase for e in progress] == ["degraded"]
 
 
 def test_start_fallback_runs_normal_turn(wire):
@@ -359,7 +409,7 @@ def test_404_old_portal_falls_back(wire):
 def test_no_token_falls_back(monkeypatch):
     agent = FakeAgent()
     monkeypatch.setattr(fusion, "fusion_gate_check", lambda force_fresh=False: (True, ""))
-    monkeypatch.setattr(fusion, "_managed_access_token", lambda: None)
+    monkeypatch.setattr(fusion, "_managed_access_token", lambda force_refresh=False: None)
     out = fusion.run_fusion_turn(agent, "build the feature", config=_cfg())
     assert out["final_response"] == "FINAL ANSWER"
     assert len(agent.calls) == 1
