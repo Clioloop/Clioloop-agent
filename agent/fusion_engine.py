@@ -542,6 +542,133 @@ def _error_message(response: Any, default: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool-trace extraction (sent to the portal so reviewers/judge can see what
+# the main agent actually did — searches, scrapes, reads, commands — not just
+# the final draft text. Pure utility: no Fusion prompts or pipeline logic.)
+# ---------------------------------------------------------------------------
+
+_TOOL_TRACE_MAX_CHARS = 4000
+
+
+def _compact_args(tool_name: str, args_json: str) -> str:
+    """Extract the most relevant args for each tool, compact form."""
+    import json as _json
+
+    try:
+        args = _json.loads(args_json) if args_json else {}
+    except Exception:
+        return (args_json or "")[:200]
+    if not isinstance(args, dict):
+        return str(args)[:200]
+
+    if tool_name == "web_search":
+        return f'query="{str(args.get("query", ""))[:120]}", limit={args.get("limit", "")}'
+    if tool_name == "web_extract":
+        urls = args.get("urls", [])
+        urls_str = ", ".join(str(u) for u in urls[:3])
+        if len(urls) > 3:
+            urls_str += f", …({len(urls) - 3} more)"
+        return f"urls=[{urls_str}]"
+    if tool_name == "terminal":
+        return f'command="{str(args.get("command", ""))[:150]}"'
+    if tool_name in ("read_file", "write_file"):
+        path = str(args.get("path", ""))[:100]
+        if tool_name == "write_file":
+            content_len = len(str(args.get("content", "")))
+            return f'path="{path}", content={content_len} chars'
+        return f'path="{path}"'
+    if tool_name == "browser_navigate":
+        return f'url="{str(args.get("url", ""))[:150]}"'
+    if tool_name == "browser_click":
+        return f'ref="{str(args.get("ref", ""))[:60]}"'
+    if tool_name == "browser_type":
+        ref = str(args.get("ref", ""))[:60]
+        text_len = len(str(args.get("text", "")))
+        return f'ref="{ref}", text={text_len} chars'
+    if tool_name == "search_files":
+        return f'pattern="{str(args.get("pattern", ""))[:80]}", target={args.get("target", "")}'
+
+    # Generic: show all keys, truncate values.
+    parts: List[str] = []
+    for k, v in args.items():
+        v_str = str(v)
+        if len(v_str) > 100:
+            v_str = v_str[:97] + "…"
+        parts.append(f"{k}={v_str}")
+        if len(parts) >= 5:
+            break
+    return ", ".join(parts)
+
+
+def _compact_result(tool_name: str, content: str) -> str:
+    """Summarize a tool result to ~500 chars."""
+    if not content:
+        return "(empty)"
+    content = content.strip()
+    if len(content) <= 500:
+        return content
+    # Web search results: keep URL list visible.
+    if tool_name == "web_search":
+        return f"{len(content)} chars: " + content[:400] + "…"
+    # Web extract: summarize what was extracted.
+    if tool_name == "web_extract":
+        return f"{len(content)} chars of extracted content: " + content[:350] + "…"
+    # Terminal: keep first/last to see both command and result.
+    if tool_name == "terminal":
+        return f"{len(content)} chars: " + content[:200] + "…(middle omitted)…" + content[-200:]
+    # Generic.
+    return f"{len(content)} chars: " + content[:200] + "…(middle omitted)…" + content[-200:]
+
+
+def _extract_tool_trace(messages: Any) -> str:
+    """Build a compact trace of tool calls + results from a conversation's
+    messages list, for the Fusion reviewers/judge to see what the agent did.
+
+    Returns a string like::
+
+        === TOOL WORK TRACE (main agent) ===
+        1. web_search(query="weather forecast Varna…", limit=5)
+           → 5 results: accuweather.com/…, weather-forecast.com/…, …
+        2. web_extract(urls=[https://accuweather.com/…, …])
+           → 14,958 chars of extracted content: …
+        === END TOOL WORK TRACE ===
+
+    Capped at ``_TOOL_TRACE_MAX_CHARS``.
+    """
+    if not isinstance(messages, list):
+        return ""
+    steps: List[str] = []
+    step_num = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        if role == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if not isinstance(tc, dict):
+                    continue
+                step_num += 1
+                fn = tc.get("function") or {}
+                name = str(fn.get("name") or "?")
+                args_raw = str(fn.get("arguments") or "")
+                args_str = _compact_args(name, args_raw)
+                steps.append(f"{step_num}. {name}({args_str})")
+        elif role == "tool":
+            content = str(msg.get("content", ""))
+            name = str(msg.get("name", ""))
+            result_summary = _compact_result(name, content)
+            if steps:
+                steps[-1] += f"\n   → {result_summary}"
+    if not steps:
+        return ""
+    trace = "=== TOOL WORK TRACE (main agent) ===\n" + "\n".join(steps)
+    trace += "\n=== END TOOL WORK TRACE ==="
+    if len(trace) > _TOOL_TRACE_MAX_CHARS:
+        trace = trace[: _TOOL_TRACE_MAX_CHARS - 50] + "\n…(truncated)=== END TOOL WORK TRACE ==="
+    return trace
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -750,10 +877,21 @@ def run_fusion_turn(
                     with contextlib.suppress(Exception):
                         agent._fusion_hide_draft = False
                 last_draft = str((draft_result or {}).get("final_response") or "").strip()
+                # Extract a compact trace of the tool calls the agent made
+                # (searches, scrapes, reads, commands) so the Fusion
+                # reviewers/judge can verify the draft against the actual tool
+                # output — not just the final text.
+                tool_trace = _extract_tool_trace(
+                    (draft_result or {}).get("messages") or []
+                )
                 resp = _portal_post(
                     client,
                     "/api/v1/fusion/step",
-                    {"session_id": session_id, "draft": last_draft},
+                    {
+                        "session_id": session_id,
+                        "draft": last_draft,
+                        "tool_trace": tool_trace,
+                    },
                 )
                 if resp is None:
                     _emit(
@@ -901,4 +1039,7 @@ __all__ = [
     "FUSION_MAX_MODELS_PER_GROUP",
     "MAX_PLAN_IDS",
     "FUSION_PLAN_IDS",
+    "_extract_tool_trace",
+    "_compact_args",
+    "_compact_result",
 ]
