@@ -325,6 +325,7 @@ gateway:
     label_output_tokens:      "Output tokens: {count}"
     label_total:              "Total: {count}"
     label_api_calls:          "API calls: {count}"
+    label_tool_calls:         "Tool calls: {count}"
     label_cost:               "Cost: {prefix}${amount}"
     label_cost_included:      "Cost: included"
     label_context:            "Context: {used} / {total} ({pct}%)"

@@ -14268,6 +14268,8 @@ class GatewayRunner:
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
+            if getattr(agent, "session_tool_calls", 0) > 0:
+                lines.append(t("gateway.usage.label_tool_calls", count=agent.session_tool_calls))
 
             # Cost estimation
             try:

@@ -3743,6 +3743,7 @@ class ClioCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["session_tool_calls"] = getattr(agent, "session_tool_calls", 0) or 0
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -10910,6 +10911,9 @@ class ClioCLI:
         print(f"  Completion tokens:         {completion:>10,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
+        tool_calls = getattr(agent, "session_tool_calls", 0) or 0
+        if tool_calls:
+            print(f"  Tool calls:                {tool_calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  Cost status:              {cost_result.status:>10}")
         print(f"  Cost source:              {cost_result.source:>10}")

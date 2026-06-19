@@ -186,6 +186,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
 
+    # Track per-session tool call count (performance metric, mirrors session_api_calls)
+    if hasattr(agent, "session_tool_calls"):
+        agent.session_tool_calls += num_tools
+
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
@@ -689,6 +693,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    num_tools = len(assistant_message.tool_calls) if assistant_message.tool_calls else 0
+
+    # Track per-session tool call count (performance metric)
+    if num_tools and hasattr(agent, "session_tool_calls"):
+        agent.session_tool_calls += num_tools
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
