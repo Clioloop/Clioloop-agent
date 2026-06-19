@@ -1,0 +1,8 @@
+name: comfyui
+version: 1.0.0
+description: "Local ComfyUI (Stable Diffusion) image generation backend — self-hosted, no API key required."
+author: Omni Loop Labs
+kind: backend
+requires_env: []
+# No hard env requirement — ComfyUI runs locally with no API key.
+# The provider probes http://127.0.0.1:8188 at runtime via is_available().

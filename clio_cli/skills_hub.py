@@ -920,6 +920,65 @@ def do_list(source_filter: str = "all",
     c.print(summary)
 
 
+def do_health(console: Optional[Console] = None) -> None:
+    """Check the health of all configured Skills Hub sources.
+
+    Probes each source (GitHub, Skills.sh, ClawHub, Clio Index, etc.)
+    in parallel with a short timeout and reports status, skill count,
+    and latency.  Useful for diagnosing connectivity issues and
+    verifying that taps are reachable.
+    """
+    from tools.skills_hub import GitHubAuth, create_source_router, check_source_health
+
+    c = console or _console
+    c.print("[bold]Checking Skills Hub sources...[/]\n")
+
+    auth = GitHubAuth()
+    sources = create_source_router(auth=auth)
+    results = check_source_health(sources)
+
+    healthy = sum(1 for r in results if r["status"] == "healthy")
+    rate_limited = sum(1 for r in results if r["status"] == "rate_limited")
+    unreachable = sum(1 for r in results if r["status"] == "unreachable")
+
+    table = Table(title="Skills Hub Source Health")
+    table.add_column("Source", style="bold cyan")
+    table.add_column("Status", style="dim")
+    table.add_column("Skills", style="dim", justify="right")
+    table.add_column("Latency", style="dim", justify="right")
+    table.add_column("Error", style="dim")
+
+    for r in results:
+        status_str = r["status"]
+        if status_str == "healthy":
+            status_cell = "[bold green]✓ healthy[/]"
+        elif status_str == "rate_limited":
+            status_cell = "[yellow]⚠ rate limited[/]"
+        else:
+            status_cell = "[red]✗ unreachable[/]"
+
+        latency_str = f"{r['latency_ms']:.0f}ms" if r["latency_ms"] > 0 else "—"
+        error_str = r["error"] or ""
+        if len(error_str) > 50:
+            error_str = error_str[:47] + "..."
+
+        table.add_row(
+            r["source_id"],
+            status_cell,
+            str(r["skill_count"]),
+            latency_str,
+            error_str,
+        )
+
+    c.print(table)
+    c.print(
+        f"\n[bold]{healthy}[/] healthy, "
+        f"[yellow]{rate_limited}[/] rate limited, "
+        f"[red]{unreachable}[/] unreachable "
+        f"out of {len(results)} source(s)\n"
+    )
+
+
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Check hub-installed skills for upstream updates."""
     from tools.skills_hub import check_for_skill_updates
@@ -1559,6 +1618,8 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "health":
+        do_health()
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1594,7 +1655,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: clio skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: clio skills [browse|search|install|inspect|list|check|update|audit|health|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'clio skills <command> --help' for details.\n")
 
 

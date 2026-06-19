@@ -3604,6 +3604,81 @@ class ClioIndexSource(SkillSource):
         )
 
 
+def check_source_health(sources: List["SkillSource"]) -> List[Dict[str, Any]]:
+    """Probe each source for reachability and return a health report.
+
+    For each source, attempts a lightweight search (empty query, limit 1)
+    with a short timeout.  Returns a list of dicts with keys:
+
+        source_id      — the source's identifier
+        status         — "healthy", "unreachable", or "rate_limited"
+        skill_count    — number of skills found (0 if unreachable)
+        latency_ms     — round-trip time in milliseconds (0 if unreachable)
+        error          — error message (only when status != healthy)
+        last_check     — ISO timestamp of this check
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime, timezone
+
+    results: List[Dict[str, Any]] = []
+
+    def _probe(src: "SkillSource") -> Dict[str, Any]:
+        sid = src.source_id()
+        start = time.time()
+        try:
+            skills = src.search("", limit=1)
+            latency = (time.time() - start) * 1000
+            # For browse-style sources that return everything on empty query,
+            # count the full result set
+            count = len(skills)
+            is_rate_limited = getattr(src, "is_rate_limited", False)
+            if is_rate_limited:
+                status = "rate_limited"
+            elif count > 0:
+                status = "healthy"
+            else:
+                # Zero results on empty query could mean empty repo or error
+                status = "healthy"  # don't penalize empty repos
+            return {
+                "source_id": sid,
+                "status": status,
+                "skill_count": count,
+                "latency_ms": round(latency, 1),
+                "error": "",
+                "last_check": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            latency = (time.time() - start) * 1000
+            return {
+                "source_id": sid,
+                "status": "unreachable",
+                "skill_count": 0,
+                "latency_ms": round(latency, 1),
+                "error": str(e)[:200],
+                "last_check": datetime.now(timezone.utc).isoformat(),
+            }
+
+    with ThreadPoolExecutor(max_workers=min(len(sources), 8)) as pool:
+        futures = {pool.submit(_probe, src): src for src in sources}
+        for fut in as_completed(futures, timeout=20):
+            try:
+                results.append(fut.result(timeout=0))
+            except Exception:
+                src = futures[fut]
+                results.append({
+                    "source_id": src.source_id(),
+                    "status": "unreachable",
+                    "skill_count": 0,
+                    "latency_ms": 0,
+                    "error": "timeout",
+                    "last_check": datetime.now(timezone.utc).isoformat(),
+                })
+
+    # Sort by source_id for deterministic output
+    results.sort(key=lambda r: r["source_id"])
+    return results
+
+
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """
     Create all configured source adapters.

@@ -14054,6 +14054,16 @@ Examples:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    skills_health = skills_subparsers.add_parser(
+        "health",
+        help="Check the health of all Skills Hub sources",
+        description=(
+            "Probes each configured skill source (GitHub, Skills.sh, ClawHub, "
+            "Clio Index, etc.) for reachability and reports status, skill count, "
+            "and latency. Useful for diagnosing connectivity issues."
+        ),
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )
