@@ -121,7 +121,7 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 8800, user_char_limit: int = 5500):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -488,7 +488,16 @@ class MemoryStore:
             header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
+        block = f"{separator}\n{header}\n{separator}\n{content}"
+
+        # Usage pressure hint: when above 80%, warn the agent to consolidate
+        # before it hits the cap and wastes turns on failed writes.
+        if pct >= 80:
+            block += (
+                f"\n⚠ Memory at {pct}% — consider consolidating or removing "
+                f"stale entries before adding new ones."
+            )
+        return block
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:

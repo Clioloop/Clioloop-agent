@@ -14408,6 +14408,7 @@ Examples:
         help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    memory_sub.add_parser("stats", help="Show memory utilization and top entries by size")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

@@ -453,6 +453,73 @@ def cmd_status(args) -> None:
     print()
 
 
+def cmd_stats(args) -> None:
+    """Show memory utilization, top entries by size, and pressure warnings."""
+    from clio_cli.config import load_config
+    from clio_constants import get_clio_home
+
+    config = load_config()
+    mem_config = config.get("memory", {})
+    mem_limit = mem_config.get("memory_char_limit", 8800)
+    user_limit = mem_config.get("user_char_limit", 5500)
+
+    mem_dir = get_clio_home() / "memories"
+
+    def _read_entries(filename: str) -> list[str]:
+        path = mem_dir / filename
+        if not path.exists():
+            return []
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return []
+        if not raw.strip():
+            return []
+        # Split on § delimiter (same as MemoryStore._read_file)
+        from tools.memory_tool import ENTRY_DELIMITER
+        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+        return [e for e in entries if e]
+
+    print(f"\nMemory stats\n" + "─" * 50)
+
+    for label, filename, limit in [
+        ("MEMORY (personal notes)", "MEMORY.md", mem_limit),
+        ("USER PROFILE", "USER.md", user_limit),
+    ]:
+        entries = _read_entries(filename)
+        total_chars = sum(len(e) for e in entries) + (len(entries) - 1) * 1 if entries else 0  # +1 for § between entries
+        # Actually compute the real joined length (matching _char_count)
+        if entries:
+            from tools.memory_tool import ENTRY_DELIMITER
+            total_chars = len(ENTRY_DELIMITER.join(entries))
+        pct = min(100, int((total_chars / limit) * 100)) if limit > 0 else 0
+        pressure = " ⚠ HIGH" if pct >= 80 else ""
+
+        print(f"\n  {label}{pressure}")
+        print(f"    Entries: {len(entries)}")
+        print(f"    Size:    {total_chars:,}/{limit:,} chars ({pct}%)")
+
+        if entries:
+            # Show top 5 entries by size
+            sized = sorted(enumerate(entries), key=lambda x: len(x[1]), reverse=True)
+            print(f"    Top entries by size:")
+            for idx, entry in sized[:5]:
+                preview = entry[:60].replace("\n", " ")
+                suffix = "…" if len(entry) > 60 else ""
+                print(f"      #{idx + 1} ({len(entry):,} chars) {preview}{suffix}")
+
+    # Show configured limits
+    print(f"\n  Configured limits:")
+    print(f"    memory_char_limit: {mem_limit:,}")
+    print(f"    user_char_limit:   {user_limit:,}")
+
+    # Show provider
+    provider_name = mem_config.get("provider", "")
+    print(f"    provider:           {provider_name or '(built-in only)'}")
+
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -468,5 +535,7 @@ def memory_command(args) -> None:
             cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "stats":
+        cmd_stats(args)
     else:
         cmd_status(args)
