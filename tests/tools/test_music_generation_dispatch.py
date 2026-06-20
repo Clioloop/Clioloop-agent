@@ -819,14 +819,14 @@ class TestConfirmationEnforcement:
         music_gen_registry.register_provider(provider)
         result = self._run({"prompt": "a song"}, configured="rec")
         assert result.get("success") is False or "error" in result
-        assert "Confirmation required" in result.get("error", "")
-
+        assert "CONFIRMATION REQUIRED" in result.get("error", "")
+    
     def test_generate_with_confirmed_false_returns_error(self):
         """action='generate' with confirmed=false must return an error."""
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
         result = self._run({"prompt": "a song", "confirmed": False}, configured="rec")
-        assert "Confirmation required" in result.get("error", "")
+        assert "CONFIRMATION REQUIRED" in result.get("error", "")
 
     def test_generate_with_confirmed_true_proceeds(self):
         """action='generate' with confirmed=true should reach the provider."""
