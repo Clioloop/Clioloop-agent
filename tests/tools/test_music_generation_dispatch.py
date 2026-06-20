@@ -753,7 +753,7 @@ class TestApiframeProvider:
 
     def test_provider_default_model(self):
         p = self._get_provider()
-        assert p.default_model() == "suno-v5"
+        assert p.default_model() == "suno-v5_5"
 
     def test_provider_capabilities(self):
         p = self._get_provider()

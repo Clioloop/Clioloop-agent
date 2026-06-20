@@ -60,6 +60,14 @@ POLL_TIMEOUT = 300  # max seconds to wait for job completion
 
 APIFRAME_MODELS: List[Dict[str, Any]] = [
     {
+        "id": "suno-v5_5",
+        "display": "Suno V5.5",
+        "speed": "~30s",
+        "strengths": "Latest Suno model — improved quality over V5, full songs with vocals, lyrics, instrumentals",
+        "price": "$0.11/song",
+        "max_duration": 240,
+    },
+    {
         "id": "suno-v5",
         "display": "Suno V5",
         "speed": "~30s",
@@ -67,17 +75,9 @@ APIFRAME_MODELS: List[Dict[str, Any]] = [
         "price": "$0.11/song",
         "max_duration": 240,
     },
-    {
-        "id": "suno-v5_5",
-        "display": "Suno V5.5",
-        "speed": "~30s",
-        "strengths": "Latest Suno model — improved quality over V5",
-        "price": "$0.11/song",
-        "max_duration": 240,
-    },
 ]
 
-DEFAULT_MODEL_ID = "suno-v5"
+DEFAULT_MODEL_ID = "suno-v5_5"
 
 # Map our model IDs to Apiframe's model_version strings
 _MODEL_VERSION_MAP = {

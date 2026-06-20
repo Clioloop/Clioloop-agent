@@ -7,12 +7,11 @@ MEDIA directive delivery to fail on Windows.
 
 Fix: Add [A-Za-z]:[/\\\\] as a third anchor alternative in both patterns.
 
-Two identical _TOOL_MEDIA_RE patterns exist in run.py:
-1. History scanning (~L17223): collects already-seen media paths
-2. Result scanning (~L17549): extracts new media tags from agent output
-
-This test file validates that both equivalent regex patterns correctly match
-Windows paths while preserving existing Unix path matching behavior.
+Two identical _TOOL_MEDIA_RE patterns existed in run.py (module-level + local).
+The local copy was removed to fix an UnboundLocalError (the local assignment
+made Python treat the variable as function-scoped, so when the if-branch that
+contained the assignment was not taken, the later unconditional reference
+crashed). Now only the module-level pattern remains.
 """
 
 import re
@@ -145,3 +144,75 @@ class TestToolMediaReWindowsPaths:
         """File extensions are matched case-insensitively."""
         match = _TOOL_MEDIA_RE.search(media_tag)
         assert match is not None, f"Should match: {media_tag}"
+
+
+class TestToolMediaReUnboundLocalRegression:
+    """Regression test for the UnboundLocalError that occurred when the
+    history-scanning code path in _run_agent() did not take the 'if' branch
+    that contained a local _TOOL_MEDIA_RE assignment.
+
+    The fix removed the local assignment so the module-level regex is always
+    used. This test verifies the module-level regex is accessible and
+    functional regardless of history content.
+    """
+
+    def test_module_level_regex_works_with_empty_history(self):
+        """The module-level _TOOL_MEDIA_RE must be usable even when no
+        history messages contain MEDIA: tags (the original crash scenario)."""
+        from gateway.run import _TOOL_MEDIA_RE
+
+        # Simulate the result-scanning code path (line ~18638)
+        final_response = "Here is your song!\nMEDIA:/tmp/track1.mp3"
+        existing_paths = set()
+        for match in _TOOL_MEDIA_RE.finditer(final_response):
+            existing_paths.add(match.group(1).strip().rstrip('",}'))
+
+        assert "/tmp/track1.mp3" in existing_paths
+
+    def test_module_level_regex_works_with_no_media_in_response(self):
+        """The module-level _TOOL_MEDIA_RE must handle responses with no
+        MEDIA: tags without error."""
+        from gateway.run import _TOOL_MEDIA_RE
+
+        final_response = "No media here, just text."
+        existing_paths = set()
+        for match in _TOOL_MEDIA_RE.finditer(final_response):
+            existing_paths.add(match.group(1).strip().rstrip('",}'))
+
+        assert len(existing_paths) == 0
+
+    def test_collect_auto_append_with_no_history_media(self):
+        """End-to-end: _collect_auto_append_media_tags must work when
+        history has no prior MEDIA: tags (the exact crash scenario)."""
+        from gateway.run import _collect_auto_append_media_tags
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": True,
+            "audio": "/tmp/track1.mp3",
+            "all_tracks": [
+                {"audio": "/tmp/track1.mp3", "track_index": 1},
+                {"audio": "/tmp/track2.mp3", "track_index": 2},
+            ],
+        })
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "music_generate", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": tool_result,
+            },
+        ]
+        # This must NOT raise UnboundLocalError
+        tags, has_voice = _collect_auto_append_media_tags(
+            messages, history_media_paths=set()
+        )
+        assert "MEDIA:/tmp/track1.mp3" in tags
+        assert "MEDIA:/tmp/track2.mp3" in tags

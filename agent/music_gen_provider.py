@@ -118,7 +118,7 @@ class MusicGenProvider(abc.ABC):
         Each entry::
 
             {
-                "id": "suno-v5",                    # required
+                "id": "suno-v5_5",                 # required
                 "display": "Suno V5",              # optional; defaults to id
                 "speed": "~30s",                   # optional
                 "strengths": "Full songs, vocals", # optional

@@ -123,7 +123,7 @@ MUSIC_GENERATE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Model override: 'suno-v5' or 'suno-v5_5'. "
-                    "If omitted, uses the configured default."
+                    "Defaults to suno-v5_5."
                 ),
             },
             "style": {
