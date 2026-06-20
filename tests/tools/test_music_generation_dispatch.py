@@ -915,16 +915,21 @@ class TestConfirmationEnforcement:
         assert props["confirmed"]["type"] == "boolean"
 
     def test_confirmation_error_mentions_all_details(self):
-        """The error message should mention all 5 confirmation details."""
+        """The error message should mention both modes and key details."""
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
         result = self._run({"prompt": "a song"}, configured="rec")
         error = result.get("error", "")
-        assert "Mode" in error
-        assert "Instrumental" in error
-        assert "Style" in error
-        assert "Vocal gender" in error
-        assert "Title" in error
+        # Must mention both modes
+        assert "DESCRIPTION MODE" in error
+        assert "CUSTOM LYRICS MODE" in error
+        # Must mention key generation details
+        assert "instrumental" in error.lower()
+        assert "style" in error.lower()
+        assert "vocal gender" in error.lower()
+        assert "title" in error.lower()
+        # Must mention the preview requirement for custom lyrics
+        assert "PREVIEW" in error
 
 
 class TestFileNamingPrefix:
