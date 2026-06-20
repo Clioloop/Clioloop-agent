@@ -30,7 +30,7 @@ For action="generate":
     model                    "suno-v5" | "suno-v5_5"
     style                    genre/style tags (e.g. "synthwave, electronic")
     negative_tags            styles to avoid
-    vocal_gender             "m" (male) or "f" (female)
+    vocal_gender             "m" (male), "f" (female), or "mixed" (both)
     title                    custom track title
     style_weight             0.0–1.0 — style adherence
     weirdness                0.0–1.0 — creativity level
@@ -146,10 +146,13 @@ MUSIC_GENERATE_SCHEMA: Dict[str, Any] = {
             },
             "vocal_gender": {
                 "type": "string",
-                "enum": ["m", "f"],
+                "enum": ["m", "f", "mixed"],
                 "description": (
-                    "Vocal gender: 'm' (male) or 'f' (female). "
-                    "Only when vocals are generated. Ignored for instrumental."
+                    "Vocal gender: 'm' (male), 'f' (female), or 'mixed' "
+                    "(both male and female vocals). Only when vocals are "
+                    "generated. Ignored for instrumental. When 'mixed' is "
+                    "selected, the provider will generate a song with both "
+                    "male and female vocals."
                 ),
             },
             "title": {
@@ -435,7 +438,7 @@ def _handle_music_generate(args: Dict[str, Any], **_kw: Any) -> str:
                 "  1. Mode: description mode (auto lyrics) or custom lyrics mode?\n"
                 "  2. Instrumental or with vocals?\n"
                 "  3. Style/genre tags?\n"
-                "  4. Vocal gender (if vocals): male or female?\n"
+                "  4. Vocal gender (if vocals): male, female, or mixed?\n"
                 "  5. Title for the track?\n\n"
                 "Ask these questions in your normal chat response, wait "
                 "for the user's answers, THEN re-call with confirmed=true.\n\n"
@@ -466,9 +469,9 @@ def _handle_music_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # from source material), but extend/cover can use it optionally.
 
     # Validate vocal_gender
-    if vocal_gender and vocal_gender not in ("m", "f"):
+    if vocal_gender and vocal_gender not in ("m", "f", "mixed"):
         return tool_error(
-            f"Invalid vocal_gender '{vocal_gender}'. Must be 'm' or 'f'."
+            f"Invalid vocal_gender '{vocal_gender}'. Must be 'm', 'f', or 'mixed'."
         )
 
     # Resolve the active provider.
@@ -582,7 +585,7 @@ _GENERIC_DESCRIPTION = (
     "  1. Mode: description mode (auto lyrics) or custom lyrics mode?\n"
     "  2. Instrumental or with vocals?\n"
     "  3. Style/genre tags (e.g. 'synthwave, upbeat, 80s')?\n"
-    "  4. Vocal gender (if vocals): male or female?\n"
+    "  4. Vocal gender (if vocals): male, female, or mixed?\n"
     "  5. Title for the track?\n\n"
     "HOW TO ASK — THIS IS CRITICAL:\n"
     "  • Ask the user DIRECTLY IN YOUR RESPONSE TEXT. Present the options "

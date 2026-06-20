@@ -204,6 +204,19 @@ class TestUnifiedDispatch:
         assert result["success"] is True
         assert provider.last_kwargs["vocal_gender"] == "f"
 
+    def test_generate_with_mixed_vocal_gender(self):
+        """vocal_gender='mixed' should be accepted by the tool layer."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({
+            "action": "generate",
+            "confirmed": True,
+            "prompt": "a song",
+            "vocal_gender": "mixed",
+        }, configured="rec")
+        assert result["success"] is True
+        assert provider.last_kwargs["vocal_gender"] == "mixed"
+
     def test_generate_with_title(self):
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
@@ -380,6 +393,16 @@ class TestUnifiedDispatch:
         assert provider.last_kwargs["action"] == "stems"
 
     # --- Schema tests ---
+
+    def test_vocal_gender_enum_includes_mixed(self):
+        """vocal_gender enum should include 'm', 'f', and 'mixed'."""
+        from tools.music_generation_tool import MUSIC_GENERATE_SCHEMA
+        props = MUSIC_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "vocal_gender" in props
+        enum = props["vocal_gender"]["enum"]
+        assert "m" in enum
+        assert "f" in enum
+        assert "mixed" in enum
 
     def test_action_field_in_schema(self):
         from tools.music_generation_tool import MUSIC_GENERATE_SCHEMA
@@ -563,6 +586,26 @@ class TestApiframeRequestBuilding:
             style=None,
             negative_tags=None,
             vocal_gender="x",  # invalid
+            title=None,
+            style_weight=None,
+            weirdness=None,
+            auto_lyrics=None,
+        )
+        assert "vocal_gender" not in body["sunoParams"]
+
+    def test_generate_mixed_vocal_gender_not_sent_to_suno(self):
+        """vocal_gender='mixed' should NOT be sent to Suno API.
+        Suno only accepts 'm' or 'f'. When 'mixed', we omit the param
+        so Suno naturally generates both male and female vocals."""
+        p = self._get_provider()
+        body = p._build_generate_body(
+            prompt="a song",
+            resolved_model="suno-v5",
+            lyrics=None,
+            instrumental=None,
+            style=None,
+            negative_tags=None,
+            vocal_gender="mixed",
             title=None,
             style_weight=None,
             weirdness=None,
