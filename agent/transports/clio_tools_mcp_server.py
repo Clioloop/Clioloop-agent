@@ -18,7 +18,7 @@ Scope (what we expose):
     _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
-  - music_generate                       — music generation (Suno V5)
+  - music_generate                       — music generation
   - skill_view, skills_list              — Clio' skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator

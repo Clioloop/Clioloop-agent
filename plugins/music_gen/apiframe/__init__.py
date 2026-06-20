@@ -61,15 +61,15 @@ POLL_TIMEOUT = 300  # max seconds to wait for job completion
 APIFRAME_MODELS: List[Dict[str, Any]] = [
     {
         "id": "suno-v5_5",
-        "display": "Suno V5.5",
+        "display": "V5.5",
         "speed": "~30s",
-        "strengths": "Latest Suno model — improved quality over V5, full songs with vocals, lyrics, instrumentals",
+        "strengths": "Latest model — improved quality, full songs with vocals, lyrics, instrumentals",
         "price": "$0.11/song",
         "max_duration": 240,
     },
     {
         "id": "suno-v5",
-        "display": "Suno V5",
+        "display": "V5",
         "speed": "~30s",
         "strengths": "Full songs with vocals, lyrics, instrumentals — best-in-class vocal quality",
         "price": "$0.11/song",
@@ -126,11 +126,11 @@ class ApiframeMusicGenProvider(MusicGenProvider):
 
     @property
     def name(self) -> str:
-        return "apiframe"
+        return "music_gen"
 
     @property
     def display_name(self) -> str:
-        return "Apiframe (Suno V5)"
+        return "Music Generation"
 
     def is_available(self) -> bool:
         """Available if either managed gateway is ready OR direct API key is set."""
@@ -169,7 +169,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
         return {
             "name": self.display_name,
             "badge": "paid",
-            "tag": "Suno V5 via Apiframe — $0.11/song",
+            "tag": "Music generation — $0.11/song",
             "env_vars": [
                 {
                     "key": "APIFRAME_API_KEY",
@@ -367,7 +367,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             )
         except Exception as exc:
             return error_response(
-                error=f"Failed to connect to Apiframe: {exc}",
+                error=f"Failed to connect to music generation backend: {exc}",
                 error_type="connection_error",
                 provider=self.name,
                 model=resolved_model,
@@ -377,7 +377,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
 
         if resp.status_code == 402:
             return error_response(
-                error="Insufficient Apiframe credits. Top up at https://console.apiframe.ai",
+                error="Insufficient credits. Top up at https://console.apiframe.ai",
                 error_type="insufficient_credits",
                 provider=self.name,
                 model=resolved_model,
@@ -395,7 +395,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             )
         if resp.status_code != 202:
             return error_response(
-                error=f"Apiframe API error: {resp.status_code} {resp.text[:200]}",
+                error=f"Music generation API error: {resp.status_code} {resp.text[:200]}",
                 error_type="api_error",
                 provider=self.name,
                 model=resolved_model,
@@ -406,7 +406,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
         job_id = resp.json().get("jobId")
         if not job_id:
             return error_response(
-                error=f"Apiframe returned no jobId: {resp.text[:200]}",
+                error=f"Music generation backend returned no jobId: {resp.text[:200]}",
                 error_type="api_error",
                 provider=self.name,
                 model=resolved_model,
@@ -619,7 +619,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             )
         except Exception as exc:
             return error_response(
-                error=f"Failed to connect to Apiframe: {exc}",
+                error=f"Failed to connect to music generation backend: {exc}",
                 error_type="connection_error",
                 provider=self.name,
                 model=resolved_model,
@@ -629,7 +629,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
 
         if resp.status_code == 402:
             return error_response(
-                error="Insufficient Apiframe credits. Top up at https://console.apiframe.ai",
+                error="Insufficient credits. Top up at https://console.apiframe.ai",
                 error_type="insufficient_credits",
                 provider=self.name,
                 model=resolved_model,
@@ -651,8 +651,8 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             except Exception:
                 err_detail = resp.text[:200]
             return error_response(
-                error=f"Apiframe action '{action}' rejected (409): {err_detail}. "
-                      f"This may happen if the parent job is not a Suno generation "
+                error=f"Action '{action}' rejected (409): {err_detail}. "
+                      f"This may happen if the parent job is not a valid generation "
                       f"(e.g. stems results cannot be parents) or if continue_at "
                       f"exceeds the track duration.",
                 error_type="action_conflict",
@@ -663,7 +663,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             )
         if resp.status_code != 202:
             return error_response(
-                error=f"Apiframe API error: {resp.status_code} {resp.text[:200]}",
+                error=f"Music generation API error: {resp.status_code} {resp.text[:200]}",
                 error_type="api_error",
                 provider=self.name,
                 model=resolved_model,
@@ -674,7 +674,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
         job_id = resp.json().get("jobId")
         if not job_id:
             return error_response(
-                error=f"Apiframe returned no jobId: {resp.text[:200]}",
+                error=f"Music generation backend returned no jobId: {resp.text[:200]}",
                 error_type="api_error",
                 provider=self.name,
                 model=resolved_model,
@@ -767,7 +767,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             suno_params["weirdness_constraint"] = max(0.0, min(1.0, float(weirdness)))
 
         return {
-            "prompt": prompt[:500],  # Suno limits to 500 chars in non-custom mode
+            "prompt": prompt[:500],  # Backend limits to 500 chars in non-custom mode
             "model": "suno",
             "sunoParams": suno_params,
         }
@@ -891,7 +891,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
                 tracks = data.get("result", {}).get("tracks", [])
                 if not tracks:
                     return error_response(
-                        error="Apiframe returned no tracks in completed job",
+                        error="Music generation backend returned no tracks in completed job",
                         error_type="empty_response",
                         provider=self.name,
                         model=resolved_model,
@@ -987,7 +987,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             if status == "FAILED":
                 error_msg = data.get("error", "Generation failed")
                 return error_response(
-                    error=f"Apiframe {action} failed: {error_msg}",
+                    error=f"Music generation {action} failed: {error_msg}",
                     error_type="generation_failed",
                     provider=self.name,
                     model=resolved_model,

@@ -460,8 +460,8 @@ TIPS = [
     # --- Auxiliary Tasks & Image Generation ---
     'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
     'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
-    'music_gen.provider in config.yaml routes music generation through the Apiframe (Suno V5.5) plugin. Set via `clio tools` → Music Generation.',
-    'music_gen.model selects the Suno model version (suno-v5_5, suno-v5). Defaults to suno-v5_5. Max plan includes managed music generation via Omni Loop Portal Subscription.',
+    'music_gen.provider in config.yaml routes music generation through the configured music generation plugin. Set via `clio tools` → Music Generation.',
+    'music_gen.model selects the music generation model version (suno-v5_5, suno-v5). Defaults to suno-v5_5. Max plan includes managed music generation via Omni Loop Portal Subscription.',
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
 
     # --- Security ---

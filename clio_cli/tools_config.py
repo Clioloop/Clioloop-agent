@@ -427,7 +427,7 @@ TOOL_CATEGORIES = {
             {
                 "name": "Omni Loop Portal Subscription (Music Generation)",
                 "badge": "Recommended · Max plans",
-                "tag": "Suno V5.5 music generation through your Omni Loop Portal Subscription — no API key",
+                "tag": "Music generation through your Omni Loop Portal Subscription — no API key",
                 "env_vars": [],
                 "managed_feature": "music_gen",
                 "music_gen_plugin_name": "apiframe",

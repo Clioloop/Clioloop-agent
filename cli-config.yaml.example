@@ -745,7 +745,7 @@ platform_toolsets:
 #   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
-#   music_gen    - Music generation with Suno V5 (music_generate, opt-in)
+#   music_gen    - Music generation (music_generate, opt-in)
 #   skills       - Load skill documents (skills_list, skill_view)
 #   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work

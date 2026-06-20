@@ -780,11 +780,11 @@ class TestApiframeProvider:
 
     def test_provider_name(self):
         p = self._get_provider()
-        assert p.name == "apiframe"
+        assert p.name == "music_gen"
 
     def test_provider_display_name(self):
         p = self._get_provider()
-        assert "Suno" in p.display_name or "Apiframe" in p.display_name
+        assert p.display_name == "Music Generation"
 
     def test_provider_models(self):
         p = self._get_provider()

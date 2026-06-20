@@ -18,7 +18,7 @@ Generation.
 
 Unified surface
 ---------------
-One tool covers the full Suno workflow:
+One tool covers the full music generation workflow:
 
     action                   "generate" | "extend" | "cover" | "add_vocals" | "stems"
                              default: "generate"
@@ -465,7 +465,7 @@ def _handle_music_generate(args: Dict[str, Any], **_kw: Any) -> str:
                 "prompt (or lyrics) is required for action='add_vocals' — "
                 "it's the lyrics to sing."
             )
-    # extend, cover, stems don't strictly require prompt (Suno can continue
+    # extend, cover, stems don't strictly require prompt (the backend can continue
     # from source material), but extend/cover can use it optionally.
 
     # Validate vocal_gender
@@ -557,7 +557,7 @@ def _handle_music_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
 _GENERIC_DESCRIPTION = (
     "Generate high-quality music from a text prompt using the user's "
-    "configured music generation backend (Suno V5 via Apiframe). Supports "
+    "configured music generation backend. Supports "
     "5 actions:\n"
     "• generate — create a new song from a text description or custom lyrics\n"
     "• extend — continue a completed track from a chosen timestamp\n"
@@ -570,7 +570,7 @@ _GENERIC_DESCRIPTION = (
     "previous response. Extend takes continue_at (timestamp). Cover takes "
     "audio_weight (0-1). Add vocals requires prompt (lyrics to sing).\n\n"
     "⚠️ COST: Each action costs ~$0.11 (direct) or €0.20 (managed portal). "
-    "Suno returns 2 tracks per action. Both are in the `all_tracks` array "
+    "The backend returns 2 tracks per action. Both are in the `all_tracks` array "
     "with their file paths in `all_tracks[].audio`. You MUST deliver BOTH "
     "tracks to the user by including a separate MEDIA: tag for each track's "
     "audio path in your response.\n"
@@ -667,7 +667,7 @@ def _build_dynamic_music_schema() -> Dict[str, Any]:
             active_model_meta = m
             break
 
-    parts.append(f"\nActive backend: {provider.display_name} ({provider.name})")
+    parts.append("\nActive backend: music generation")
     if active_model:
         parts.append(f"Active model: {active_model}")
     if active_model_meta:

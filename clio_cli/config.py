@@ -3040,7 +3040,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "APIFRAME_API_KEY": {
-        "description": "Apiframe API key for Suno V5 music generation (optional with Omni Loop Portal Subscription)",
+        "description": "Music generation API key (optional with Omni Loop Portal Subscription)",
         "prompt": "Apiframe API Key",
         "url": "https://console.apiframe.ai/signup",
         "tools": ["music_generate"],
