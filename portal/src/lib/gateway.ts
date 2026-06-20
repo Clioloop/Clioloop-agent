@@ -141,7 +141,7 @@ export function serviceAvailability(userId: string): Record<ServiceKey, boolean>
       .filter(vendorConfigured)
       .map((v) => v.service),
   );
-  const services: ServiceKey[] = ["web", "browser", "image_gen", "video_gen", "tts"];
+  const services: ServiceKey[] = ["web", "browser", "image_gen", "video_gen", "music_gen", "tts"];
   return Object.fromEntries(
     services.map((s) => [s, plan.services.includes(s) && configuredServices.has(s)]),
   ) as Record<ServiceKey, boolean>;
