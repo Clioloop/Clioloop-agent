@@ -870,12 +870,11 @@ class TestConfirmationEnforcement:
         assert props["confirmed"]["type"] == "boolean"
 
     def test_confirmation_error_mentions_all_details(self):
-        """The error message should mention all 6 confirmation details."""
+        """The error message should mention all 5 confirmation details."""
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
         result = self._run({"prompt": "a song"}, configured="rec")
         error = result.get("error", "")
-        assert "Model" in error
         assert "Mode" in error
         assert "Instrumental" in error
         assert "Style" in error

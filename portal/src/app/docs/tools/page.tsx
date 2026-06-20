@@ -55,6 +55,7 @@ export default function ToolsDoc() {
           <tr><td>Premium TTS</td><td>Studio-quality voices for voice replies</td><td>Pro and up</td></tr>
           <tr><td>Cloud browser</td><td>Hosted browser sessions for automation</td><td>Pro and up</td></tr>
           <tr><td>Video generation</td><td>Text/image-to-video</td><td>Max &amp; Max 10x</td></tr>
+          <tr><td>Music generation</td><td>Text-to-music, extend, cover, stems (Suno V5.5)</td><td>Max &amp; Max 10x</td></tr>
         </tbody>
       </table>
       <div className="callout">

@@ -101,7 +101,7 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     service: "image_gen",
     costMicros: 20_000, // €0.02 per image generation (charged on POST /generate only)
   },
-  // Music generation via Apiframe (Suno V5). White-labeled as
+  // Music generation via Apiframe (Suno V5.5). White-labeled as
   // "clioloop-music" — the agent's plugin routes through this vendor
   // when the user has a Max plan subscription. The portal proxies to
   // Apiframe's v2 API with the house API key. Metering: €0.20 per

@@ -143,7 +143,7 @@ TOOLSETS = {
         "description": (
             "Music generation tools. Single ``music_generate`` tool covers "
             "text-to-music, custom lyrics, instrumental-only, extend, cover, "
-            "add vocals, and stems. Supports Suno V5/V5.5 via Apiframe. "
+            "add vocals, and stems. Uses Suno V5.5 via Apiframe. "
             "Configure via ``clio tools`` → Music Generation."
         ),
         "tools": ["music_generate"],
