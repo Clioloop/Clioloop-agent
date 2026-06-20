@@ -622,6 +622,33 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- music gen provider registration -------------------------------------
+
+    def register_music_gen_provider(self, provider) -> None:
+        """Register a music generation backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.music_gen_provider.MusicGenProvider`. The
+        ``provider.name`` attribute is what ``music_gen.provider`` in
+        ``config.yaml`` matches against when routing ``music_generate``
+        tool calls.
+        """
+        from agent.music_gen_provider import MusicGenProvider
+        from agent.music_gen_registry import register_provider as _register_music_provider
+
+        if not isinstance(provider, MusicGenProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a music_gen provider that does "
+                "not inherit from MusicGenProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_music_provider(provider)
+        logger.info(
+            "Plugin '%s' registered music_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- web search/extract provider registration ----------------------------
 
     def register_web_search_provider(self, provider) -> None:

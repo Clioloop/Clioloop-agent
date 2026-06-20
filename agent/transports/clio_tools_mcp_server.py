@@ -18,6 +18,7 @@ Scope (what we expose):
     _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
+  - music_generate                       — music generation (Suno V5)
   - skill_view, skills_list              — Clio' skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
@@ -80,6 +81,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_vision",
     "vision_analyze",
     "image_generate",
+    "music_generate",
     "skill_view",
     "skills_list",
     "text_to_speech",

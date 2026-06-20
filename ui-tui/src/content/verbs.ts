@@ -6,6 +6,7 @@ export const TOOL_VERBS: Record<string, string> = {
   delete_file: 'deleting',
   execute_code: 'executing',
   image_generate: 'generating',
+  music_generate: 'generating',
   list_files: 'listing',
   memory: 'remembering',
   patch: 'patching',

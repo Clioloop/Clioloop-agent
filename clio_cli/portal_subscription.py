@@ -22,6 +22,7 @@ _FEATURE_DEFS: tuple[tuple[str, str], ...] = (
     ("browser", "Browser automation"),
     ("image_gen", "Image generation"),
     ("video_gen", "Video generation"),
+    ("music_gen", "Music generation"),
     ("tts", "Text-to-speech"),
     ("modal", "Modal execution"),
 )
@@ -32,6 +33,7 @@ MANAGED_FEATURE_COVERAGE_CATEGORY: dict[str, str] = {
     "browser": "cloud browser",
     "image_gen": "image generation",
     "video_gen": "video generation",
+    "music_gen": "music generation",
     "tts": "text-to-speech",
     "modal": "sandboxed execution",
 }
@@ -150,6 +152,8 @@ def _detect_local_backends(config: Optional[dict]) -> dict[str, tuple[bool, str]
     vidu = bool(_env("VIDU_API_KEY"))
     out["image_gen"] = (False, "")
     out["video_gen"] = (vidu, "Vidu" if vidu else "")
+    apiframe = bool(_env("APIFRAME_API_KEY"))
+    out["music_gen"] = (apiframe, "Apiframe" if apiframe else "")
 
     out["tts"] = (True, "")  # Edge TTS is always available, no key needed.
     out["modal"] = (False, "")
@@ -160,7 +164,7 @@ class ManagedSubscriptionFeatures:
     """Bundle of managed-tool feature states for the current portal login.
 
     Exposes ``.web`` / ``.browser`` / ``.image_gen`` / ``.video_gen`` /
-    ``.tts`` / ``.modal`` as :class:`ManagedFeatureState` instances, plus a
+    ``.music_gen`` / ``.tts`` / ``.modal`` as :class:`ManagedFeatureState` instances, plus a
     ``features`` mapping keyed by feature name.
     """
 
@@ -187,9 +191,9 @@ class ManagedSubscriptionFeatures:
         # Older portals (and test doubles) may omit granular feature flags;
         # a paid subscription implies the full bundle in that case.
         if not flags and getattr(account_info, "paid_service_access", False):
-            flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "tts")}
+            flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "music_gen", "tts")}
         if not flags and subscribed:
-            flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "tts")}
+            flags = {k: True for k in ("web", "browser", "image_gen", "video_gen", "music_gen", "tts")}
         self.provider_auth_present = provider_auth_present
         self.account_info = account_info
         try:

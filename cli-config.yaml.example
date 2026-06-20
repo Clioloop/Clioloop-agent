@@ -717,6 +717,7 @@ platform_toolsets:
 #                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
+#   music_gen    - music_generate  (requires APIFRAME_API_KEY or Omni Loop Portal Max plan)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
 #   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
@@ -744,6 +745,7 @@ platform_toolsets:
 #   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
+#   music_gen    - Music generation with Suno V5 (music_generate, opt-in)
 #   skills       - Load skill documents (skills_list, skill_view)
 #   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work

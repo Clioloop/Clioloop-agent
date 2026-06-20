@@ -101,6 +101,20 @@ export const GATEWAY_VENDORS: Record<string, GatewayVendor> = {
     service: "image_gen",
     costMicros: 20_000, // €0.02 per image generation (charged on POST /generate only)
   },
+  // Music generation via Apiframe (Suno V5). White-labeled as
+  // "clioloop-music" — the agent's plugin routes through this vendor
+  // when the user has a Max plan subscription. The portal proxies to
+  // Apiframe's v2 API with the house API key. Metering: €0.20 per
+  // generation (POST /music/generate only; polling GET /jobs/:id is free).
+  "clioloop-music": {
+    id: "clioloop-music",
+    upstream: "https://api.apiframe.ai/v2",
+    keyEnv: "APIFRAME_API_KEY",
+    upstreamEnv: "APIFRAME_UPSTREAM_URL",
+    authHeaders: (key) => ({ "X-API-Key": key }),
+    service: "music_gen",
+    costMicros: 200_000, // €0.20 per music generation
+  },
 };
 
 export function vendorUpstreamKey(vendor: GatewayVendor): string {
@@ -145,6 +159,16 @@ export function gatewayRequestCostMicros(
   }
   if (vendor.id === "clioloop-image") {
     return method.toUpperCase() === "POST" && path[0] === "generate" ? vendor.costMicros : 0;
+  }
+  // Music gen: meter on POST /music/generate (new song) and
+  // POST /music/suno/action (extend/cover/add_vocals/stems).
+  // Polling GET /jobs/:id is free on Apiframe.
+  if (vendor.id === "clioloop-music") {
+    const isPost = method.toUpperCase() === "POST";
+    const isMusicPath = path[0] === "music";
+    const isGenerate = path[1] === "generate";
+    const isAction = path[1] === "suno" && path[2] === "action";
+    return (isPost && isMusicPath && (isGenerate || isAction)) ? vendor.costMicros : 0;
   }
   if (vendor.id === "vidu") {
     return viduRequestCostMicros(method, path, requestBody);
@@ -226,6 +250,11 @@ export function gatewayShouldRecordUsage(
   upstreamBody?: unknown,
 ): boolean {
   if (upstreamStatus < 200 || upstreamStatus >= 300) return false;
+  // Music gen: only meter successful POST /music/generate (202 with jobId).
+  // Polling GET /jobs/:id returns 200 but should NOT be metered.
+  if (vendor.id === "clioloop-music") {
+    return method.toUpperCase() === "POST";
+  }
   if (vendor.id !== "vidu") return true;
   if (method.toUpperCase() !== "POST") return false;
   if (path[0] !== "text2video" && path[0] !== "img2video") return false;

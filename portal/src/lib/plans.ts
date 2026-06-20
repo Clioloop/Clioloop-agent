@@ -14,9 +14,9 @@ export type PlanId = "free" | "pro" | "max" | "max20x";
 /**
  * Bundled tool-gateway services (mirrors the Clioloop agent's managed
  * feature keys in clio_cli/portal_subscription.py). `video_gen` is the
- * expensive one — reserved for Max tiers.
+ * expensive one — reserved for Max tiers. `music_gen` is also Max-only.
  */
-export type ServiceKey = "web" | "browser" | "image_gen" | "video_gen" | "tts";
+export type ServiceKey = "web" | "browser" | "image_gen" | "video_gen" | "music_gen" | "tts";
 
 export interface Plan {
   id: PlanId;
@@ -80,7 +80,7 @@ export const PLANS: Record<PlanId, Plan> = {
     monthlyCreditsMicros: 75_000_000, // 5× Pro → 25% worst-case margin
     freeModelsOnly: false,
     requiresCardVerification: false,
-    services: ["web", "browser", "image_gen", "video_gen", "tts"],
+    services: ["web", "browser", "image_gen", "video_gen", "music_gen", "tts"],
     tagline: "300+ frontier models — 5× Pro usage",
     features: [
       "300+ frontier models — Claude, GPT, Gemini, Grok",
@@ -99,7 +99,7 @@ export const PLANS: Record<PlanId, Plan> = {
     monthlyCreditsMicros: 150_000_000, // 10× Pro → 40% worst-case margin
     freeModelsOnly: false,
     requiresCardVerification: false,
-    services: ["web", "browser", "image_gen", "video_gen", "tts"],
+    services: ["web", "browser", "image_gen", "video_gen", "music_gen", "tts"],
     tagline: "10× Pro usage for heavy fleets and swarms",
     features: [
       "Everything in Max",

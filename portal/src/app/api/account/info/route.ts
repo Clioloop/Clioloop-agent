@@ -55,6 +55,7 @@ export async function GET(req: NextRequest) {
       entitlements: [
         ...gatewayVendors,
         ...(features.video_gen ? ["vidu-video"] : []),
+        ...(features.music_gen ? ["clioloop-music"] : []),
       ],
     },
     usage: {

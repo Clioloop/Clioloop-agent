@@ -146,9 +146,10 @@ DISTRIBUTIONS = {
     
     # Creative (vision + image generation)
     "creative": {
-        "description": "Image generation and vision analysis focus",
+        "description": "Image and music generation with vision analysis focus",
         "toolsets": {
             "image_gen": 90,
+            "music_gen": 50,
             "vision": 90,
             "web": 30
         }

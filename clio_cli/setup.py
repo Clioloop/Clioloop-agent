@@ -476,6 +476,27 @@ def _print_setup_summary(config: dict, clio_home):
         if _video_backend:
             tool_status.append((f"Video Generation ({_video_backend})", True, None))
 
+    # Music generation — opt-in via `clio tools` → Music Generation.
+    if subscription_features.music_gen.managed_by_provider:
+        tool_status.append(("Music Generation (Omni Loop Portal Subscription)", True, None))
+    else:
+        try:
+            from agent.music_gen_registry import list_providers as _list_music_providers
+            from clio_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
+            _ensure_plugins()
+            _music_backend = None
+            for _mp in _list_music_providers():
+                try:
+                    if _mp.is_available():
+                        _music_backend = _mp.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            _music_backend = None
+        if _music_backend:
+            tool_status.append((f"Music Generation ({_music_backend})", True, None))
+
     # TTS — show configured provider
     tts_provider = cfg_get(config, "tts", "provider", default="edge")
     if subscription_features.tts.managed_by_provider:

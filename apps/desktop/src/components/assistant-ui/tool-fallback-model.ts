@@ -92,6 +92,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   edit_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' },
   execute_code: { done: 'Ran code', pending: 'Running code', icon: 'terminal', tone: 'terminal' },
   image_generate: { done: 'Generated image', pending: 'Generating image', icon: 'file-media', tone: 'image' },
+  music_generate: { done: 'Generated music', pending: 'Generating music', icon: 'music', tone: 'image' },
   list_files: { done: 'Listed files', pending: 'Listing files', icon: 'files', tone: 'file' },
   read_file: { done: 'Read file', pending: 'Reading file', icon: 'file', tone: 'file' },
   search_files: { done: 'Searched files', pending: 'Searching files', icon: 'search', tone: 'file' },

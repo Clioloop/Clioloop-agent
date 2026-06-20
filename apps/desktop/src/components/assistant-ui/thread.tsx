@@ -326,6 +326,36 @@ function generatedImageSrc(result: unknown): string {
   return ''
 }
 
+// The music_generate tool returns JSON like {"success": true, "audio": <path|url>}.
+// Pull out the audio reference (a local cache path or a remote URL).
+function generatedAudioSrc(result: unknown): string {
+  let record: Record<string, unknown> | null = null
+
+  if (typeof result === 'string') {
+    try {
+      record = JSON.parse(result) as Record<string, unknown>
+    } catch {
+      return result.trim()
+    }
+  } else if (result && typeof result === 'object') {
+    record = result as Record<string, unknown>
+  }
+
+  if (!record) {
+    return ''
+  }
+
+  for (const key of ['audio', 'audio_url', 'audio_path', 'path', 'url']) {
+    const value = record[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+
+  return ''
+}
+
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
   const generatedImage = useGeneratedImageContext()
   const running = result === undefined
@@ -355,6 +385,44 @@ const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
   )
 }
 
+const MusicGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
+  const running = result === undefined
+
+  if (running) {
+    return (
+      <div className="mt-1.5 flex items-center gap-2 text-sm text-(--text-secondary)">
+        <span className="inline-block size-3 animate-pulse rounded-[2px] bg-(--accent) opacity-60" />
+        <span>Generating music…</span>
+      </div>
+    )
+  }
+
+  const src = generatedAudioSrc(result)
+
+  if (!src) {
+    return null
+  }
+
+  // Local file paths need to be resolved to a playable URL by the Electron
+  // main process. For now, if it's an http(s) URL, render directly; if it's
+  // a local path, the gateway/media delivery system will handle it.
+  const isPlayable = src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')
+
+  if (!isPlayable) {
+    return (
+      <div className="mt-1.5 text-sm text-(--text-secondary)">
+        🎵 Music generated — {src.split('/').pop()}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-1.5 max-w-72 rounded-[0.25rem] border border-(--ui-stroke-tertiary) p-2">
+      <audio controls src={src} className="w-full" style={{ maxWidth: '18rem' }} />
+    </div>
+  )
+}
+
 const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
@@ -363,6 +431,10 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 
   if (props.toolName === 'image_generate') {
     return <ImageGenerateTool {...props} />
+  }
+
+  if (props.toolName === 'music_generate') {
+    return <MusicGenerateTool {...props} />
   }
 
   if (props.toolName === 'clarify') {

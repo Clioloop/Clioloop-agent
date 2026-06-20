@@ -81,6 +81,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("music_gen",       "🎵 Music Generation",          "music_generate (text-to-music, custom lyrics, extend, cover, add vocals, stems)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -125,13 +126,16 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `clio tools` → Video Generation, which walks
 # them through provider + model selection.
 #
+# Music gen is off by default — matching video_gen. Users who want it opt in
+# via `clio tools` → Music Generation.
+#
 # X search is off by default for users without xAI credentials, but
 # auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
 # set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
 # `clio tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "music_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -410,6 +414,23 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "managed_feature": "video_gen",
                 "video_gen_plugin_name": "vidu",
+            },
+        ],
+    },
+    "music_gen": {
+        "name": "Music Generation",
+        "icon": "🎵",
+        # Plugin-backed provider rows (Apiframe BYOK) are injected at
+        # runtime by ``_plugin_music_gen_providers()`` in
+        # ``_visible_providers``.
+        "providers": [
+            {
+                "name": "Omni Loop Portal Subscription (Music Generation)",
+                "badge": "Recommended · Max plans",
+                "tag": "Suno V5 music generation through your Omni Loop Portal Subscription — no API key",
+                "env_vars": [],
+                "managed_feature": "music_gen",
+                "music_gen_plugin_name": "apiframe",
             },
         ],
     },
@@ -1561,7 +1582,7 @@ def _toolset_has_keys(
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
+    if ts_key in {"web", "image_gen", "video_gen", "music_gen", "tts", "browser"}:
         features = get_managed_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_provider):
@@ -1804,6 +1825,41 @@ def _plugin_video_gen_providers() -> list[dict]:
     return rows
 
 
+# Mirror of _plugin_video_gen_providers for music gen backends. Surfaces
+# every plugin-registered music provider so it appears in the
+# "Music Generation" picker.
+def _plugin_music_gen_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered music gen providers."""
+    try:
+        from agent.music_gen_registry import list_providers
+        from clio_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "music_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
 # "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
@@ -2026,6 +2082,11 @@ def _visible_providers(
     # video_gen has NO hardcoded providers — every backend is a plugin.
     if cat.get("name") == "Video Generation":
         visible.extend(_plugin_video_gen_providers())
+
+    # Inject plugin-registered music_gen backends. The hardcoded entry
+    # in TOOL_CATEGORIES has the managed (portal subscription) row.
+    if cat.get("name") == "Music Generation":
+        visible.extend(_plugin_music_gen_providers())
 
     # Inject plugin-registered web search backends. Self-hosted Firecrawl is
     # the only built-in setup-flow row for this category.

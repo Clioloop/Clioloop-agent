@@ -26,6 +26,7 @@ const SERVICE_LABELS: [string, string][] = [
   ["browser", "Cloud browser"],
   ["image_gen", "Image generation"],
   ["video_gen", "Video generation"],
+  ["music_gen", "Music generation"],
   ["tts", "Premium TTS"],
 ];
 

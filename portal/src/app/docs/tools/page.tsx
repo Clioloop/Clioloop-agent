@@ -34,7 +34,7 @@ export default function ToolsDoc() {
         <li><strong>Terminal</strong> — <code>terminal</code> and background <code>process</code> management</li>
         <li><strong>Web</strong> — <code>web_search</code> and <code>web_extract</code></li>
         <li><strong>Browser</strong> — a full CDP-driven browser: navigate, click, type, scroll, screenshot, read console</li>
-        <li><strong>Vision &amp; media</strong> — <code>vision_analyze</code>, <code>image_generate</code>, <code>video_generate</code>, <code>text_to_speech</code></li>
+        <li><strong>Vision &amp; media</strong> — <code>vision_analyze</code>, <code>image_generate</code>, <code>video_generate</code>, <code>music_generate</code>, <code>text_to_speech</code></li>
         <li><strong>Code &amp; planning</strong> — <code>execute_code</code> (Python/JS/bash), <code>todo</code>, <code>memory</code>, <code>delegate_task</code></li>
         <li><strong>Messaging &amp; more</strong> — <code>send_message</code>, Home Assistant control, Kanban, scheduled jobs</li>
       </ul>

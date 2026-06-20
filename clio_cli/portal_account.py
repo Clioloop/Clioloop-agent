@@ -34,7 +34,7 @@ class ManagedProviderAccountInfo:
     paid_service_access: Optional[bool] = None
     is_free_tier: bool = True
     #: Bundled service availability — {"web": bool, "browser": bool,
-    #: "image_gen": bool, "video_gen": bool, "tts": bool}.
+    #: "image_gen": bool, "video_gen": bool, "music_gen": bool, "tts": bool}.
     features: dict[str, bool] = field(default_factory=dict)
     #: Tool-gateway entitlement strings (vendor slugs + extras like
     #: "vidu-video"); empty when the plan has no gateway access.

@@ -209,6 +209,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "memory": "🧠",
             "vision_analyze": "👁",
             "image_generate": "🎨",
+            "music_generate": "🎵",
             "tts": "🔊",
             "cron": "⏰",
             "send_message": "📨",

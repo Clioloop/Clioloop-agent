@@ -3039,6 +3039,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "APIFRAME_API_KEY": {
+        "description": "Apiframe API key for Suno V5 music generation (optional with Omni Loop Portal Subscription)",
+        "prompt": "Apiframe API Key",
+        "url": "https://console.apiframe.ai/signup",
+        "tools": ["music_generate"],
+        "password": True,
+        "category": "tool",
+    },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
         "prompt": "OpenAI API Key (for Whisper STT + TTS)",

@@ -50,7 +50,7 @@ import {
 // Tool names that ChainToolFallback intercepts and renders as something
 // other than a ToolEntry — they don't count toward "is this a group of
 // tool calls?" because they have no visible tool block.
-const SPECIAL_TOOL_NAMES = new Set(['todo', 'image_generate', 'clarify'])
+const SPECIAL_TOOL_NAMES = new Set(['todo', 'image_generate', 'music_generate', 'clarify'])
 
 // `true` when the current ToolEntry is being rendered inside a group
 // wrapper. Lets ToolEntry suppress per-row chrome (timer / preview) that

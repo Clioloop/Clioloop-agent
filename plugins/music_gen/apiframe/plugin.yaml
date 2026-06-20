@@ -1,0 +1,7 @@
+name: apiframe
+version: 1.0.0
+description: "Suno V5 music generation via Apiframe API. Supports text-to-music, custom lyrics, instrumental-only, vocal gender selection, and style control. Uses Suno V5 for best-in-class vocal quality. Dual-path: Omni Loop Portal Subscription (managed) or BYO API key."
+author: Omni Loop Labs
+kind: backend
+requires_env:
+  - APIFRAME_API_KEY
