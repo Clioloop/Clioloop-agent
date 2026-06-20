@@ -99,23 +99,23 @@ class TestUnifiedDispatch:
     # --- Error cases ---
 
     def test_no_provider_returns_clear_error(self):
-        result = self._run({"prompt": "a song"})
+        result = self._run({"confirmed": True, "prompt": "a song"})
         assert result["success"] is False
         assert result["error_type"] == "no_provider_configured"
 
     def test_unknown_provider_returns_clear_error(self):
-        result = self._run({"prompt": "a song"}, configured="ghost")
+        result = self._run({"confirmed": True, "prompt": "a song"}, configured="ghost")
         assert result["success"] is False
         assert result["error_type"] == "provider_not_registered"
 
     def test_provider_exception_caught(self):
         music_gen_registry.register_provider(_RaisingProvider())
-        result = self._run({"prompt": "x"}, configured="raises")
+        result = self._run({"confirmed": True, "prompt": "x"}, configured="raises")
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
     def test_invalid_action_rejected(self):
-        result = self._run({"prompt": "x", "action": "remix"})
+        result = self._run({"confirmed": True, "prompt": "x", "action": "remix"})
         assert "error" in result
         assert "remix" in result["error"].lower() or "Invalid" in result["error"]
 
@@ -125,21 +125,22 @@ class TestUnifiedDispatch:
         """When action is omitted, defaults to 'generate'."""
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
-        result = self._run({"prompt": "upbeat synthwave"}, configured="rec")
+        result = self._run({"confirmed": True, "prompt": "upbeat synthwave"}, configured="rec")
         assert result["success"] is True
         assert provider.last_kwargs["action"] == "generate"
 
     def test_generate_explicit_action(self):
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
-        result = self._run({"prompt": "a song", "action": "generate"}, configured="rec")
+        result = self._run({"confirmed": True, "prompt": "a song", "action": "generate"}, configured="rec")
         assert result["success"] is True
         assert provider.last_kwargs["action"] == "generate"
 
     def test_generate_prompt_required(self):
+        """When confirmed=true but no prompt/lyrics, prompt error is returned."""
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
-        result = self._run({"action": "generate"})
+        result = self._run({"action": "generate", "confirmed": True})
         assert "error" in result
         assert "prompt" in result["error"].lower()
 
@@ -148,6 +149,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "lyrics": "[Verse]\nHello world\n[Chorus]\nYeah",
         }, configured="rec")
@@ -159,6 +161,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "ambient",
             "instrumental": True,
         }, configured="rec")
@@ -170,6 +173,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "style": "synthwave, electronic",
         }, configured="rec")
@@ -181,6 +185,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "negative_tags": "country, jazz",
         }, configured="rec")
@@ -192,6 +197,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "vocal_gender": "f",
         }, configured="rec")
@@ -203,6 +209,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "title": "My Song",
         }, configured="rec")
@@ -214,6 +221,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "style_weight": 0.8,
         }, configured="rec")
@@ -225,6 +233,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "weirdness": 0.5,
         }, configured="rec")
@@ -236,6 +245,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "lyrics": "[Verse]\nTest",
             "auto_lyrics": True,
@@ -248,6 +258,7 @@ class TestUnifiedDispatch:
         music_gen_registry.register_provider(provider)
         result = self._run({
             "action": "generate",
+            "confirmed": True,
             "prompt": "a song",
             "vocal_gender": "x",
         }, configured="rec")
@@ -257,7 +268,7 @@ class TestUnifiedDispatch:
     def test_generate_response_has_job_id(self):
         provider = _RecordingProvider("rec")
         music_gen_registry.register_provider(provider)
-        result = self._run({"prompt": "a song"}, configured="rec")
+        result = self._run({"confirmed": True, "prompt": "a song"}, configured="rec")
         assert result["success"] is True
         assert result["job_id"] == "fake-job-123"
         assert result["track_id"] == "track-abc"
@@ -407,10 +418,11 @@ class TestUnifiedDispatch:
         assert "seed" not in props
         assert "image_url" not in props
 
-    def test_action_is_required(self):
+    def test_action_and_confirmed_are_required(self):
         from tools.music_generation_tool import MUSIC_GENERATE_SCHEMA
         required = MUSIC_GENERATE_SCHEMA["parameters"]["required"]
         assert "action" in required
+        assert "confirmed" in required
         # prompt is NOT in required (it's conditionally required based on action)
         assert "prompt" not in required
 
@@ -781,3 +793,281 @@ class TestApiframeProvider:
         result = p.generate("", action="stems", parent_job_id="job-123", track_index=1)
         # Will fail because no API key — but NOT with missing_required_param
         assert result["error_type"] != "missing_required_param"
+
+
+class TestConfirmationEnforcement:
+    """Tests for the code-level confirmation enforcement on action='generate'."""
+
+    def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
+        from tools import music_generation_tool
+        import clio_cli.plugins as plugins_module
+
+        saved = music_generation_tool._read_configured_music_provider
+        music_generation_tool._read_configured_music_provider = lambda: configured  # type: ignore
+        saved_discover = plugins_module._ensure_plugins_discovered
+        plugins_module._ensure_plugins_discovered = lambda *_a, **_k: None  # type: ignore
+        try:
+            raw = music_generation_tool._handle_music_generate(args)
+        finally:
+            music_generation_tool._read_configured_music_provider = saved  # type: ignore
+            plugins_module._ensure_plugins_discovered = saved_discover  # type: ignore
+        return json.loads(raw)
+
+    def test_generate_without_confirmed_returns_error(self):
+        """action='generate' without confirmed must return an error."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song"}, configured="rec")
+        assert result.get("success") is False or "error" in result
+        assert "Confirmation required" in result.get("error", "")
+
+    def test_generate_with_confirmed_false_returns_error(self):
+        """action='generate' with confirmed=false must return an error."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song", "confirmed": False}, configured="rec")
+        assert "Confirmation required" in result.get("error", "")
+
+    def test_generate_with_confirmed_true_proceeds(self):
+        """action='generate' with confirmed=true should reach the provider."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song", "confirmed": True}, configured="rec")
+        assert result["success"] is True
+
+    def test_generate_with_confirmed_string_true_proceeds(self):
+        """confirmed='true' (string) should also work via _coerce_bool."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song", "confirmed": "true"}, configured="rec")
+        assert result["success"] is True
+
+    def test_follow_up_actions_dont_require_confirmed(self):
+        """Follow-up actions (extend, cover, etc.) should NOT require confirmed."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        # extend without confirmed — should succeed
+        result = self._run({
+            "action": "extend",
+            "parent_job_id": "job-123",
+            "track_index": 1,
+            "continue_at": 60,
+        }, configured="rec")
+        assert result["success"] is True
+        # stems without confirmed — should succeed
+        result = self._run({
+            "action": "stems",
+            "parent_job_id": "job-123",
+            "track_index": 1,
+        }, configured="rec")
+        assert result["success"] is True
+
+    def test_confirmed_field_in_schema(self):
+        """The schema must have a 'confirmed' boolean property."""
+        from tools.music_generation_tool import MUSIC_GENERATE_SCHEMA
+        props = MUSIC_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "confirmed" in props
+        assert props["confirmed"]["type"] == "boolean"
+
+    def test_confirmation_error_mentions_all_details(self):
+        """The error message should mention all 6 confirmation details."""
+        provider = _RecordingProvider("rec")
+        music_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song"}, configured="rec")
+        error = result.get("error", "")
+        assert "Model" in error
+        assert "Mode" in error
+        assert "Instrumental" in error
+        assert "Style" in error
+        assert "Vocal gender" in error
+        assert "Title" in error
+
+
+class TestFileNamingPrefix:
+    """Tests that audio files are saved with clio_music_ prefix."""
+
+    def test_save_b64_default_prefix_is_clio_music(self):
+        from agent.music_gen_provider import save_b64_audio
+        import base64, tempfile, os
+        # Create a tiny fake audio bytes
+        b64 = base64.b64encode(b"fake_audio_data").decode()
+        path = save_b64_audio(b64)
+        assert path.name.startswith("clio_music_")
+        assert path.name.endswith(".mp3")
+        path.unlink(missing_ok=True)
+
+    def test_save_bytes_default_prefix_is_clio_music(self):
+        from agent.music_gen_provider import save_bytes_audio
+        path = save_bytes_audio(b"fake_audio_data")
+        assert path.name.startswith("clio_music_")
+        assert path.name.endswith(".mp3")
+        path.unlink(missing_ok=True)
+
+    def test_save_url_uses_clio_music_prefix(self):
+        """Verify the save_url_audio function has clio_music as default prefix."""
+        import inspect
+        from agent.music_gen_provider import save_url_audio
+        sig = inspect.signature(save_url_audio)
+        assert sig.parameters["prefix"].default == "clio_music"
+
+    def test_custom_prefix_still_works(self):
+        """Custom prefix should override the default."""
+        from agent.music_gen_provider import save_bytes_audio
+        path = save_bytes_audio(b"fake", prefix="custom_prefix")
+        assert path.name.startswith("custom_prefix_")
+        path.unlink(missing_ok=True)
+
+
+class TestGatewayAutoAppendDedup:
+    """Tests for the gateway auto-append media tag deduplication."""
+
+    def _make_messages(self, tool_result_json: str, tool_name: str = "music_generate"):
+        """Build a minimal message list with one tool call + result."""
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": tool_result_json,
+            },
+        ]
+
+    def test_music_generate_json_parsed_for_tracks(self):
+        """The collector should parse music_generate JSON and extract all track paths."""
+        from gateway.run import _collect_auto_append_media_tags
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": True,
+            "audio": "/tmp/track1.mp3",
+            "all_tracks": [
+                {"audio": "/tmp/track1.mp3", "track_index": 1},
+                {"audio": "/tmp/track2.mp3", "track_index": 2},
+            ],
+        })
+        messages = self._make_messages(tool_result)
+        tags, _ = _collect_auto_append_media_tags(messages)
+        # Should contain both tracks
+        assert "MEDIA:/tmp/track1.mp3" in tags
+        assert "MEDIA:/tmp/track2.mp3" in tags
+
+    def test_dedup_against_existing_media_in_response(self):
+        """When the agent already included track 1, only track 2 should be appended."""
+        from gateway.run import _collect_auto_append_media_tags, _TOOL_MEDIA_RE
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": True,
+            "audio": "/tmp/track1.mp3",
+            "all_tracks": [
+                {"audio": "/tmp/track1.mp3", "track_index": 1},
+                {"audio": "/tmp/track2.mp3", "track_index": 2},
+            ],
+        })
+        messages = self._make_messages(tool_result)
+        tags, _ = _collect_auto_append_media_tags(messages)
+
+        # Simulate the dispatch-site dedup logic
+        final_response = "Here is your song!\nMEDIA:/tmp/track1.mp3"
+        existing_paths: set = set()
+        for match in _TOOL_MEDIA_RE.finditer(final_response):
+            existing_paths.add(match.group(1).strip().rstrip('\",}'))
+        seen: set = set()
+        unique_tags = []
+        for tag in tags:
+            path = tag.replace("MEDIA:", "", 1).strip()
+            if path not in existing_paths and path not in seen:
+                seen.add(path)
+                unique_tags.append(tag)
+        # Only track 2 should be in unique_tags
+        assert "MEDIA:/tmp/track2.mp3" in unique_tags
+        assert "MEDIA:/tmp/track1.mp3" not in unique_tags
+
+    def test_both_tracks_appended_when_none_in_response(self):
+        """When the agent included 0 MEDIA tags, both tracks should be appended."""
+        from gateway.run import _collect_auto_append_media_tags, _TOOL_MEDIA_RE
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": True,
+            "audio": "/tmp/track1.mp3",
+            "all_tracks": [
+                {"audio": "/tmp/track1.mp3", "track_index": 1},
+                {"audio": "/tmp/track2.mp3", "track_index": 2},
+            ],
+        })
+        messages = self._make_messages(tool_result)
+        tags, _ = _collect_auto_append_media_tags(messages)
+
+        final_response = "Here is your song!"
+        existing_paths: set = set()
+        for match in _TOOL_MEDIA_RE.finditer(final_response):
+            existing_paths.add(match.group(1).strip().rstrip('\",}'))
+        seen: set = set()
+        unique_tags = []
+        for tag in tags:
+            path = tag.replace("MEDIA:", "", 1).strip()
+            if path not in existing_paths and path not in seen:
+                seen.add(path)
+                unique_tags.append(tag)
+        assert len(unique_tags) == 2
+        assert "MEDIA:/tmp/track1.mp3" in unique_tags
+        assert "MEDIA:/tmp/track2.mp3" in unique_tags
+
+    def test_no_duplicates_when_both_in_response(self):
+        """When the agent included both tracks, nothing should be appended."""
+        from gateway.run import _collect_auto_append_media_tags, _TOOL_MEDIA_RE
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": True,
+            "audio": "/tmp/track1.mp3",
+            "all_tracks": [
+                {"audio": "/tmp/track1.mp3", "track_index": 1},
+                {"audio": "/tmp/track2.mp3", "track_index": 2},
+            ],
+        })
+        messages = self._make_messages(tool_result)
+        tags, _ = _collect_auto_append_media_tags(messages)
+
+        final_response = "Here are both tracks!\nMEDIA:/tmp/track1.mp3\nMEDIA:/tmp/track2.mp3"
+        existing_paths: set = set()
+        for match in _TOOL_MEDIA_RE.finditer(final_response):
+            existing_paths.add(match.group(1).strip().rstrip('\",}'))
+        seen: set = set()
+        unique_tags = []
+        for tag in tags:
+            path = tag.replace("MEDIA:", "", 1).strip()
+            if path not in existing_paths and path not in seen:
+                seen.add(path)
+                unique_tags.append(tag)
+        assert len(unique_tags) == 0
+
+    def test_failed_result_not_collected(self):
+        """Failed tool results should not produce media tags."""
+        from gateway.run import _collect_auto_append_media_tags
+        import json as _json
+
+        tool_result = _json.dumps({
+            "success": False,
+            "error": "API key not set",
+        })
+        messages = self._make_messages(tool_result)
+        tags, _ = _collect_auto_append_media_tags(messages)
+        assert len(tags) == 0
+
+    def test_tts_still_works_with_new_collector(self):
+        """TTS tool results with explicit MEDIA: tags should still be collected."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        tool_result = "Generated audio: MEDIA:/tmp/tts_output.ogg"
+        messages = self._make_messages(tool_result, tool_name="text_to_speech")
+        tags, _ = _collect_auto_append_media_tags(messages)
+        assert "MEDIA:/tmp/tts_output.ogg" in tags

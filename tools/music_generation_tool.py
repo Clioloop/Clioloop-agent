@@ -222,8 +222,21 @@ MUSIC_GENERATE_SCHEMA: Dict[str, Any] = {
                     "melody; lower = more creative freedom."
                 ),
             },
+            "confirmed": {
+                "type": "boolean",
+                "description": (
+                    "Must be true to proceed with action='generate'. Set to "
+                    "true only after confirming all details with the user "
+                    "(model, mode, instrumental, style, vocal gender, "
+                    "title). If the user already specified everything in "
+                    "their request, you may set true immediately. Ignored "
+                    "for follow-up actions (extend, cover, add_vocals, "
+                    "stems)."
+                ),
+                "default": False,
+            },
         },
-        "required": ["action"],
+        "required": ["action", "confirmed"],
     },
 }
 
@@ -405,6 +418,23 @@ def _handle_music_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     # Validate required params based on action
     if action == "generate":
+        # Enforce confirmation protocol at code level — prevents models from
+        # skipping the confirmation step described in the tool description.
+        confirmed = _coerce_bool(args.get("confirmed"))
+        if not confirmed:
+            return tool_error(
+                "Confirmation required before generating music. Please "
+                "confirm the following details with the user first, then "
+                "re-call with confirmed=true:\n"
+                "  1. Model: Suno V5 or V5.5?\n"
+                "  2. Mode: description (auto lyrics) or custom lyrics?\n"
+                "  3. Instrumental or with vocals?\n"
+                "  4. Style/genre tags?\n"
+                "  5. Vocal gender (if vocals)?\n"
+                "  6. Title?\n\n"
+                "If the user has already specified all details in their "
+                "request, you may set confirmed=true immediately."
+            )
         if not prompt and not lyrics:
             return tool_error(
                 "prompt (or lyrics) is required for action='generate'"
@@ -530,25 +560,33 @@ _GENERIC_DESCRIPTION = (
     "previous response. Extend takes continue_at (timestamp). Cover takes "
     "audio_weight (0-1). Add vocals requires prompt (lyrics to sing).\n\n"
     "⚠️ COST: Each action costs ~$0.11 (direct) or €0.20 (managed portal). "
-    "Suno returns 2 tracks per action; the first is delivered as the main "
-    "audio and both are listed in all_tracks with their track IDs.\n\n"
-    "⚠️ CONFIRMATION PROTOCOL: Before calling with action='generate', "
-    "confirm the following with the user UNLESS they have already "
-    "specified everything:\n"
+    "Suno returns 2 tracks per action. Both are in the `all_tracks` array "
+    "with their file paths in `all_tracks[].audio`. You MUST deliver BOTH "
+    "tracks to the user by including a separate MEDIA: tag for each track's "
+    "audio path in your response.\n"
+    "Example: MEDIA:/path/to/track1.mp3 and MEDIA:/path/to/track2.mp3\n\n"
+    "⚠️ CONFIRMATION PROTOCOL (ENFORCED): Before calling with "
+    "action='generate', you MUST confirm the following with the user "
+    "UNLESS they have already specified everything in their initial "
+    "request. If any detail is missing, ask the user. Then set "
+    "confirmed=true to proceed.\n"
     "  1. Model: Suno V5 or V5.5?\n"
     "  2. Mode: description (auto lyrics) or custom lyrics?\n"
     "  3. Instrumental or with vocals?\n"
     "  4. Style/genre tags?\n"
     "  5. Vocal gender (if vocals)?\n"
     "  6. Title?\n"
-    "For follow-up actions, briefly describe what will happen and confirm.\n\n"
+    "If you call with confirmed=false or omit it, the tool will return "
+    "an error. For follow-up actions (extend, cover, add_vocals, stems), "
+    "briefly describe what will happen and confirm with the user.\n\n"
     "The backend and model family are user-configured via `clio tools` → "
     "Music Generation. Generations typically take 30 seconds to 2 minutes — "
     "the call blocks until the audio is ready. Returns either an HTTP URL "
-    "or an absolute file path in the `audio` field; display it with "
-    "markdown and include MEDIA:audio-path to deliver the audio file. "
-    "The response includes job_id and all_tracks for chaining follow-up "
-    "actions (extend, cover, stems)."
+    "or an absolute file path in the `audio` field (Track 1) and in "
+    "`all_tracks[].audio` (all tracks); display each with markdown and "
+    "include a MEDIA: tag for EVERY track to deliver all audio files to "
+    "the user. The response includes job_id and all_tracks for chaining "
+    "follow-up actions (extend, cover, stems)."
 )
 
 

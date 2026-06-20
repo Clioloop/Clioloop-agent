@@ -259,7 +259,7 @@ def _music_cache_dir() -> Path:
 def save_b64_audio(
     b64_data: str,
     *,
-    prefix: str = "music",
+    prefix: str = "clio_music",
     extension: str = "mp3",
 ) -> Path:
     """Decode base64 audio data and write it under ``$CLIO_HOME/cache/music/``.
@@ -279,7 +279,7 @@ def save_b64_audio(
 def save_bytes_audio(
     raw: bytes,
     *,
-    prefix: str = "music",
+    prefix: str = "clio_music",
     extension: str = "mp3",
 ) -> Path:
     """Write raw audio bytes (e.g. an HTTP download body) to the cache."""
@@ -293,7 +293,7 @@ def save_bytes_audio(
 def save_url_audio(
     url: str,
     *,
-    prefix: str = "music",
+    prefix: str = "clio_music",
     timeout: float = 120.0,
     max_bytes: int = 50 * 1024 * 1024,
 ) -> Path:

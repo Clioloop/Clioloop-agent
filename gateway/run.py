@@ -673,7 +673,7 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
 # from the final gateway reply.
-_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "music_generate"}
 
 
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
@@ -737,15 +737,41 @@ def _collect_auto_append_media_tags(
         if msg.get("role") not in ("tool", "function"):
             continue
         call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+        tool_name = tool_name_by_call_id.get(call_id)
+        if tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
             continue
         content = str(msg.get("content") or "")
-        if "MEDIA:" not in content:
-            continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('\",}')
-            if path and path not in history_media_paths:
-                media_tags.append(f"MEDIA:{path}")
+
+        # For music_generate: parse JSON tool result and extract all track
+        # paths from `audio` (primary) and `all_tracks[].audio`. The tool
+        # result is a JSON string, not MEDIA: tags.
+        if tool_name == "music_generate":
+            try:
+                result_data = json.loads(content) if content.strip().startswith("{") else None
+            except (json.JSONDecodeError, ValueError):
+                result_data = None
+            if isinstance(result_data, dict) and result_data.get("success"):
+                primary_audio = result_data.get("audio")
+                if primary_audio and isinstance(primary_audio, str):
+                    if primary_audio not in history_media_paths:
+                        media_tags.append(f"MEDIA:{primary_audio}")
+                for track in (result_data.get("all_tracks") or []):
+                    track_audio = track.get("audio")
+                    if track_audio and isinstance(track_audio, str):
+                        if track_audio not in history_media_paths:
+                            tag = f"MEDIA:{track_audio}"
+                            if tag not in media_tags:
+                                media_tags.append(tag)
+
+        # Also scan for explicit MEDIA: tags in the content (works for all
+        # producer tools including TTS and music_generate follow-up hints).
+        if "MEDIA:" in content:
+            for match in _TOOL_MEDIA_RE.finditer(content):
+                path = match.group(1).strip().rstrip('\",}')
+                if path and path not in history_media_paths:
+                    tag = f"MEDIA:{path}"
+                    if tag not in media_tags:
+                        media_tags.append(tag)
         if "[[audio_as_voice]]" in content:
             has_voice_directive = True
 
@@ -18602,22 +18628,32 @@ class GatewayRunner:
             # also the sole guard on the fallback branch taken when mid-run
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
-            if "MEDIA:" not in final_response:
-                media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                    result.get("messages", []),
-                    history_offset=len(agent_history),
-                    history_media_paths=_history_media_paths,
-                )
-
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
+            #
+            # Always run the collector (not just when "MEDIA:" is absent) so
+            # that music_generate's second track is auto-appended even when
+            # the agent already included the first. Deduplication against
+            # paths already in the agent's response prevents double delivery.
+            media_tags, has_voice_directive = _collect_auto_append_media_tags(
+                result.get("messages", []),
+                history_offset=len(agent_history),
+                history_media_paths=_history_media_paths,
+            )
+            if media_tags:
+                # Collect MEDIA: paths already in the agent's response so
+                # we never double-deliver a file the agent already included.
+                existing_paths: set = set()
+                for match in _TOOL_MEDIA_RE.finditer(final_response):
+                    existing_paths.add(match.group(1).strip().rstrip('\",}'))
+                seen: set = set()
+                unique_tags: List[str] = []
+                for tag in media_tags:
+                    path = tag.replace("MEDIA:", "", 1).strip()
+                    if path not in existing_paths and path not in seen:
+                        seen.add(path)
+                        unique_tags.append(tag)
+                if has_voice_directive:
+                    unique_tags.insert(0, "[[audio_as_voice]]")
+                if unique_tags:
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Sync session_id: the agent may have created a new session during

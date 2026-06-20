@@ -917,7 +917,7 @@ class ApiframeMusicGenProvider(MusicGenProvider):
                     try:
                         cached_path = save_url_audio(
                             track_audio_url,
-                            prefix="suno" if action == "generate" else f"suno_{action}",
+                            prefix="clio_music" if action == "generate" else f"clio_music_{action}",
                         )
                         audio_path = str(cached_path)
                     except Exception as exc:
