@@ -498,6 +498,8 @@ class TestApiframeRequestBuilding:
         )
         assert body["sunoParams"]["custom_mode"] is True
         assert body["prompt"] == "[Verse]\nHello world"
+        # Regression: "prompt" must NOT be inside sunoParams (causes 400 error)
+        assert "prompt" not in body["sunoParams"]
 
     def test_generate_instrumental(self):
         p = self._get_provider()

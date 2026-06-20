@@ -721,7 +721,6 @@ class ApiframeMusicGenProvider(MusicGenProvider):
             suno_params: Dict[str, Any] = {
                 "custom_mode": True,
                 "model_version": model_version,
-                "prompt": lyrics[:5000],
             }
             if instrumental is not None:
                 suno_params["instrumental"] = bool(instrumental)
