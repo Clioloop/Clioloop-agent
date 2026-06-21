@@ -129,6 +129,39 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_first_polling_conflict_retry_is_fast(monkeypatch):
+    """The FIRST 409 retry must wait only a few seconds, not 20s+. After a clean
+    restart the old getUpdates session is usually already gone, so the bot
+    should come back quickly instead of leaving the user staring at silence."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),  # retry succeeds
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+    adapter._polling_error_callback_ref = MagicMock()
+
+    async def _noop_drain():
+        return None
+    monkeypatch.setattr(adapter, "_drain_polling_connections", _noop_drain)
+
+    slept = []
+
+    async def _capture_sleep(delay):
+        slept.append(delay)
+    monkeypatch.setattr("asyncio.sleep", _capture_sleep)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(conflict("Conflict: terminated by other getUpdates request"))
+
+    assert slept, "expected a back-off sleep before the retry"
+    assert slept[0] <= 5, f"first 409 retry delay should be small, got {slept[0]}s"
+    assert adapter._polling_conflict_count == 0  # reset after the retry succeeded
+
+
+@pytest.mark.asyncio
 async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     """After exhausting retries, the conflict should become fatal."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))

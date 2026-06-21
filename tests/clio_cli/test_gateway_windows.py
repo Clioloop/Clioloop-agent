@@ -972,3 +972,66 @@ def test_start_survives_task_script_refresh_failure(monkeypatch):
 
     assert any(isinstance(c, tuple) and c[0] == "schtasks" and c[1][0] == "/Run" for c in calls)
     assert any(c == ("report_start", "Scheduled Task 'Clio_Gateway'") for c in calls)
+
+
+def test_resolve_console_python_uv_uses_base_python(tmp_path):
+    """uv venvs must run the BASE console python.exe, not the venv launcher
+    (which respawns a new console window)."""
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    (venv / "Lib" / "site-packages").mkdir(parents=True)
+    (venv / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "python.exe").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = 0.5.0\n", encoding="utf-8")
+
+    exe, extra = gateway_windows._resolve_console_python(str(venv / "Scripts" / "python.exe"))
+
+    assert exe == str(base / "python.exe")
+    assert extra == [str(venv / "Lib" / "site-packages")]
+
+
+def test_resolve_console_python_non_uv_passthrough(tmp_path):
+    """Standard (non-uv) venvs return the given exe and no extra PYTHONPATH."""
+    venv = tmp_path / "venv"
+    (venv / "Scripts").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")  # no uv key
+    p = str(venv / "Scripts" / "python.exe")
+
+    exe, extra = gateway_windows._resolve_console_python(p)
+
+    assert exe == p
+    assert extra == []
+
+
+def test_build_gateway_argv_uses_replace(monkeypatch, tmp_path):
+    """The direct-spawn gateway argv must pass --replace so a bypassing start
+    cleanly takes over a stale/old instance (single-instance guarantee)."""
+    import clio_cli.config as config
+    import clio_cli.gateway as gateway
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python",
+        lambda exe: ("C:\\base\\pythonw.exe", Path("C:\\v"), []),
+    )
+    monkeypatch.setattr(gateway_windows, "_stable_gateway_working_dir", lambda root: "C:\\wd")
+    monkeypatch.setattr(gateway, "get_python_path", lambda: "C:\\v\\Scripts\\python.exe")
+    monkeypatch.setattr(gateway, "_profile_arg", lambda *a, **k: "")
+    monkeypatch.setattr(config, "get_clio_home", lambda: tmp_path)
+
+    argv, _wd, _env = gateway_windows._build_gateway_argv()
+
+    assert argv[-3:] == ["gateway", "run", "--replace"]
+
+
+def test_build_startup_launcher_is_hidden_vbs():
+    """The Startup-folder launcher must be a hidden VBS dropper, not a visible
+    (even minimized) cmd window."""
+    content = gateway_windows._build_startup_launcher(Path(r"C:\Clio\gateway-service\Clio_Gateway.cmd"))
+
+    assert "WScript.Shell" in content
+    assert ", 0, False" in content  # window style 0 = hidden, don't wait
+    assert 'start "" /min' not in content
+    assert "C:\\Clio\\gateway-service\\Clio_Gateway.cmd" in content

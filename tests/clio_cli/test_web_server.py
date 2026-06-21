@@ -4326,3 +4326,19 @@ class TestGatewayRestartCmdScript:
         assert b"\r\n" in raw  # CRLF on disk (read_text would translate it away)
         assert content.rstrip().endswith("pause")
         assert content.startswith("@echo off")
+
+    def test_uv_venv_uses_base_console_python_and_pythonpath(self, monkeypatch, tmp_path):
+        """For a uv venv the restart window must run the BASE console python.exe
+        (no second-console respawn) and set PYTHONPATH — not the venv launcher."""
+        import clio_cli.gateway_windows as gw
+        base_python = r"C:\Python311\python.exe"
+        site_packages = r"C:\Users\John Doe\clio\clio-agent\venv\Lib\site-packages"
+        monkeypatch.setattr(gw, "_resolve_console_python", lambda exe: (base_python, [site_packages]))
+
+        _path, content, _raw = self._write(monkeypatch, tmp_path)
+
+        assert base_python in content
+        assert r"venv\Scripts\python.exe" not in content  # not the launcher
+        assert 'set "PYTHONPATH=' in content
+        assert site_packages in content
+        assert '\\"' not in content  # still no cmd.exe quote-escaping trap

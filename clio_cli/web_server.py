@@ -1337,15 +1337,19 @@ def _write_gateway_restart_cmd() -> Path:
     console's environment.
     """
     from clio_cli.config import get_clio_home, get_env_path
-    from clio_cli.gateway import _profile_arg, get_python_path
-    from clio_cli.gateway_windows import _quote_cmd_script_arg
+    from clio_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path
+    from clio_cli.gateway_windows import _quote_cmd_script_arg, _resolve_console_python
 
     clio_home = str(Path(get_clio_home()).resolve())
     env_file = str(get_env_path())
     env_display = env_file.replace("\\", "/")
     qenv = _quote_cmd_script_arg(env_file)
 
-    python_path = get_python_path()  # venv Scripts\python.exe (console)
+    # Resolve a CONSOLE python that won't respawn a second window. For uv venvs
+    # ``venv\Scripts\python.exe`` is a launcher that opens a new console; use the
+    # base python.exe + PYTHONPATH instead so output stays in THIS window and no
+    # blank second console pops up.
+    python_path, extra_pythonpath = _resolve_console_python(get_python_path())
     profile_arg = _profile_arg(clio_home)  # "--profile coder" or ""
     prog_args = [python_path, "-m", "clio_cli.main"]
     if profile_arg:
@@ -1353,11 +1357,20 @@ def _write_gateway_restart_cmd() -> Path:
     prog_args.extend(["gateway", "restart"])
     restart_line = " ".join(_quote_cmd_script_arg(a) for a in prog_args)
 
+    pythonpath_line = None
+    if extra_pythonpath:
+        pp = os.pathsep.join([str(PROJECT_ROOT), *extra_pythonpath])
+        pythonpath_line = f'set "PYTHONPATH={pp};%PYTHONPATH%"'
+
     lines = [
         "@echo off",
         "rem Clio gateway restart (desktop) — generated, safe to delete",
         'set "PYTHONIOENCODING=utf-8"',
         f'set "CLIO_HOME={clio_home}"',
+    ]
+    if pythonpath_line:
+        lines.append(pythonpath_line)
+    lines += [
         "echo === Telegram Bot Token Check ===",
         (
             f"if exist {qenv} "

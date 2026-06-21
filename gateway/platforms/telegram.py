@@ -1093,12 +1093,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # fatal after all retries are exhausted.
         self._polling_conflict_count += 1
 
-        MAX_CONFLICT_RETRIES = 5
-        # Delay grows with each attempt: 15s, 25s, 35s, 45s, 55s.
-        # Telegram server-side getUpdates sessions typically expire within
-        # 30s; the increasing back-off ensures we clear that window without
-        # hammering the API on fast-restart loops.
-        RETRY_DELAY = 10 + (self._polling_conflict_count * 10)  # seconds
+        # Per-attempt back-off (seconds). The FIRST retry is fast because the
+        # common case is a clean restart: the old gateway drained gracefully and
+        # closed its getUpdates connection, so Telegram has usually already
+        # released the session within a couple of seconds — no reason to make the
+        # user wait 20s+ for the bot to come back. Later attempts grow to cover
+        # the ~30s worst case (old process force-killed, session held server-side)
+        # without hammering the API on fast-restart loops.
+        CONFLICT_RETRY_DELAYS = (3, 7, 12, 20, 30, 45)  # seconds
+        MAX_CONFLICT_RETRIES = len(CONFLICT_RETRY_DELAYS)
+        RETRY_DELAY = CONFLICT_RETRY_DELAYS[
+            min(self._polling_conflict_count, MAX_CONFLICT_RETRIES) - 1
+        ]
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
             logger.warning(
@@ -1160,7 +1166,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "or another process is using the same bot token. "
             "To recover: ensure no other Clio or OpenClaw instance is running "
             "with this token, then restart the gateway with 'clio gateway restart'."
-            % (MAX_CONFLICT_RETRIES, sum(10 + i * 10 for i in range(1, MAX_CONFLICT_RETRIES + 1)))
+            % (MAX_CONFLICT_RETRIES, sum(CONFLICT_RETRY_DELAYS))
         )
         logger.error(
             "[%s] %s Original error: %s",

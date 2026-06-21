@@ -4112,23 +4112,33 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
-        # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
-        try:
-            _keep_typing_sig = inspect.signature(self._keep_typing)
-        except (TypeError, ValueError):
-            _keep_typing_sig = None
-        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
-            _keep_typing_kwargs["stop_event"] = interrupt_event
-        typing_task = asyncio.create_task(
-            self._keep_typing(
-                event.source.chat_id,
-                **_keep_typing_kwargs,
+        # Start continuous typing indicator (refreshes every 2 seconds).
+        # Skip it entirely for INTERNAL turns (e.g. the synthetic empty-text
+        # event used to auto-resume a restart-interrupted session): the user
+        # didn't send anything, so a "typing…" bubble they never triggered —
+        # which lingers until the resume turn finishes — is confusing and was a
+        # source of "the typing indicator never stops" after a gateway restart.
+        _is_internal_turn = bool(getattr(event, "internal", False))
+        typing_task = None
+        if not _is_internal_turn:
+            _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+            _keep_typing_kwargs = {"metadata": _thread_metadata}
+            try:
+                _keep_typing_sig = inspect.signature(self._keep_typing)
+            except (TypeError, ValueError):
+                _keep_typing_sig = None
+            if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+                _keep_typing_kwargs["stop_event"] = interrupt_event
+            typing_task = asyncio.create_task(
+                self._keep_typing(
+                    event.source.chat_id,
+                    **_keep_typing_kwargs,
+                )
             )
-        )
 
         async def _stop_typing_task() -> None:
+            if typing_task is None:
+                return
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)

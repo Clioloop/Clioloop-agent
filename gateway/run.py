@@ -10100,6 +10100,19 @@ class GatewayRunner:
         # Idempotent, so the run's finally calling it again is harmless.
         self._release_running_agent_state(session_key)
 
+        # Belt-and-braces: signal the active session loop to stop and clear the
+        # typing indicator immediately. The interrupted turn's own cleanup
+        # normally does this, but on edge races (or a turn wedged on a slow
+        # provider call) the "typing…" bubble could otherwise linger after a
+        # reset. interrupt_session_activity() both sets the interrupt event and
+        # calls stop_typing(). Best-effort — never block the reset on it.
+        _adapter = self.adapters.get(source.platform) if source.platform else None
+        if _adapter is not None and hasattr(_adapter, "interrupt_session_activity"):
+            try:
+                await _adapter.interrupt_session_activity(session_key, source.chat_id)
+            except Exception as _e:
+                logger.debug("reset: interrupt_session_activity failed: %s", _e)
+
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)

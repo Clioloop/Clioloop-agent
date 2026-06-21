@@ -307,6 +307,19 @@ def _startup_dir() -> Path:
 
 def get_startup_entry_path() -> Path:
     _assert_windows()
+    # ``.vbs`` (not ``.cmd``) so login start is windowless: a Startup-folder
+    # ``.cmd`` flashes a console at logon even when it only chains pythonw. A
+    # ``.vbs`` dropper runs ``gateway.cmd`` hidden (WScript.Shell.Run style 0).
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
+
+
+def _legacy_startup_entry_path() -> Path:
+    """Pre-VBS Startup-folder entry (``.cmd``).
+
+    Older installs dropped a ``.cmd`` launcher here. We clean it up on
+    install/uninstall so a machine never has BOTH the legacy ``.cmd`` and the
+    new ``.vbs`` firing at login (which would start two gateways)."""
+    _assert_windows()
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
 
 
@@ -399,13 +412,18 @@ def _build_gateway_cmd_script(
 
 
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny .cmd that goes in the Startup folder. Just minimizes and chains."""
+    """The tiny ``.vbs`` that goes in the Startup folder — runs gateway.cmd HIDDEN.
+
+    ``WScript.Shell.Run(cmd, 0, False)`` launches with window style 0 (hidden)
+    and does not wait, so there is no console flash at logon. gateway.cmd itself
+    invokes base ``pythonw`` (windowless), so nothing visible ever appears."""
+    # VBS string literals escape ``"`` by doubling it.
+    target = str(script_path).replace('"', '""')
     lines = [
-        "@echo off",
-        f"rem {_TASK_DESCRIPTION}",
-        # ``start "" /min`` detaches with a minimized console window.
-        # ``/d /c`` on cmd.exe skips AUTORUN and runs the target script once.
-        f'start "" /min cmd.exe /d /c {_quote_cmd_script_arg(str(script_path))}',
+        f"' {_TASK_DESCRIPTION}",
+        'Dim sh',
+        'Set sh = CreateObject("WScript.Shell")',
+        f'sh.Run """{target}""", 0, False',
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -504,6 +522,12 @@ def _install_startup_entry(script_path: Path) -> Path:
     tmp = entry.with_suffix(".tmp")
     tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
     tmp.replace(entry)
+    # Remove any legacy ``.cmd`` launcher so login never fires BOTH it and the
+    # new ``.vbs`` (which would start two gateways).
+    try:
+        _legacy_startup_entry_path().unlink()
+    except (FileNotFoundError, OSError):
+        pass
     return entry
 
 
@@ -563,6 +587,29 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     return (windowed, venv_dir, [])
 
 
+def _resolve_console_python(python_exe: str) -> tuple[str, list[str]]:
+    """Return (console_python, extra_pythonpath) for a VISIBLE run.
+
+    The console twin of :func:`_resolve_detached_python`. uv-created Windows
+    venvs ship ``venv\\Scripts\\python.exe`` as a *launcher* that respawns the
+    base interpreter in a NEW console window — so running it inside a ``cmd /k``
+    window spawns a second, blank console. For uv venvs, return the base
+    ``python.exe`` directly (real console exe, no respawn) plus the venv
+    site-packages to put on ``PYTHONPATH`` so imports still resolve. Non-uv
+    venvs return the given exe unchanged.
+    """
+    p = Path(python_exe)
+    venv_dir = p.parent.parent
+    cfg = _read_pyvenv_cfg(venv_dir)
+    home = cfg.get("home", "")
+    if "uv" in cfg and home:
+        base_python = Path(home) / "python.exe"
+        site_packages = venv_dir / "Lib" / "site-packages"
+        if base_python.exists() and site_packages.exists():
+            return (str(base_python), [str(site_packages)])
+    return (python_exe, [])
+
+
 def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:
     clean_entries = [entry for entry in entries if entry]
     if not clean_entries:
@@ -597,7 +644,13 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     argv = [python_exe, "-m", "clio_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())
-    argv.extend(["gateway", "run"])
+    # ``--replace`` so a direct spawn that bypassed the running-check (stale
+    # PID/lock from a crashed instance, or an ONLOGON-vs-desktop race) cleanly
+    # terminates the old gateway instead of exiting on the lock — guaranteeing a
+    # single live poller (no Telegram 409 storm / duplicate typing). The
+    # scheduled-task ``gateway.cmd`` deliberately omits this (its /Run is guarded
+    # by start()'s already-running early-return) to avoid task self-restart churn.
+    argv.extend(["gateway", "run", "--replace"])
 
     env_overlay = {
         "CLIO_HOME": clio_home,
@@ -959,7 +1012,11 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
-    for path, label in [(startup_entry, "Windows login item"), (script_path, "Task script")]:
+    for path, label in [
+        (startup_entry, "Windows login item"),
+        (_legacy_startup_entry_path(), "Windows login item (legacy)"),
+        (script_path, "Task script"),
+    ]:
         try:
             path.unlink()
             print(f"✓ Removed {label}: {path}")
