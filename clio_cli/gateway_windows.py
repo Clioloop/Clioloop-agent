@@ -1038,19 +1038,39 @@ def start() -> None:
     startup_installed = is_startup_entry_installed()
 
     if not task_installed and not startup_installed:
-        from clio_cli.setup import prompt_yes_no
+        non_interactive = os.environ.get("CLIO_NONINTERACTIVE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if non_interactive:
+            # When invoked from the desktop app's "Save & restart gateway"
+            # button (stdin=DEVNULL, CLIO_NONINTERACTIVE=1), prompt_yes_no
+            # would hit EOFError and sys.exit(1), silently killing the
+            # restart process before the gateway starts. Auto-install
+            # instead — the user already chose to restart.
+            print("✗ Gateway service is not installed — installing now (non-interactive)")
+            install(force=False)
+            task_installed = is_task_registered()
+            startup_installed = is_startup_entry_installed()
+            if not task_installed and not startup_installed:
+                print("⚠ Gateway install did not complete in this process.")
+                print("  If a UAC prompt opened, approve it, then run: clio gateway start")
+                return
+        else:
+            from clio_cli.setup import prompt_yes_no
 
-        print("✗ Gateway service is not installed")
-        if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
-            print("  Run: clio gateway install")
-            return
-        install(force=False)
-        task_installed = is_task_registered()
-        startup_installed = is_startup_entry_installed()
-        if not task_installed and not startup_installed:
-            print("⚠ Gateway install did not complete in this process.")
-            print("  If a UAC prompt opened, approve it, then run: clio gateway start")
-            return
+            print("✗ Gateway service is not installed")
+            if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
+                print("  Run: clio gateway install")
+                return
+            install(force=False)
+            task_installed = is_task_registered()
+            startup_installed = is_startup_entry_installed()
+            if not task_installed and not startup_installed:
+                print("⚠ Gateway install did not complete in this process.")
+                print("  If a UAC prompt opened, approve it, then run: clio gateway start")
+                return
 
     if task_installed:
         code, _out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
