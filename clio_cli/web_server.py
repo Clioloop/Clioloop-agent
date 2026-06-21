@@ -1333,20 +1333,46 @@ def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
     log_path = _ACTION_LOG_DIR / log_file_name
 
     # Build the clio command using the same interpreter.
-    cli_cmd = f'"{sys.executable}" -m clio_cli.main gateway restart'
-    # Wrap in cmd.exe /k so the window stays open after the command finishes,
-    # letting the user read the output. Add a pause so the window doesn't
-    # auto-close if cmd /k is somehow not honored.
-    full_cmd = f'{cli_cmd} & echo. & echo Gateway restart complete. You can close this window. & pause'
+    # Use `clio` binary if available (same as terminal), fall back to -m.
+    from shutil import which as _which
+    clio_bin = _which("clio")
+    if clio_bin:
+        cli_cmd = f'"{clio_bin}" gateway restart'
+    else:
+        cli_cmd = f'"{sys.executable}" -m clio_cli.main gateway restart'
+    # Diagnostic: show the .env token status before restarting, so the
+    # user can see if the token was actually saved. Then run the restart.
+    # Use `cmd /k` so the terminal window stays open. stdin=PIPE so `pause`
+    # can read the keypress.
+    from clio_cli.config import get_env_path
+    _env_file = get_env_path()
+    _env_display = str(_env_file).replace("\\", "/")
+    full_cmd = (
+        f'echo === Telegram Bot Token Check ==='
+        f' & if exist "{_env_file}" ('
+        f' findstr /C:"TELEGRAM_BOT_TOKEN" "{_env_file}" > nul'
+        f' && echo Token found in .env'
+        f' || echo WARNING: Token NOT found in .env'
+        f' ) else ('
+        f' echo WARNING: .env file not found at {_env_display}'
+        f' )'
+        f' & echo.'
+        f' & echo === Restarting Gateway ==='
+        f' & {cli_cmd}'
+        f' & echo.'
+        f' & echo === Gateway restart complete ==='
+        f' & echo You can close this window.'
+        f' & pause'
+    )
 
-    cmd = ["cmd.exe", "/c", full_cmd]
+    cmd = ["cmd.exe", "/k", full_cmd]
     env = {**os.environ, "CLIO_NONINTERACTIVE": "1"}
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
         "env": env,
         "creationflags": (
             getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
