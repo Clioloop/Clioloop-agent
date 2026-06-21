@@ -46,9 +46,10 @@ export const PLANS: Record<PlanId, Plan> = {
     freeModelsOnly: true,
     requiresCardVerification: true,
     services: [],
-    tagline: "Try Clioloop with a free model",
+    tagline: "Try Clioloop with GLM 5.2 — free",
     features: [
-      "A capable free model",
+      "GLM 5.2 — a powerful reasoning model, free",
+      "500 free requests per day",
       "Web search & extract on Pro and up",
       "1 connected device",
       "Card verification required — never charged",

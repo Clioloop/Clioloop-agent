@@ -126,8 +126,9 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `clio tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# Music gen is off by default — matching video_gen. Users who want it opt in
-# via `clio tools` → Music Generation.
+# Music gen is enabled by default — the portal gates it by plan (Max/Max20x
+# only), and the runtime check_fn ensures the tool only registers when a
+# provider is actually available (managed subscription or BYOK plugin).
 #
 # X search is off by default for users without xAI credentials, but
 # auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
@@ -135,7 +136,7 @@ def gui_toolset_label(label: str) -> str:
 # `clio tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "music_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:

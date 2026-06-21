@@ -229,15 +229,13 @@ export function meterUsage(
       : null;
 
   let costMicros: number;
-  if (upstreamCost !== null && upstreamCost > 0) {
-    // Authoritative cost from OpenRouter.
-    costMicros = Math.max(
-      requirePositive ? 1 : 0,
-      Math.round(upstreamCost * 1_000_000),
-    );
-  } else if (!requirePositive) {
-    // Free model / free tier — zero cost is expected and fine.
+  if (!requirePositive) {
+    // Free model / free tier / promotional free model — Clioloop absorbs the
+    // cost. Zero cost is recorded regardless of what OpenRouter reports.
     costMicros = 0;
+  } else if (upstreamCost !== null && upstreamCost > 0) {
+    // Authoritative cost from OpenRouter for a paid model.
+    costMicros = Math.max(1, Math.round(upstreamCost * 1_000_000));
   } else {
     // Paid model but OpenRouter omitted or zeroed the cost. Charge from the
     // catalog price so the call is still billed and the model never blocks.

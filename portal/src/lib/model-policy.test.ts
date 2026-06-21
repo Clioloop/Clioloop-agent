@@ -17,12 +17,11 @@ describe("modelAllowedForPlan", () => {
 });
 
 describe("FREE_OPENROUTER_MODEL", () => {
-  it("defaults to the selected GPT OSS 120B free model", () => {
-    expect(FREE_OPENROUTER_MODEL).toBe("openai/gpt-oss-120b:free");
+  it("defaults to GLM 5.2 (promotional free model)", () => {
+    expect(FREE_OPENROUTER_MODEL).toBe("z-ai/glm-5.2");
   });
 
-  it("is an OpenRouter :free id", () => {
-    expect(FREE_OPENROUTER_MODEL.endsWith(":free")).toBe(true);
+  it("is a valid OpenRouter model id", () => {
     expect(FREE_OPENROUTER_MODEL).toContain("/");
   });
 });

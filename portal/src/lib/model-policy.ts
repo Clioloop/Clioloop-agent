@@ -9,13 +9,14 @@ import type { PlanId } from "./plans";
 // "Omni Loop Portal" and only model ids are shown.
 
 /**
- * The one model that is free for the free plan (and counts toward the shared
- * daily allotment for every tier). Must be a tool-capable OpenRouter `:free`
- * model — it drives an agentic loop. Override per-deploy with
- * `FREE_OPENROUTER_MODEL` so it can track OpenRouter's changing free lineup.
+ * The one model offered to free-plan users as a promotional free model.
+ * Clioloop absorbs the upstream cost (it is NOT an OpenRouter `:free` model —
+ * it is a paid model whose cost we cover up to FREE_DAILY_REQUEST_CAP requests
+ * per day for free users, and for all users within their monthly allowance).
+ * Override per-deploy with `FREE_OPENROUTER_MODEL`.
  */
 export const FREE_OPENROUTER_MODEL =
-  process.env.FREE_OPENROUTER_MODEL?.trim() || "openai/gpt-oss-120b:free";
+  process.env.FREE_OPENROUTER_MODEL?.trim() || "z-ai/glm-5.2";
 
 /** Shared daily free-model allotment, per user (UTC day). Beyond it: free tier
  *  is blocked; paid tiers keep using the free model. Abuse guard only. */

@@ -174,6 +174,25 @@ describe("OpenRouter metering", () => {
     );
   });
 
+  it("records zero for promotional free model even when upstream reports a cost", () => {
+    // GLM 5.2 is a paid model on OpenRouter, but when used as the promotional
+    // free model Clioloop absorbs the cost (requirePositiveCost: false).
+    const result = meterUsage(
+      "user-1",
+      "z-ai/glm-5.2",
+      { prompt_tokens: 100, completion_tokens: 50, cost: 0.00037 },
+      { requirePositiveCost: false },
+    );
+    expect(result).toEqual({ recorded: true, costMicros: 0 });
+    expect(db.recordUsage).toHaveBeenCalledWith(
+      "user-1",
+      "z-ai/glm-5.2",
+      100,
+      50,
+      0,
+    );
+  });
+
   it("modelPriceMicros computes from the cached catalog", () => {
     globalThis.__olpModelCache = {
       at: Date.now(),
@@ -298,7 +317,7 @@ describe("OpenRouter catalog filtering", () => {
 
 describe("legacy OpenRouter plan helper", () => {
   it("keeps free-only plans limited to the selected free model", () => {
-    expect(modelAllowed(PLANS.free, "openai/gpt-oss-120b:free")).toBe(true);
+    expect(modelAllowed(PLANS.free, "z-ai/glm-5.2")).toBe(true);
     expect(modelAllowed(PLANS.free, "meta-llama/llama-4-free:free")).toBe(
       false,
     );

@@ -6,7 +6,6 @@ import { selectInferenceUpstream } from "@/lib/inference-upstream";
 import {
   checkEntitlement,
   fetchModels,
-  isFreeModelId,
   meterUsage,
   usageTapStream,
 } from "@/lib/openrouter";
@@ -76,7 +75,30 @@ export async function POST(req: NextRequest) {
 
   const model = String(body.model ?? "");
   const planId = entitlement.plan.id;
-  const requirePaidMetering = planId !== "free" && !isFreeModelId(model);
+  // The free promotional model is a paid model on OpenRouter whose cost
+  // Clioloop absorbs. It should NOT be metered as a paid model for any user
+  // within the daily free allotment. Past the allotment, paid users are charged.
+  const isFreePromoModel = model === FREE_OPENROUTER_MODEL;
+
+  // Shared free-model daily allotment (all tiers, abuse guard). Free users are
+  // blocked past it; paid tiers keep using the free model but are charged
+  // normal pricing past the daily cap (Clioloop absorbs cost up to the cap).
+  let withinFreeDailyAllotment = false;
+  if (isFreePromoModel) {
+    const usedToday = freeModelDayCount(userId);
+    if (usedToday >= FREE_DAILY_REQUEST_CAP && planId === "free") {
+      return apiError(
+        429,
+        "daily_limit_reached",
+        "You've reached today's free usage — it resets at 00:00 UTC. Upgrade in the Omni Loop Portal for more.",
+      );
+    }
+    incrFreeModelDay(userId);
+    withinFreeDailyAllotment = usedToday < FREE_DAILY_REQUEST_CAP;
+  }
+
+  const requirePaidMetering =
+    planId !== "free" && (!isFreePromoModel || !withinFreeDailyAllotment);
 
   // Tier model-access gate.
   if (!modelAllowedForPlan(planId, model)) {
@@ -95,20 +117,6 @@ export async function POST(req: NextRequest) {
         err,
       );
     });
-  }
-
-  // Shared free-model daily allotment (all tiers, abuse guard). Free users are
-  // blocked past it; paid tiers keep using the free model.
-  if (model === FREE_OPENROUTER_MODEL) {
-    const usedToday = freeModelDayCount(userId);
-    if (usedToday >= FREE_DAILY_REQUEST_CAP && planId === "free") {
-      return apiError(
-        429,
-        "daily_limit_reached",
-        "You've reached today's free usage — it resets at 00:00 UTC. Upgrade in the Omni Loop Portal for more.",
-      );
-    }
-    incrFreeModelDay(userId);
   }
 
   // Upstream selection + key presence.
@@ -139,8 +147,17 @@ export async function POST(req: NextRequest) {
   };
 
   const meter = (usage: UpstreamUsage | undefined, usedModel: string) => {
+    // For the free promo model within the daily allotment, cost is absorbed
+    // (requirePositiveCost = false). Past the allotment, paid users are charged.
+    // Note: OpenRouter may return a dated alias (e.g. z-ai/glm-5.2-20260616)
+    // so we strip the -YYYYMMDD suffix when comparing to FREE_OPENROUTER_MODEL.
+    const normalizeModel = (m: string) => m.replace(/-\d{8}$/, "");
+    const isFreeModelUsed = normalizeModel(usedModel) === FREE_OPENROUTER_MODEL;
+    const chargeForFreeModel = isFreePromoModel && !withinFreeDailyAllotment && planId !== "free";
+    const requirePositive =
+      planId !== "free" && (!isFreeModelUsed || chargeForFreeModel);
     meterUsage(userId, usedModel, usage, {
-      requirePositiveCost: planId !== "free" && !isFreeModelId(usedModel),
+      requirePositiveCost: requirePositive,
       path: "chat",
     });
   };
