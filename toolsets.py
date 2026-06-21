@@ -37,6 +37,8 @@ _CLIO_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
+    # Music generation
+    "music_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation

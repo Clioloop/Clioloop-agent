@@ -306,7 +306,7 @@ def managed_provider_tools_enabled(*args: Any, **kwargs: Any) -> bool:
 
 
 #: Config sections that apply_managed_defaults may flip to the gateway.
-_DEFAULTABLE_FEATURES = ("web", "browser", "image_gen", "video_gen", "tts")
+_DEFAULTABLE_FEATURES = ("web", "browser", "image_gen", "video_gen", "music_gen", "tts")
 
 
 def apply_managed_defaults(
@@ -389,6 +389,8 @@ def apply_managed_defaults(
             or str(section.get("provider") or "").strip() == "fal"
         ):
             section["provider"] = "vidu"
+        elif key == "music_gen" and not section.get("provider"):
+            section["provider"] = "apiframe"
         section["use_gateway"] = True
         configured.add(key)
     return configured
