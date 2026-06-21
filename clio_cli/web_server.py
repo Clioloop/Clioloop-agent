@@ -1293,9 +1293,22 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 
 @app.post("/api/gateway/restart")
 async def restart_gateway():
-    """Kick off a ``clio gateway restart`` in the background."""
+    """Kick off a ``clio gateway restart`` in the background.
+
+    On Windows, spawn a **visible terminal window** running ``clio gateway
+    restart`` so the user can see the stop/start output and the process runs
+    in its own session — detached from the dashboard's process tree. The
+    detached subprocess approach (DETACHED_PROCESS) silently fails to kill
+    the old gateway because Windows process-tree kills don't propagate
+    across session boundaries created by the desktop app's spawn. A visible
+    terminal gives the restart a clean session context identical to what
+    ``clio gateway restart`` gets when run from a real terminal.
+    """
     try:
-        proc = _spawn_clio_action(["gateway", "restart"], "gateway-restart")
+        if sys.platform == "win32":
+            proc = _spawn_visible_gateway_restart_win()
+        else:
+            proc = _spawn_clio_action(["gateway", "restart"], "gateway-restart")
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -1304,6 +1317,58 @@ async def restart_gateway():
         "pid": proc.pid,
         "name": "gateway-restart",
     }
+
+
+def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
+    """Spawn ``clio gateway restart`` in a visible cmd.exe window on Windows.
+
+    Uses CREATE_NEW_CONSOLE so a fresh terminal window appears (the user can
+    see "Gateway stopped" / "Gateway started" output), and the process runs
+    in its own session — completely independent of the dashboard backend's
+    process tree. This mirrors exactly what happens when the user opens a
+    terminal and types ``clio gateway restart``.
+    """
+    log_file_name = _ACTION_LOG_FILES["gateway-restart"]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+
+    # Build the clio command using the same interpreter.
+    cli_cmd = f'"{sys.executable}" -m clio_cli.main gateway restart'
+    # Wrap in cmd.exe /k so the window stays open after the command finishes,
+    # letting the user read the output. Add a pause so the window doesn't
+    # auto-close if cmd /k is somehow not honored.
+    full_cmd = f'{cli_cmd} & echo. & echo Gateway restart complete. You can close this window. & pause'
+
+    cmd = ["cmd.exe", "/c", full_cmd]
+    env = {**os.environ, "CLIO_NONINTERACTIVE": "1"}
+
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": env,
+        "creationflags": (
+            getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        ),
+    }
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    _ACTION_RESULTS.pop("gateway-restart", None)
+    _ACTION_PROCS["gateway-restart"] = proc
+
+    # Also log to the action log file for the /api/actions/status endpoint.
+    try:
+        with open(log_path, "ab") as f:
+            f.write(
+                f"\n=== gateway-restart (visible terminal) started "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} PID={proc.pid} ===\n".encode()
+            )
+    except OSError:
+        pass
+
+    return proc
 
 
 @app.post("/api/clio/update")
