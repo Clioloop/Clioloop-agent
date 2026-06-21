@@ -1334,16 +1334,24 @@ def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
 
     # Build the clio command using the same interpreter.
     # Use `clio` binary if available (same as terminal), fall back to -m.
+    # Pass the active profile explicitly so the spawned restart targets the
+    # *same* gateway/config the dashboard backend is running for — the backend
+    # launches with ``--profile X`` but a bare ``clio gateway restart`` would
+    # otherwise re-resolve the profile from active_profile/CLIO_HOME. Harmless
+    # on the default profile (``_profile_arg`` returns "").
     from shutil import which as _which
+    from clio_cli.gateway import _profile_arg
+    profile_arg = _profile_arg()  # e.g. "--profile coder" or ""
+    profile_part = f"{profile_arg} " if profile_arg else ""
     clio_bin = _which("clio")
     if clio_bin:
-        cli_cmd = f'"{clio_bin}" gateway restart'
+        cli_cmd = f'"{clio_bin}" {profile_part}gateway restart'
     else:
-        cli_cmd = f'"{sys.executable}" -m clio_cli.main gateway restart'
+        cli_cmd = f'"{sys.executable}" -m clio_cli.main {profile_part}gateway restart'
     # Diagnostic: show the .env token status before restarting, so the
     # user can see if the token was actually saved. Then run the restart.
-    # Use `cmd /k` so the terminal window stays open. stdin=PIPE so `pause`
-    # can read the keypress.
+    # Use `cmd /k` so the terminal window stays open; ``pause`` reads the
+    # keypress from the new console (NOT a pipe — see the popen kwargs below).
     from clio_cli.config import get_env_path
     _env_file = get_env_path()
     _env_display = str(_env_file).replace("\\", "/")
@@ -1368,19 +1376,37 @@ def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
     cmd = ["cmd.exe", "/k", full_cmd]
     env = {**os.environ, "CLIO_NONINTERACTIVE": "1"}
 
+    # CRITICAL: do NOT redirect stdin/stdout/stderr to pipes here. With
+    # CREATE_NEW_CONSOLE the child gets a fresh console, but if its std
+    # handles are pipes, cmd's ``echo`` and clio's prints go into the (never
+    # drained) pipes instead of the visible window — the user just sees an
+    # empty terminal, and ``pause``'s prompt is invisible. Leaving the std
+    # streams unset attaches them to the new console so output is visible and
+    # the keypress works, exactly like a real terminal.
+    #
+    # CREATE_BREAKAWAY_FROM_JOB lets the restart — and the gateway it starts —
+    # escape the Electron app's Job Object (children are killed when the app
+    # exits). This makes the desktop restart behave like a terminal one: the
+    # new gateway survives independently. The flag can raise on systems whose
+    # job object forbids breakaway, so fall back to without it.
+    base_flags = (
+        getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
-        "stdin": subprocess.PIPE,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.STDOUT,
         "env": env,
-        "creationflags": (
-            getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        ),
+        "creationflags": base_flags | breakaway,
     }
 
-    proc = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    except OSError:
+        # Job object forbids breakaway — retry attached to the job.
+        popen_kwargs["creationflags"] = base_flags
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     _ACTION_RESULTS.pop("gateway-restart", None)
     _ACTION_PROCS["gateway-restart"] = proc
 

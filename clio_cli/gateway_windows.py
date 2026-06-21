@@ -649,8 +649,17 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     except OSError:
         # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied" when the
         # parent's job object doesn't permit breakaway (some Windows
-        # Terminal configs). Retry without the breakaway flag — in most
-        # setups pythonw.exe + DETACHED_PROCESS is enough on its own.
+        # Terminal configs, and the Electron desktop app's job object).
+        # Retry without the breakaway flag — in most setups pythonw.exe +
+        # DETACHED_PROCESS is enough on its own. Warn so a job-bound gateway
+        # (which dies when its parent job is torn down — e.g. the desktop app
+        # closes) is at least diagnosable from the restart console / logs.
+        print(
+            "⚠ Gateway could not break away from the parent job object; it may "
+            "be tied to the launching process's lifetime. If the gateway stops "
+            "when you close the app, run `clio gateway restart` from a terminal "
+            "or install the service: clio gateway install"
+        )
         flags_no_breakaway = flags & ~0x01000000
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
@@ -1174,9 +1183,40 @@ def stop() -> None:
 
 
 def restart() -> None:
-    """Stop the gateway then start it again."""
+    """Stop the gateway then start it again.
+
+    Unlike a naive stop()+start(), this *verifies* every old gateway process is
+    actually gone before starting a new one. ``start()`` deliberately no-ops
+    when it sees a gateway already running (so repeated ``start`` is idempotent);
+    during a restart that early-return is a footgun — if ``stop()``'s kill hasn't
+    fully settled, ``start()`` would silently keep the *old* gateway alive, which
+    on Windows still holds the Telegram long-poll and never picks up freshly
+    saved config (e.g. a new bot token). We bound-wait for a clean process table
+    and force-kill any straggler before starting, guaranteeing exactly one fresh
+    gateway after this returns.
+    """
     _assert_windows()
+    from clio_cli.gateway import kill_gateway_processes
+    from gateway.status import get_running_pid
+
     stop()
-    # Give Windows a moment to release the listening port.
+
+    # Bounded wait for the old gateway to actually exit. Poll both the PID file
+    # and the process-table scan; if either still reports a live gateway after
+    # the grace period, hard-kill the strays so start() sees a clean slate.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if get_running_pid() is None and not _gateway_pids():
+            break
+        time.sleep(0.5)
+    else:
+        # Still something alive after the grace window — escalate.
+        killed = kill_gateway_processes(all_profiles=False, force=True)
+        if killed:
+            print(f"✓ Force-killed {killed} lingering gateway process(es)")
+        # Brief settle so the process table / listening port are released.
+        time.sleep(1.0)
+
+    # Give Windows a moment to release the listening port even on the fast path.
     time.sleep(1.0)
     start()

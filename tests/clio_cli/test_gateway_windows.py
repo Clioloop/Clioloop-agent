@@ -808,3 +808,66 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
 
     # Returns True because _pid_exists immediately says "gone".
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+
+def test_restart_starts_fresh_on_clean_stop(monkeypatch):
+    """restart() should stop, observe a clean process table, then start —
+    without force-killing when stop() already settled."""
+    from gateway import status as status_mod
+
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "kill_gateway_processes",
+        lambda *a, **k: calls.append("force_kill") or 0,
+    )
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_: None)
+
+    gateway_windows.restart()
+
+    assert calls == ["stop", "start"]
+
+
+def test_restart_force_kills_straggler_before_start(monkeypatch):
+    """If a gateway is still alive after stop(), restart() must hard-kill it
+    before start() — otherwise start() no-ops and the OLD gateway (which has
+    the stale config / no fresh token) keeps running."""
+    from gateway import status as status_mod
+
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
+    # Process table never clears on its own.
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [4242])
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        gateway,
+        "kill_gateway_processes",
+        lambda *a, **k: calls.append(("force_kill", a, k)) or 1,
+    )
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_: None)
+    # Advance the clock so the bounded wait exits quickly instead of polling
+    # for the real 10s grace window.
+    ticks = iter([0.0, 1.0, 2.0, 100.0, 200.0])
+    monkeypatch.setattr(
+        gateway_windows.time, "monotonic", lambda: next(ticks, 1000.0)
+    )
+
+    gateway_windows.restart()
+
+    assert "stop" in calls
+    assert any(
+        isinstance(c, tuple) and c[0] == "force_kill" for c in calls
+    ), calls
+    # start() runs only AFTER the force-kill.
+    force_idx = next(i for i, c in enumerate(calls) if isinstance(c, tuple) and c[0] == "force_kill")
+    assert calls.index("start") > force_idx
+    # force-kill used force=True
+    fk = next(c for c in calls if isinstance(c, tuple) and c[0] == "force_kill")
+    assert fk[2].get("force") is True
