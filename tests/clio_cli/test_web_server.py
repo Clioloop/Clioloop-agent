@@ -4264,3 +4264,65 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
+
+
+class TestGatewayRestartCmdScript:
+    """The Windows visible-restart .cmd must be free of the cmd.exe quoting
+    trap that broke the old `cmd /k <shell-string>` approach (inner quotes
+    escaped as \\" which cmd.exe mangles into an unrunnable clio path)."""
+
+    # Realistic venv python path WITH a space (forces cmd.exe quoting), which
+    # is exactly the case the old code mangled into \"...\".
+    _PYTHON = "C:\\Users\\John Doe\\clio\\clio-agent\\venv\\Scripts\\python.exe"
+
+    def _write(self, monkeypatch, tmp_path, *, profile_arg="", python=None):
+        from clio_cli import web_server
+        import clio_cli.config as config
+        import clio_cli.gateway as gateway
+
+        python = python or self._PYTHON
+        clio_home = tmp_path / "clio"
+        clio_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(config, "get_clio_home", lambda: clio_home)
+        monkeypatch.setattr(config, "get_env_path", lambda: clio_home / ".env")
+        monkeypatch.setattr(gateway, "get_python_path", lambda: python)
+        monkeypatch.setattr(gateway, "_profile_arg", lambda *a, **k: profile_arg)
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path / "logs")
+
+        path = web_server._write_gateway_restart_cmd()
+        # read_text would translate CRLF->LF; keep the literal bytes too.
+        return path, path.read_text(encoding="utf-8"), path.read_bytes()
+
+    def test_no_backslash_escaped_quotes(self, monkeypatch, tmp_path):
+        """The fatal bug: a path quoted as \\"...\\" — must never appear."""
+        _path, content, _raw = self._write(monkeypatch, tmp_path)
+        assert '\\"' not in content
+
+    def test_invokes_module_not_clio_exe(self, monkeypatch, tmp_path):
+        _path, content, _raw = self._write(monkeypatch, tmp_path)
+        assert "-m clio_cli.main" in content
+        assert "gateway restart" in content
+        # spaced python path → real cmd.exe quotes, never backslash-escaped
+        assert '"C:\\Users\\John Doe\\clio\\clio-agent\\venv\\Scripts\\python.exe"' in content
+        assert "clio.exe" not in content.lower()
+
+    def test_includes_profile_when_named(self, monkeypatch, tmp_path):
+        _path, content, _raw = self._write(monkeypatch, tmp_path, profile_arg="--profile coder")
+        assert "--profile coder" in content
+
+    def test_default_profile_has_no_profile_flag(self, monkeypatch, tmp_path):
+        _path, content, _raw = self._write(monkeypatch, tmp_path, profile_arg="")
+        assert "--profile" not in content
+
+    def test_diagnostic_checks_token_and_allowed_users(self, monkeypatch, tmp_path):
+        _path, content, _raw = self._write(monkeypatch, tmp_path)
+        assert "TELEGRAM_BOT_TOKEN" in content
+        assert "TELEGRAM_ALLOWED_USERS" in content
+        assert "findstr" in content
+
+    def test_crlf_and_pause(self, monkeypatch, tmp_path):
+        path, content, raw = self._write(monkeypatch, tmp_path)
+        assert path.name == "gateway-restart.cmd"
+        assert b"\r\n" in raw  # CRLF on disk (read_text would translate it away)
+        assert content.rstrip().endswith("pause")
+        assert content.startswith("@echo off")

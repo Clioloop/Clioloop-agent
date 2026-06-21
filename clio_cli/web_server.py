@@ -1319,6 +1319,79 @@ async def restart_gateway():
     }
 
 
+def _write_gateway_restart_cmd() -> Path:
+    """Write the ``gateway-restart.cmd`` batch file run by the visible window.
+
+    We write a real ``.cmd`` file and run ``cmd /k <file>`` instead of passing
+    a big shell string as a single argv to ``cmd /k``. The latter is a trap on
+    Windows: ``subprocess.list2cmdline`` escapes every inner ``"`` as ``\\"``,
+    which cmd.exe does NOT understand — so a quoted ``"C:\\...\\clio.exe"`` turns
+    into ``\\"C:\\...\\clio.exe\\"`` ("is not recognized"), and ``if exist
+    \\"...\\.env\\"`` always falls to the else branch (bogus ".env not found").
+    A batch file sidesteps every one of cmd.exe's argv-quoting rules; we quote
+    each path with cmd.exe's *own* rules via ``_quote_cmd_script_arg``.
+
+    The restart is invoked through the venv **console** ``python.exe`` (so its
+    output is visible in the window) running ``-m clio_cli.main … gateway
+    restart`` — never ``clio.exe`` off PATH, which may not resolve in the new
+    console's environment.
+    """
+    from clio_cli.config import get_clio_home, get_env_path
+    from clio_cli.gateway import _profile_arg, get_python_path
+    from clio_cli.gateway_windows import _quote_cmd_script_arg
+
+    clio_home = str(Path(get_clio_home()).resolve())
+    env_file = str(get_env_path())
+    env_display = env_file.replace("\\", "/")
+    qenv = _quote_cmd_script_arg(env_file)
+
+    python_path = get_python_path()  # venv Scripts\python.exe (console)
+    profile_arg = _profile_arg(clio_home)  # "--profile coder" or ""
+    prog_args = [python_path, "-m", "clio_cli.main"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "restart"])
+    restart_line = " ".join(_quote_cmd_script_arg(a) for a in prog_args)
+
+    lines = [
+        "@echo off",
+        "rem Clio gateway restart (desktop) — generated, safe to delete",
+        'set "PYTHONIOENCODING=utf-8"',
+        f'set "CLIO_HOME={clio_home}"',
+        "echo === Telegram Bot Token Check ===",
+        (
+            f"if exist {qenv} "
+            f'(findstr /C:"TELEGRAM_BOT_TOKEN" {qenv} >nul '
+            "&& echo Token found in .env "
+            "|| echo WARNING: Token NOT found in .env) "
+            f"else (echo WARNING: .env file not found at {env_display})"
+        ),
+        (
+            f"if exist {qenv} "
+            f'(findstr /C:"TELEGRAM_ALLOWED_USERS" {qenv} >nul '
+            "&& echo Allowed users: set "
+            "|| echo WARNING: Allowed users NOT set "
+            "- the bot ignores messages from senders not in TELEGRAM_ALLOWED_USERS) "
+            "else (echo .)"
+        ),
+        "echo.",
+        "echo === Restarting Gateway ===",
+        restart_line,
+        "echo.",
+        "echo === Gateway restart complete ===",
+        "echo You can close this window.",
+        "pause",
+    ]
+    content = "\r\n".join(lines) + "\r\n"
+
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    script_path = _ACTION_LOG_DIR / "gateway-restart.cmd"
+    tmp = script_path.with_suffix(".cmd.tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(script_path)
+    return script_path
+
+
 def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
     """Spawn ``clio gateway restart`` in a visible cmd.exe window on Windows.
 
@@ -1327,53 +1400,19 @@ def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
     in its own session — completely independent of the dashboard backend's
     process tree. This mirrors exactly what happens when the user opens a
     terminal and types ``clio gateway restart``.
+
+    The actual commands live in a generated ``.cmd`` file (see
+    ``_write_gateway_restart_cmd``) so cmd.exe never sees backslash-escaped
+    quotes — running ``cmd /k <file>`` is a single quoted token cmd handles
+    cleanly.
     """
     log_file_name = _ACTION_LOG_FILES["gateway-restart"]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name
 
-    # Build the clio command using the same interpreter.
-    # Use `clio` binary if available (same as terminal), fall back to -m.
-    # Pass the active profile explicitly so the spawned restart targets the
-    # *same* gateway/config the dashboard backend is running for — the backend
-    # launches with ``--profile X`` but a bare ``clio gateway restart`` would
-    # otherwise re-resolve the profile from active_profile/CLIO_HOME. Harmless
-    # on the default profile (``_profile_arg`` returns "").
-    from shutil import which as _which
-    from clio_cli.gateway import _profile_arg
-    profile_arg = _profile_arg()  # e.g. "--profile coder" or ""
-    profile_part = f"{profile_arg} " if profile_arg else ""
-    clio_bin = _which("clio")
-    if clio_bin:
-        cli_cmd = f'"{clio_bin}" {profile_part}gateway restart'
-    else:
-        cli_cmd = f'"{sys.executable}" -m clio_cli.main {profile_part}gateway restart'
-    # Diagnostic: show the .env token status before restarting, so the
-    # user can see if the token was actually saved. Then run the restart.
-    # Use `cmd /k` so the terminal window stays open; ``pause`` reads the
-    # keypress from the new console (NOT a pipe — see the popen kwargs below).
-    from clio_cli.config import get_env_path
-    _env_file = get_env_path()
-    _env_display = str(_env_file).replace("\\", "/")
-    full_cmd = (
-        f'echo === Telegram Bot Token Check ==='
-        f' & if exist "{_env_file}" ('
-        f' findstr /C:"TELEGRAM_BOT_TOKEN" "{_env_file}" > nul'
-        f' && echo Token found in .env'
-        f' || echo WARNING: Token NOT found in .env'
-        f' ) else ('
-        f' echo WARNING: .env file not found at {_env_display}'
-        f' )'
-        f' & echo.'
-        f' & echo === Restarting Gateway ==='
-        f' & {cli_cmd}'
-        f' & echo.'
-        f' & echo === Gateway restart complete ==='
-        f' & echo You can close this window.'
-        f' & pause'
-    )
+    script_path = _write_gateway_restart_cmd()
 
-    cmd = ["cmd.exe", "/k", full_cmd]
+    cmd = ["cmd.exe", "/k", str(script_path)]
     env = {**os.environ, "CLIO_NONINTERACTIVE": "1"}
 
     # CRITICAL: do NOT redirect stdin/stdout/stderr to pipes here. With
