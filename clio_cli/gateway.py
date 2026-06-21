@@ -335,6 +335,18 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         "clio-gateway.exe",
         "gateway/run.py",
     ]
+    # Substrings that disqualify a match — these are NOT gateway processes
+    # even if they contain a gateway scan pattern. Without this, the
+    # desktop app's dashboard backend (``clio_cli.main --profile X dashboard``)
+    # matches ``clio_cli.main --profile`` and gets killed by
+    # kill_gateway_processes(), taking down the very process that spawned
+    # the restart — so the restart appears to "not work" from the UI.
+    exclude_substrings = [
+        " dashboard",
+        " dashboard ",
+        "/dashboard",
+        " clio_cli.main dashboard",
+    ]
     current_home = str(get_clio_home().resolve())
     current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
@@ -432,6 +444,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd_lc = current_cmd.lower()
                     if any(p in current_cmd_lc for p in patterns) and (
                         all_profiles or _matches_current_profile(current_cmd)
+                    ) and not any(
+                        ex in current_cmd_lc for ex in exclude_substrings
                     ):
                         try:
                             _append_unique_pid(pids, int(pid_str), exclude_pids)
@@ -458,6 +472,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             cmdline_lc = cmdline.lower()
                             if any(p in cmdline_lc for p in patterns) and (
                                 all_profiles or _matches_current_profile(cmdline)
+                            ) and not any(
+                                ex in cmdline_lc for ex in exclude_substrings
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
                         except (OSError, PermissionError):
@@ -502,6 +518,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     command_lc = command.lower()
                     if any(pattern in command_lc for pattern in patterns) and (
                         all_profiles or _matches_current_profile(command)
+                    ) and not any(
+                        ex in command_lc for ex in exclude_substrings
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
