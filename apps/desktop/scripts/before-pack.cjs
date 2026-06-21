@@ -56,9 +56,12 @@ function cleanStaleAppOutDir(appOutDir) {
     return false
   }
   // Recursive + force so a half-written tree (read-only bits, partial files)
-  // can't block the wipe. retry/maxRetries rides out transient EBUSY on
-  // Windows where an AV/indexer may briefly hold a handle.
-  fs.rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  // can't block the wipe. On Windows, a running Clio.exe or antivirus/indexer
+  // may hold a handle on the directory for several seconds; use more retries
+  // with longer delays to ride out the lock instead of failing immediately.
+  const maxRetries = process.platform === 'win32' ? 15 : 5
+  const retryDelay = process.platform === 'win32' ? 500 : 100
+  fs.rmSync(appOutDir, { recursive: true, force: true, maxRetries, retryDelay })
   return true
 }
 

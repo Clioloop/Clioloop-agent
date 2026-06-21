@@ -7272,15 +7272,25 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     # Drop the half-written unpacked dir too: an interrupted prior pack leaves
     # a partial tree that poisons the rename even after the zip is fixed.
     # (before-pack.cjs also handles this, but clearing it here makes the retry
-    # robust even if the hook is somehow skipped.)
+    # robust even if the hook is somehow skipped.) On Windows, retry with
+    # delays to ride out EBUSY from a just-killed Clio.exe releasing handles.
     release_dir = desktop_dir / "release"
     if release_dir.is_dir():
         for unpacked in release_dir.glob("*-unpacked"):
-            try:
-                shutil.rmtree(unpacked, ignore_errors=True)
+            success = False
+            for attempt in range(5):
+                try:
+                    shutil.rmtree(unpacked, ignore_errors=True)
+                    if not unpacked.exists():
+                        success = True
+                        break
+                except OSError:
+                    pass
+                if _is_windows():
+                    import time as _time
+                    _time.sleep(0.5 * (attempt + 1))
+            if success or not unpacked.exists():
                 removed.append(unpacked)
-            except OSError:
-                pass
 
     return removed
 
@@ -7511,6 +7521,38 @@ def cmd_gui(args: argparse.Namespace):
     print(f"→ Launching packaged Clio Desktop: {packaged_executable}")
     launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
+
+
+def _kill_running_desktop_exe() -> None:
+    """Kill any running Clio.exe (Electron desktop app) on Windows.
+
+    The Electron app's process holds file handles on
+    ``apps/desktop/release/win-unpacked/``, which causes EBUSY errors when
+    ``clio update`` tries to rebuild the desktop app. By killing the running
+    instance before the build, we let electron-builder clean and re-stage
+    the directory cleanly.
+
+    Best-effort: never raises, never blocks. The desktop app's auto-updater
+    relaunches it after the update completes.
+    """
+    if not _is_windows():
+        return
+    try:
+        result = subprocess.run(
+            ["taskkill", "/IM", "Clio.exe", "/F", "/T"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        if result.returncode == 0:
+            print("  ✓ Stopped running Clio Desktop before rebuild")
+            # Give Windows a moment to release file handles
+            import time as _time
+            _time.sleep(1.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
 
 
 def _find_stale_dashboard_pids(
@@ -10545,14 +10587,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
+
+            # On Windows, a running Clio.exe (the Electron desktop app) holds
+            # file handles on release/win-unpacked/, causing EBUSY when
+            # electron-builder tries to clean and re-stage it. Kill any running
+            # Clio.exe processes before the build to prevent this. Best-effort:
+            # never raises, never blocks the build. The desktop app's
+            # auto-updater will relaunch it after the update completes.
+            if _is_windows():
+                _kill_running_desktop_exe()
+
             _desktop_build_cmd = [sys.executable, "-m", "clio_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
-            # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv — this covers a still-settling rebuild window
-            # the first wait didn't fully catch.
+            # look hung). The _desktop_build_cmd already retries once
+            # internally (purging the Electron cache on failure), so there is
+            # no need for an outer retry here — a second outer call would
+            # produce 4 full build cycles (2 outer × 2 inner), each taking
+            # 1+ minute, which is what caused the installer "looping" on
+            # Windows when EBUSY made every attempt fail.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0:
-                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `clio desktop` to retry)")
 
