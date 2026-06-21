@@ -184,7 +184,9 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)
     cwd = str(Path(__file__).resolve().parent.parent)
-    elevated_python = _derive_venv_pythonw(sys.executable)
+    # Use the uv-aware resolver (base pythonw for uv venvs) so the elevated
+    # child doesn't respawn a visible console — same reasoning as gateway.cmd.
+    elevated_python = _resolve_detached_python(sys.executable)[0]
     try:
         result = ctypes.windll.shell32.ShellExecuteW(
             None,
@@ -353,6 +355,17 @@ def _build_gateway_cmd_script(
     the per-user PATH the Scheduled Task was created with, and forcibly
     rewriting PATH tends to break Homebrew/nvm-style installations.
     """
+    # Resolve the interpreter the SAME way the direct-spawn path does. For
+    # uv-managed venvs, ``venv\Scripts\pythonw.exe`` is a launcher that starts
+    # hidden but then RESPAWNS the base interpreter as console ``python.exe`` —
+    # which opens a visible Windows Terminal tab (the dreaded "second window").
+    # ``_resolve_detached_python`` detects uv venvs and returns the base
+    # ``pythonw.exe`` directly plus the venv site-packages to put on PYTHONPATH,
+    # so the gateway runs truly windowless. (See _build_gateway_argv, which uses
+    # the same resolver for the non-cmd direct spawn.)
+    pythonw_path, venv_dir_path, extra_pythonpath = _resolve_detached_python(python_path)
+    venv_dir = str(venv_dir_path)
+
     lines = ["@echo off", f"rem {_TASK_DESCRIPTION}"]
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
     lines.append(f'set "CLIO_HOME={clio_home}"')
@@ -360,10 +373,16 @@ def _build_gateway_cmd_script(
     lines.append('set "CLIO_GATEWAY_DETACHED=1"')
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports clio_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    if extra_pythonpath:
+        # uv venv: we run the BASE pythonw.exe directly (not the venv launcher),
+        # so the repo + venv site-packages must be on PYTHONPATH for imports to
+        # resolve. Mirrors _build_gateway_argv's _prepend_pythonpath().
+        from clio_cli.gateway import PROJECT_ROOT
 
-    pythonw_path = _derive_venv_pythonw(python_path)
+        pp = os.pathsep.join([str(PROJECT_ROOT), *extra_pythonpath])
+        lines.append(f'set "PYTHONPATH={pp};%PYTHONPATH%"')
+
     prog_args = [pythonw_path, "-m", "clio_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
@@ -1082,6 +1101,15 @@ def start() -> None:
                 return
 
     if task_installed:
+        # Refresh the wrapper script before running it so existing installs pick
+        # up fixes to _build_gateway_cmd_script (e.g. the uv-venv windowless
+        # interpreter) without requiring a manual `clio gateway install`. The
+        # task's /TR still points at the same gateway.cmd path; we only rewrite
+        # its contents. Best-effort: a failed rewrite must not block the start.
+        try:
+            _write_task_script()
+        except (OSError, RuntimeError):
+            pass
         code, _out, err = _exec_schtasks(["/Run", "/TN", get_task_name()])
         if code == 0:
             _report_gateway_start(f"Scheduled Task {get_task_name()!r}")

@@ -871,3 +871,104 @@ def test_restart_force_kills_straggler_before_start(monkeypatch):
     # force-kill used force=True
     fk = next(c for c in calls if isinstance(c, tuple) and c[0] == "force_kill")
     assert fk[2].get("force") is True
+
+
+def test_gateway_cmd_script_uv_venv_uses_base_pythonw_and_pythonpath(monkeypatch):
+    """For uv venvs the wrapper must run the BASE pythonw.exe (not the venv
+    launcher, which respawns a visible console) and set PYTHONPATH so imports
+    still resolve. Regression for the "second window opens" report."""
+    base_pythonw = r"C:\Python311\pythonw.exe"
+    venv_dir = r"C:\Clio\clio-agent\venv"
+    site_packages = r"C:\Clio\clio-agent\venv\Lib\site-packages"
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (base_pythonw, venv_dir, [site_packages]),
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        r"C:\Clio\clio-agent\venv\Scripts\python.exe",
+        r"C:\Clio\clio-agent",
+        r"C:\ClioHome",
+        "",
+    )
+
+    assert base_pythonw in content
+    # The venv launcher pythonw must NOT be what we launch.
+    assert r"venv\Scripts\pythonw.exe" not in content
+    assert "set \"PYTHONPATH=" in content
+    assert site_packages in content
+    assert "gateway run" in content
+
+
+def test_gateway_cmd_script_non_uv_venv_has_no_pythonpath(monkeypatch):
+    """Standard (non-uv) venvs keep the launcher and add no PYTHONPATH line."""
+    launcher = r"C:\Clio\clio-agent\venv\Scripts\pythonw.exe"
+    venv_dir = r"C:\Clio\clio-agent\venv"
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (launcher, venv_dir, []),
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        r"C:\Clio\clio-agent\venv\Scripts\python.exe",
+        r"C:\Clio\clio-agent",
+        r"C:\ClioHome",
+        "",
+    )
+
+    assert launcher in content
+    assert "PYTHONPATH" not in content
+    assert "gateway run" in content
+
+
+def test_start_refreshes_task_script_before_running(monkeypatch):
+    """start() must regenerate gateway.cmd before `schtasks /Run` so existing
+    installs pick up wrapper fixes (e.g. the windowless interpreter) without a
+    manual reinstall."""
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Clio_Gateway")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: calls.append("refresh"))
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: calls.append(("schtasks", tuple(args))) or (0, "", ""),
+    )
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
+
+    gateway_windows.start()
+
+    assert "refresh" in calls
+    run_idx = next(i for i, c in enumerate(calls) if isinstance(c, tuple) and c[0] == "schtasks" and c[1][0] == "/Run")
+    assert calls.index("refresh") < run_idx
+
+
+def test_start_survives_task_script_refresh_failure(monkeypatch):
+    """A failed wrapper refresh must not block the gateway from starting."""
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Clio_Gateway")
+
+    def _boom():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gateway_windows, "_write_task_script", _boom)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: calls.append(("schtasks", tuple(args))) or (0, "", ""),
+    )
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
+
+    gateway_windows.start()
+
+    assert any(isinstance(c, tuple) and c[0] == "schtasks" and c[1][0] == "/Run" for c in calls)
+    assert any(c == ("report_start", "Scheduled Task 'Clio_Gateway'") for c in calls)

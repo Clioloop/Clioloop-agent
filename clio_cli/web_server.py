@@ -1378,8 +1378,9 @@ def _write_gateway_restart_cmd() -> Path:
         "echo === Restarting Gateway ===",
         restart_line,
         "echo.",
-        "echo === Gateway restart complete ===",
-        "echo You can close this window.",
+        "echo === Gateway is starting in the background ===",
+        "echo Please wait about 30 seconds, then send your bot a message in Telegram.",
+        "echo You can close this window now.",
         "pause",
     ]
     content = "\r\n".join(lines) + "\r\n"
