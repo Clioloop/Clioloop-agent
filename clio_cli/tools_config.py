@@ -2105,6 +2105,16 @@ def _visible_providers(
     if cat.get("name") == "Text-to-Speech":
         visible.extend(_plugin_tts_providers())
 
+    # For managed (logged-in) users, promote the portal Supertonic TTS row
+    # to the top so it's the default selection — not Edge TTS.
+    if (
+        cat.get("name") == "Text-to-Speech"
+        and features.provider_auth_present
+    ):
+        managed_tts = [p for p in visible if p.get("managed_feature") == "tts"]
+        if managed_tts:
+            visible = managed_tts + [p for p in visible if p not in managed_tts]
+
     return [p for p in visible if not _is_retired_managed_gateway_provider(p)]
 
 

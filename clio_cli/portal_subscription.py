@@ -340,7 +340,13 @@ def apply_managed_defaults(
             config[key] = section
         if not isinstance(section, dict):
             continue
-        if str(section.get("provider") or "").strip() not in {"", "fal", "vidu", "clioloop", "omni-loop"}:
+        # For TTS, "edge" (the free default) is also overridable so managed
+        # users who start with Edge TTS get auto-upgraded to portal Supertonic.
+        current_provider = str(section.get("provider") or "").strip()
+        overridable = {"", "fal", "vidu", "clioloop", "omni-loop"}
+        if key == "tts":
+            overridable.add("edge")
+        if current_provider not in overridable:
             continue
         use_gateway_value = section.get("use_gateway")
         use_gateway_set = use_gateway_value is not None
@@ -365,7 +371,10 @@ def apply_managed_defaults(
         # vendor route without a separate provider prompt.
         if key == "web" and not section.get("backend"):
             section["backend"] = "firecrawl"
-        elif key == "tts" and not section.get("provider"):
+        elif key == "tts" and (
+            not section.get("provider")
+            or str(section.get("provider") or "").strip() == "edge"
+        ):
             section["provider"] = "openai"
         elif key == "browser" and not section.get("cloud_provider"):
             section["cloud_provider"] = "browser-use"

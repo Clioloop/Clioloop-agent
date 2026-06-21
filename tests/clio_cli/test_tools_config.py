@@ -775,6 +775,40 @@ def test_tts_gateway_selects_omni_loop_row_not_openai(monkeypatch):
     assert _is_provider_active(openai, direct_cfg) is True
 
 
+def test_managed_tts_provider_promoted_to_top_for_logged_in_users(monkeypatch):
+    """When a managed user is logged in, the portal Supertonic TTS row should
+    be promoted to the top of the visible provider list — not Edge TTS."""
+    from types import SimpleNamespace
+    from clio_cli.tools_config import _visible_providers
+
+    cat = TOOL_CATEGORIES["tts"]
+
+    # Managed user logged in → Supertonic row first
+    monkeypatch.setattr(
+        "clio_cli.tools_config.get_managed_subscription_features",
+        lambda config, force_fresh=False: SimpleNamespace(
+            features={"tts": SimpleNamespace(managed_by_provider=True)},
+            provider_auth_present=True,
+            account_info=None,
+        ),
+    )
+    visible = _visible_providers(cat, {})
+    assert visible[0]["managed_feature"] == "tts"
+    assert "Supertonic" in visible[0]["name"]
+
+    # Non-managed user → Edge TTS still first
+    monkeypatch.setattr(
+        "clio_cli.tools_config.get_managed_subscription_features",
+        lambda config, force_fresh=False: SimpleNamespace(
+            features={},
+            provider_auth_present=False,
+            account_info=None,
+        ),
+    )
+    visible = _visible_providers(cat, {})
+    assert visible[0]["tts_provider"] == "edge"
+
+
 def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
     config = {"platform_toolsets": {"cli": ["web"]}}
     seen = {}
@@ -921,6 +955,43 @@ def test_first_install_managed_auto_configures_video_gen(monkeypatch):
     assert config["video_gen"]["use_gateway"] is True
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
+
+
+def test_managed_defaults_migrates_edge_tts_to_portal_supertonic(monkeypatch):
+    """A managed user whose config still has tts.provider=edge (the free
+    default) should be auto-upgraded to the portal Supertonic gateway."""
+    from types import SimpleNamespace
+    from clio_cli.portal_subscription import apply_managed_defaults
+
+    monkeypatch.setattr(
+        "clio_cli.portal_subscription.get_managed_subscription_features",
+        lambda config, force_fresh=False: SimpleNamespace(
+            features={"tts": SimpleNamespace(available=True, managed_by_provider=True)},
+        ),
+    )
+    config = {"tts": {"provider": "edge"}}
+    configured = apply_managed_defaults(config)
+    assert "tts" in configured
+    assert config["tts"]["provider"] == "openai"
+    assert config["tts"]["use_gateway"] is True
+
+
+def test_managed_defaults_preserves_explicit_edge_with_gateway_false(monkeypatch):
+    """If the user explicitly set tts.provider=edge AND use_gateway=false,
+    apply_managed_defaults should respect that and NOT override."""
+    from types import SimpleNamespace
+    from clio_cli.portal_subscription import apply_managed_defaults
+
+    monkeypatch.setattr(
+        "clio_cli.portal_subscription.get_managed_subscription_features",
+        lambda config, force_fresh=False: SimpleNamespace(
+            features={"tts": SimpleNamespace(available=True, managed_by_provider=True)},
+        ),
+    )
+    config = {"tts": {"provider": "edge", "use_gateway": False}}
+    configured = apply_managed_defaults(config)
+    assert "tts" not in configured
+    assert config["tts"]["provider"] == "edge"
 
 
 def test_managed_defaults_migrates_partial_video_gateway_config(monkeypatch):
