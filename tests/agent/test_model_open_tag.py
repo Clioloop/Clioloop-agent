@@ -7,6 +7,12 @@ def test_free_managed_model():
     assert model_open_tag("openai/gpt-oss-120b:free") == "(free)"
 
 
+def test_free_managed_promo_model():
+    # GLM 5.2 is the portal's free promo model — a paid model whose cost we
+    # absorb, NOT an OpenRouter ":free" variant. The constant match catches it.
+    assert model_open_tag("z-ai/glm-5.2") == "(free)"
+
+
 def test_free_openrouter_suffix():
     assert model_open_tag("tencent/hy3-preview:free") == "(free)"
 

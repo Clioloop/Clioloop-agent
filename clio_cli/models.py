@@ -153,9 +153,14 @@ def _xai_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     # Offline fallback only — the live portal /api/v1/models is authoritative and
     # tier-filtered (free → the one free model; paid → the full OpenRouter
-    # catalog). All ids are OpenRouter `vendor/model`; the free `:free` model is
-    # last so the silent-default invariants hold (override is in-list, not index 0).
+    # catalog). All ids are OpenRouter `vendor/model`. The free promo model is
+    # FIRST so the recommended-default and silent-default both land on it —
+    # paid users get it pre-selected at setup instead of the most expensive
+    # frontier model (Opus). They can switch up in `clio model` if they want.
     "managed": [
+        # Free promo model (every tier) — Clioloop absorbs the cost.
+        # This MUST be first so get_recommended_default_model picks it.
+        "z-ai/glm-5.2",
         # Frontier — OpenRouter `vendor/model` ids (available to paid plans).
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
@@ -163,8 +168,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "x-ai/grok-4.3",
         "tencent/hy3-preview",
-        # Free model (every tier) — a tool-capable OpenRouter `:free` id.
-        "openai/gpt-oss-120b:free",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -1152,14 +1155,14 @@ _PROVIDER_ALIASES = {
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
     # The portal's free model: works for every tier and is cost-safe (€0) as a
     # silent default.
-    "managed": "openai/gpt-oss-120b:free",
+    "managed": "z-ai/glm-5.2",
 }
 
 # Silent default for FREE-tier managed accounts. A paid model would 403
 # (`model_not_in_plan`) for free accounts, so a missing model must fall back to
 # the portal's free model. The interactive picker uses the live tier-filtered
 # catalog from the portal.
-_MANAGED_FREE_SILENT_DEFAULT = "openai/gpt-oss-120b:free"
+_MANAGED_FREE_SILENT_DEFAULT = "z-ai/glm-5.2"
 
 
 def get_default_model_for_provider(provider: str, *, free_tier: bool = False) -> str:

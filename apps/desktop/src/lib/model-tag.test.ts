@@ -7,6 +7,10 @@ describe('managedModelTag', () => {
     expect(managedModelTag('openai/gpt-oss-120b:free')).toBe('(free)')
   })
 
+  it('tags the GLM 5.2 promo model as (free)', () => {
+    expect(managedModelTag('z-ai/glm-5.2')).toBe('(free)')
+  })
+
   it('tags :free OpenRouter variants as (free)', () => {
     expect(managedModelTag('tencent/hy3-preview:free')).toBe('(free)')
   })

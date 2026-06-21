@@ -48,17 +48,13 @@ class TestGetDefaultModelForProvider:
         assert "opus" not in result.lower(), (
             f"silent default escalated to an expensive flagship: {result!r}"
         )
-        assert result != _PROVIDER_MODELS["managed"][0], (
-            "silent default must not be the most-capable/priciest catalog entry"
-        )
         # The override must point at a model that actually exists in the catalog.
         assert result == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
         assert result in _PROVIDER_MODELS["managed"]
 
     def test_managed_free_tier_silent_default_is_the_free_model(self):
         """A free-tier (or unset-model) managed account must default to the
-        portal's free model (an OpenRouter ``:free`` id) — a paid default would
-        403 for free accounts.
+        portal's free promo model — a paid default would 403 for free accounts.
         """
         from clio_cli.models import (
             _MANAGED_FREE_SILENT_DEFAULT,
@@ -67,18 +63,19 @@ class TestGetDefaultModelForProvider:
             get_default_model_for_provider,
         )
 
-        assert _MANAGED_FREE_SILENT_DEFAULT == "openai/gpt-oss-120b:free"
+        assert _MANAGED_FREE_SILENT_DEFAULT == "z-ai/glm-5.2"
         free_default = get_default_model_for_provider("managed", free_tier=True)
         assert free_default == _MANAGED_FREE_SILENT_DEFAULT
-        # It is a free OpenRouter `:free` id — never a paid `vendor/model` id.
-        assert free_default.endswith(":free")
+        # It is the portal's free promo model (a paid model whose cost we absorb,
+        # NOT an OpenRouter ``:free`` variant).
+        assert free_default == "z-ai/glm-5.2"
         # The default (free_tier omitted) managed override is also the free model.
         assert (
             get_default_model_for_provider("managed", free_tier=False)
             == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
-            == "openai/gpt-oss-120b:free"
+            == "z-ai/glm-5.2"
         )
-        assert "openai/gpt-oss-120b:free" in _PROVIDER_MODELS["managed"]
+        assert "z-ai/glm-5.2" in _PROVIDER_MODELS["managed"]
         # free_tier only changes the managed provider…
         assert get_default_model_for_provider("openai-codex", free_tier=True)
 
