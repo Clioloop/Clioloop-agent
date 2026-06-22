@@ -1737,6 +1737,17 @@ def _prompt_telegram_bot_token() -> str | None:
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
+    from clio_cli.platform_dependencies import (
+        PlatformDependencyError,
+        ensure_platform_ready,
+    )
+
+    try:
+        ensure_platform_ready("telegram", prompt=True)
+    except PlatformDependencyError as exc:
+        print_error(str(exc))
+        return
+
     existing = get_env_value("TELEGRAM_BOT_TOKEN")
     if existing:
         print_info("Telegram: already configured")

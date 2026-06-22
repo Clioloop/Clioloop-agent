@@ -4383,6 +4383,18 @@ def _setup_standard_platform(platform: dict):
     label = platform["label"]
     token_var = platform["token_var"]
 
+    if platform.get("key") == "telegram":
+        from clio_cli.platform_dependencies import (
+            PlatformDependencyError,
+            ensure_platform_ready,
+        )
+
+        try:
+            ensure_platform_ready("telegram", prompt=True)
+        except PlatformDependencyError as exc:
+            print_error(f"  {exc}")
+            return
+
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
 

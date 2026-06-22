@@ -111,7 +111,11 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-timeout==2.4.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==82.0.1"]  # starlette: CVE-2026-48710
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
+# Telegram is a first-class interaction surface in the official installers.
+# Keep a narrow extra so [all] can guarantee it without pulling every optional
+# messaging SDK (Discord voice, Slack, Matrix, ...).
+telegram = ["python-telegram-bot[webhooks]==22.6"]
+messaging = ["clioloop-agent[telegram]", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
@@ -228,7 +232,7 @@ all = [
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, messaging (telegram/discord/slack),
+  #   modal, daytona, optional messaging platforms (discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
   #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
   #
@@ -241,6 +245,7 @@ all = [
   "clioloop-agent[cron]",
   "clioloop-agent[cli]",
   "clioloop-agent[pty]",
+  "clioloop-agent[telegram]",
   "clioloop-agent[mcp]",
   "clioloop-agent[homeassistant]",
   "clioloop-agent[sms]",

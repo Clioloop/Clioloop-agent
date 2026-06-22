@@ -1060,6 +1060,35 @@ class TestWebServerEndpoints:
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
 
+    def test_update_telegram_platform_rejects_false_success_when_dependency_fails(
+        self, monkeypatch
+    ):
+        import clio_cli.platform_dependencies as platform_deps
+        from clio_cli.config import load_env
+
+        error = platform_deps.PlatformDependencyError(
+            platform_id="telegram",
+            feature="platform.telegram",
+            reason="automatic dependency installation failed",
+            install_command="uv pip install 'python-telegram-bot[webhooks]==22.6'",
+        )
+        monkeypatch.setattr(
+            platform_deps,
+            "ensure_platform_ready",
+            lambda *args, **kwargs: (_ for _ in ()).throw(error),
+        )
+
+        response = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={
+                "enabled": True,
+                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+            },
+        )
+
+        assert response.status_code == 503
+        assert "TELEGRAM_BOT_TOKEN" not in load_env()
+
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
         assert resp.status_code == 200
@@ -1110,6 +1139,73 @@ class TestWebServerEndpoints:
                 None,
             )
         ]
+
+    def test_telegram_onboarding_start_fails_before_pairing_when_dependency_unavailable(
+        self, monkeypatch
+    ):
+        import clio_cli.platform_dependencies as platform_deps
+        import clio_cli.web_server as ws
+
+        error = platform_deps.PlatformDependencyError(
+            platform_id="telegram",
+            feature="platform.telegram",
+            reason="automatic dependency installation failed",
+            install_command="uv pip install 'python-telegram-bot[webhooks]==22.6'",
+        )
+        monkeypatch.setattr(
+            platform_deps,
+            "ensure_platform_ready",
+            lambda *args, **kwargs: (_ for _ in ()).throw(error),
+        )
+        remote = monkeypatch.setattr(
+            ws,
+            "_telegram_onboarding_request_sync",
+            lambda *args, **kwargs: pytest.fail("remote pairing must not be created"),
+        )
+
+        response = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+
+        assert remote is None
+        assert response.status_code == 503
+        assert "Telegram support is unavailable" in response.json()["detail"]
+
+    def test_telegram_onboarding_apply_preserves_pairing_on_dependency_failure(
+        self, monkeypatch
+    ):
+        import clio_cli.platform_dependencies as platform_deps
+        import clio_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+            ws._telegram_onboarding_pairings["pair-retry"] = ws._TelegramOnboardingPairing(
+                poll_token="poll-secret",
+                expires_at="2027-05-18T00:00:00.000Z",
+                expires_at_ts=9999999999.0,
+                bot_token="123456:SECRET",
+                bot_username="clio_retry_bot",
+            )
+
+        error = platform_deps.PlatformDependencyError(
+            platform_id="telegram",
+            feature="platform.telegram",
+            reason="lazy installs disabled",
+            install_command="uv pip install 'python-telegram-bot[webhooks]==22.6'",
+        )
+        monkeypatch.setattr(
+            platform_deps,
+            "ensure_platform_ready",
+            lambda *args, **kwargs: (_ for _ in ()).throw(error),
+        )
+
+        response = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-retry/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert response.status_code == 503
+        with ws._telegram_onboarding_lock:
+            assert "pair-retry" in ws._telegram_onboarding_pairings
+
 
     def test_telegram_onboarding_ready_and_apply_never_returns_bot_token(self, monkeypatch):
         import clio_cli.web_server as ws

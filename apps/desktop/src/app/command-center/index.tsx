@@ -358,7 +358,9 @@ export function CommandCenterView({
         const started = kind === 'restart' ? await restartGateway() : await updateClio()
         let nextStatus: ActionStatusResponse | null = null
 
-        for (let attempt = 0; attempt < 18; attempt += 1) {
+        const maxAttempts = kind === 'restart' ? 65 : 300
+
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
           await new Promise(resolve => window.setTimeout(resolve, 1200))
           const polled = await getActionStatus(started.name, 180)
           nextStatus = polled
@@ -368,6 +370,11 @@ export function CommandCenterView({
           if (!polled.running) {
             break
           }
+        }
+
+        if (nextStatus && !nextStatus.running && nextStatus.exit_code !== 0) {
+          const detail = nextStatus.lines.filter(Boolean).slice(-6).join('\n')
+          throw new Error(detail || `${nextStatus.name} failed (exit ${String(nextStatus.exit_code)}).`)
         }
 
         if (!nextStatus) {

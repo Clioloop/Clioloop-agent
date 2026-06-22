@@ -9077,6 +9077,64 @@ def _refresh_active_lazy_features() -> None:
         print("  `clio update` once the upstream issue is resolved.")
 
 
+def _repair_configured_platform_dependencies() -> bool:
+    """Ensure every configured profile has importable platform adapters.
+
+    The venv is shared by all profiles, while credentials live in separate
+    ``.env`` files.  Scan only for credential presence (never print values),
+    then reconcile the union once.  This intentionally runs even when Git is
+    already current: source freshness and environment health are independent.
+    """
+
+    try:
+        from dotenv import dotenv_values
+        from clio_constants import get_default_clio_root
+        from clio_cli.platform_dependencies import repair_configured_platforms
+    except Exception as exc:
+        logger.debug("Configured platform repair skipped (import failed): %s", exc)
+        return True
+
+    root = get_default_clio_root()
+    homes = [root]
+    profiles_root = root / "profiles"
+    if profiles_root.is_dir():
+        try:
+            homes.extend(path for path in profiles_root.iterdir() if path.is_dir())
+        except OSError:
+            pass
+
+    merged_markers: dict[str, str] = {}
+    for home in homes:
+        env_path = home / ".env"
+        if not env_path.is_file():
+            continue
+        try:
+            parsed = dotenv_values(env_path)
+        except Exception as exc:
+            logger.debug("Could not inspect configured platforms in %s: %s", env_path, exc)
+            continue
+        for key, value in parsed.items():
+            if value:
+                # Values never leave this local mapping and are never logged.
+                merged_markers[str(key)] = "configured"
+
+    results = repair_configured_platforms(merged_markers, prompt=False)
+    if not results:
+        return True
+
+    print()
+    print(f"→ Verifying dependencies for {len(results)} configured platform(s)...")
+    ok = True
+    for platform_id, status in results.items():
+        if status == "ready":
+            print(f"  ✓ {platform_id}: ready")
+        else:
+            ok = False
+            reason = status.split(": ", 1)[-1]
+            print(f"  ⚠ {platform_id}: {reason}")
+    return ok
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -10119,7 +10177,10 @@ def _cmd_update_pip(args):
         print("✗ Update failed")
         sys.exit(1)
 
+    dependencies_ready = _repair_configured_platform_dependencies()
     print("✓ Update complete! Restart clio to use the new version.")
+    if not dependencies_ready:
+        print("⚠ One or more configured messaging platforms still need dependencies.")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -10351,6 +10412,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _invalidate_update_cache()
 
+            dependencies_ready = _repair_configured_platform_dependencies()
+
             # Even if origin is up to date, the fork may be behind upstream
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
@@ -10373,6 +10436,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
             print("✓ Already up to date!")
+            if not dependencies_ready:
+                print("⚠ Source is current, but configured platform dependency repair failed.")
             return
 
         print(f"→ Found {commit_count} new commit(s)")
@@ -10572,6 +10637,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         _refresh_active_lazy_features()
+        _repair_configured_platform_dependencies()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")

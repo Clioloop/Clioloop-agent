@@ -44,3 +44,9 @@ def _suppress_concurrent_clio_gate(request, monkeypatch):
     monkeypatch.setattr(
         _cli_main, "_detect_concurrent_clio_instances", lambda *_a, **_k: []
     )
+    # Update tests exercise Git/dependency orchestration with synthetic homes.
+    # Never let them inspect or repair the developer's real configured
+    # messaging platforms; focused tests override this stub explicitly.
+    monkeypatch.setattr(
+        _cli_main, "_repair_configured_platform_dependencies", lambda: True
+    )

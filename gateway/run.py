@@ -4561,7 +4561,23 @@ class GatewayRunner:
                 continue
             enabled_platform_count += 1
             
-            adapter = self._create_adapter(platform, platform_config)
+            from clio_cli.platform_dependencies import PlatformDependencyError
+
+            try:
+                adapter = self._create_adapter(platform, platform_config)
+            except PlatformDependencyError as exc:
+                reason = str(exc)
+                logger.error("%s dependency error: %s", platform.value, reason)
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="fatal",
+                    error_code="dependency_missing",
+                    error_message=reason,
+                )
+                startup_nonretryable_errors.append(
+                    f"{platform.value}: {reason}"
+                )
+                continue
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value
@@ -6860,10 +6876,12 @@ class GatewayRunner:
         # Fall through to built-in adapters below
 
         if platform == Platform.TELEGRAM:
-            from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
-            if not check_telegram_requirements():
-                logger.warning("Telegram: python-telegram-bot not installed")
-                return None
+            from gateway.platforms.telegram import (
+                TelegramAdapter,
+                require_telegram_dependencies,
+            )
+
+            require_telegram_dependencies()
             adapter = TelegramAdapter(config)
             # Apply Telegram notification mode from config.  Controls whether
             # intermediate messages (tool progress, streaming, status) trigger

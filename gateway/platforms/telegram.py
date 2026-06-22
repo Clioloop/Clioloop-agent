@@ -109,11 +109,11 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 MAX_COMMANDS_PER_SCOPE = 30
 
 
-def check_telegram_requirements() -> bool:
-    """Check if Telegram dependencies are available.
+def require_telegram_dependencies() -> None:
+    """Ensure Telegram dependencies are installed and importable.
 
     If python-telegram-bot is missing, attempts to lazy-install it via
-    ``tools.lazy_deps.ensure("platform.telegram")``. After a successful
+    the shared platform dependency contract. After a successful
     install, re-imports the SDK and flips ``TELEGRAM_AVAILABLE`` to True
     so the adapter's class-level type aliases get rebound.
     """
@@ -122,12 +122,15 @@ def check_telegram_requirements() -> bool:
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
-        return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.telegram", prompt=False)
-    except Exception:
-        return False
+        return
+
+    from clio_cli.platform_dependencies import (
+        PlatformDependencyError,
+        ensure_platform_ready,
+    )
+    from tools.lazy_deps import feature_install_command
+
+    ensure_platform_ready("telegram", prompt=False)
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
@@ -143,8 +146,13 @@ def check_telegram_requirements() -> bool:
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
-    except ImportError:
-        return False
+    except ImportError as exc:
+        raise PlatformDependencyError(
+            platform_id="telegram",
+            feature="platform.telegram",
+            reason="the installed SDK could not be imported",
+            install_command=feature_install_command("platform.telegram"),
+        ) from exc
     Update = _Update
     Bot = _Bot
     Message = _Message
@@ -161,7 +169,23 @@ def check_telegram_requirements() -> bool:
     ChatType = _CtT
     HTTPXRequest = _HR
     TELEGRAM_AVAILABLE = True
-    return True
+
+
+def check_telegram_requirements() -> bool:
+    """Backward-compatible boolean Telegram dependency check.
+
+    New startup/setup code should call :func:`require_telegram_dependencies`
+    so the actionable failure is not discarded.
+    """
+
+    from clio_cli.platform_dependencies import PlatformDependencyError
+
+    try:
+        require_telegram_dependencies()
+        return True
+    except PlatformDependencyError as exc:
+        logger.error("Telegram dependency unavailable: %s", exc)
+        return False
 
 
 # Matches every character that MarkdownV2 requires to be backslash-escaped

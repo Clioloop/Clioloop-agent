@@ -3415,8 +3415,28 @@ async def _telegram_onboarding_request(
     )
 
 
+async def _ensure_messaging_platform_ready(platform_id: str) -> None:
+    """Provision a built-in platform SDK without blocking the API loop."""
+
+    from clio_cli.platform_dependencies import (
+        PlatformDependencyError,
+        ensure_platform_ready,
+    )
+
+    try:
+        await asyncio.to_thread(ensure_platform_ready, platform_id, prompt=False)
+    except PlatformDependencyError as exc:
+        _log.error("Messaging dependency preparation failed for %s: %s", platform_id, exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/api/messaging/telegram/onboarding/start")
 async def start_telegram_onboarding(body: TelegramOnboardingStart):
+    # Prepare the local adapter before creating a remote bot/pairing.  A failed
+    # dependency install is recoverable here; after bot creation it would leave
+    # the user with valid credentials and a false-success restart flow.
+    await _ensure_messaging_platform_ready("telegram")
+
     bot_name = (body.bot_name or "Clioloop").strip() or "Clioloop"
     payload = await _telegram_onboarding_request(
         "POST",
@@ -3565,6 +3585,11 @@ async def apply_telegram_onboarding(
                 detail="Telegram setup is not ready yet.",
             )
 
+    # Defense in depth for pairings that remained open while the environment
+    # changed.  On failure the pairing record is deliberately preserved so the
+    # user can repair dependencies and press Save again.
+    await _ensure_messaging_platform_ready("telegram")
+
     try:
         save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
         save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
@@ -3618,6 +3643,16 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     allowed_env = set(entry["env_vars"])
     try:
+        credential_keys = {
+            "telegram": {"TELEGRAM_BOT_TOKEN"},
+        }.get(platform_id, set())
+        is_being_configured = body.enabled is True or any(
+            key in credential_keys and bool(value.strip())
+            for key, value in body.env.items()
+        )
+        if is_being_configured:
+            await _ensure_messaging_platform_ready(platform_id)
+
         for key in body.clear_env:
             if key not in allowed_env:
                 raise HTTPException(
@@ -3672,12 +3707,6 @@ async def test_messaging_platform(platform_id: str):
             else "Platform setup is incomplete."
         )
         return {"ok": False, "state": payload["state"], "message": message}
-    if not payload["gateway_running"]:
-        return {
-            "ok": False,
-            "state": payload["state"],
-            "message": "Gateway is not running. Restart the gateway to connect this platform.",
-        }
     if payload["state"] == "connected":
         return {
             "ok": True,
@@ -3689,6 +3718,12 @@ async def test_messaging_platform(platform_id: str):
             "ok": False,
             "state": payload["state"],
             "message": payload["error_message"],
+        }
+    if not payload["gateway_running"]:
+        return {
+            "ok": False,
+            "state": payload["state"],
+            "message": "Gateway is not running. Restart the gateway to connect this platform.",
         }
     return {
         "ok": False,

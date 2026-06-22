@@ -5,6 +5,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
+from clio_cli.platform_dependencies import PlatformDependencyError
 
 
 class _FatalAdapter(BasePlatformAdapter):
@@ -63,6 +64,37 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
     assert ok is True
     assert runner.should_exit_cleanly is True
     assert "already using this Telegram bot token" in runner.exit_reason
+
+
+@pytest.mark.asyncio
+async def test_runner_surfaces_missing_platform_dependency_as_fatal(monkeypatch, tmp_path):
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    runtime_updates = []
+    error = PlatformDependencyError(
+        platform_id="telegram",
+        feature="platform.telegram",
+        reason="automatic dependency installation failed",
+        install_command="uv pip install 'python-telegram-bot[webhooks]==22.6'",
+    )
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda *args: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(
+        runner,
+        "_update_platform_runtime_status",
+        lambda platform, **status: runtime_updates.append((platform, status)),
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert runner.should_exit_cleanly is True
+    assert "Telegram support is unavailable" in runner.exit_reason
+    assert runtime_updates[0][1]["error_code"] == "dependency_missing"
+    assert runtime_updates[0][1]["platform_state"] == "fatal"
 
 
 @pytest.mark.asyncio

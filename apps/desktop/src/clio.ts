@@ -41,6 +41,7 @@ import type {
 } from '@/types/clio'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const PLATFORM_PROVISION_TIMEOUT_MS = 330_000
 
 export type {
   ActionResponse,
@@ -455,7 +456,8 @@ export function updateMessagingPlatform(
   return window.clioDesktop.api<{ ok: boolean; platform: string }>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
-    body
+    body,
+    timeoutMs: PLATFORM_PROVISION_TIMEOUT_MS
   })
 }
 
@@ -756,7 +758,8 @@ export function startTelegramOnboarding(body: { bot_name?: string }): Promise<Te
   return window.clioDesktop.api<TelegramOnboardingStart>({
     body,
     method: 'POST',
-    path: '/api/messaging/telegram/onboarding/start'
+    path: '/api/messaging/telegram/onboarding/start',
+    timeoutMs: PLATFORM_PROVISION_TIMEOUT_MS
   })
 }
 
@@ -773,7 +776,8 @@ export function applyTelegramOnboarding(
   return window.clioDesktop.api<TelegramOnboardingApplyResult>({
     body,
     method: 'POST',
-    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
+    timeoutMs: PLATFORM_PROVISION_TIMEOUT_MS
   })
 }
 

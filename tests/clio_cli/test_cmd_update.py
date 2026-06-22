@@ -173,10 +173,11 @@ class TestCmdUpdateBranchFallback:
         assert len(pull_cmds) == 1
         assert "main" in pull_cmds[0]
 
+    @patch("clio_cli.main._repair_configured_platform_dependencies", return_value=True)
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_already_up_to_date(
-        self, mock_run, _mock_which, mock_args, capsys
+        self, mock_run, _mock_which, mock_repair, mock_args, capsys
     ):
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="0"
@@ -186,6 +187,7 @@ class TestCmdUpdateBranchFallback:
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        mock_repair.assert_called_once_with()
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]

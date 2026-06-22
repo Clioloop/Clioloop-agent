@@ -4,23 +4,28 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   applyTelegramOnboarding,
   cancelTelegramOnboarding,
+  getActionStatus,
   getTelegramOnboardingStatus,
   restartGateway,
   startTelegramOnboarding,
-  type TelegramOnboardingStart
+  type TelegramOnboardingStart,
+  testMessagingPlatform
 } from '@/clio'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
-import { notify, notifyError } from '@/store/notifications'
+import { notify } from '@/store/notifications'
 
 const TELEGRAM_USER_ID_RE = /^\d{1,15}$/
 const POLL_MS = 2000
+const RESTART_POLL_MS = 1200
+const RESTART_POLL_ATTEMPTS = 65
+const CONNECTION_POLL_ATTEMPTS = 45
 
-type Phase = 'applying' | 'idle' | 'ready' | 'starting' | 'waiting'
+type Phase = 'applying' | 'connecting' | 'idle' | 'ready' | 'restart_failed' | 'starting' | 'waiting'
 
 interface TelegramQrSetupProps {
-  /** Called after the bot token is saved + the gateway restart is requested. */
+  /** Called only after the gateway reports Telegram connected. */
   onApplied?: () => void
 }
 
@@ -143,6 +148,61 @@ export function TelegramQrSetup({ onApplied }: TelegramQrSetupProps) {
     setNewAllowedId('')
   }, [newAllowedId])
 
+  const restartAndVerify = useCallback(async () => {
+    setPhase('connecting')
+    setError('')
+
+    try {
+      const started = await restartGateway()
+      let completed = false
+
+      for (let attempt = 0; attempt < RESTART_POLL_ATTEMPTS; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, RESTART_POLL_MS))
+        const status = await getActionStatus(started.name, 200)
+
+        if (status.running) {continue}
+        completed = true
+
+        if (status.exit_code !== 0) {
+          const detail = status.lines.filter(Boolean).slice(-6).join('\n')
+          throw new Error(detail || `Gateway restart failed (exit ${String(status.exit_code)}).`)
+        }
+
+        break
+      }
+
+      if (!completed) {
+        throw new Error('Gateway restart is taking too long. Check the gateway logs, then retry connection.')
+      }
+
+      let lastMessage = 'Telegram has not reported a connection yet.'
+
+      for (let attempt = 0; attempt < CONNECTION_POLL_ATTEMPTS; attempt += 1) {
+        const result = await testMessagingPlatform('telegram')
+        lastMessage = result.message || lastMessage
+
+        if (result.ok) {
+          reset()
+          notify({ kind: 'success', message: 'Telegram bot connected', title: 'Telegram' })
+          onApplied?.()
+
+          return
+        }
+
+        if (result.state === 'fatal') {
+          throw new Error(lastMessage)
+        }
+
+        await new Promise(resolve => window.setTimeout(resolve, POLL_MS))
+      }
+
+      throw new Error(`${lastMessage} Retry the gateway connection.`)
+    } catch (err) {
+      setPhase('restart_failed')
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [onApplied, reset])
+
   const apply = useCallback(async () => {
     if (!setup) {return}
 
@@ -157,22 +217,12 @@ export function TelegramQrSetup({ onApplied }: TelegramQrSetupProps) {
 
     try {
       await applyTelegramOnboarding(setup.pairing_id, { allowed_user_ids: allowedIds })
-      reset()
-      notify({ kind: 'success', message: 'Telegram bot saved', title: 'Telegram' })
-
-      try {
-        await restartGateway()
-        notify({ kind: 'success', message: 'Gateway restarting…', title: 'Telegram' })
-      } catch (restartErr) {
-        notifyError(restartErr, 'Telegram saved, but the gateway restart failed — restart it manually.')
-      }
-
-      onApplied?.()
+      await restartAndVerify()
     } catch (err) {
       setPhase('ready')
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [setup, allowedIds, reset, onApplied])
+  }, [setup, allowedIds, restartAndVerify])
 
   return (
     <div
@@ -195,7 +245,26 @@ export function TelegramQrSetup({ onApplied }: TelegramQrSetupProps) {
         </Button>
       )}
 
-      {phase === 'starting' && <p className="mt-3 text-[0.8125rem] text-(--ui-text-secondary)">Starting…</p>}
+      {phase === 'starting' && (
+        <p className="mt-3 text-[0.8125rem] text-(--ui-text-secondary)">Preparing Telegram support…</p>
+      )}
+
+      {phase === 'connecting' && (
+        <p className="mt-3 text-[0.8125rem] text-(--ui-text-secondary)">
+          Restarting the gateway and verifying Telegram…
+        </p>
+      )}
+
+      {phase === 'restart_failed' && (
+        <div className="mt-3 flex items-center gap-2">
+          <Button onClick={() => void restartAndVerify()} size="sm">
+            Retry gateway connection
+          </Button>
+          <Button onClick={reset} size="sm" variant="ghost">
+            Close
+          </Button>
+        </div>
+      )}
 
       {(phase === 'waiting' || phase === 'starting') && qrDataUrl && (
         <div className="mt-3 flex flex-col items-center gap-2">

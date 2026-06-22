@@ -54,6 +54,35 @@ function stateBadge(state: string) {
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForAction(name: string, attempts = 65) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await sleep(1200);
+    const status = await api.getActionStatus(name, 200);
+    if (status.running) continue;
+    if (status.exit_code !== 0) {
+      const detail = status.lines.filter(Boolean).slice(-6).join("\n");
+      throw new Error(
+        detail || `${name} failed (exit ${String(status.exit_code)}).`,
+      );
+    }
+    return;
+  }
+  throw new Error(`${name} is taking too long. Check the action logs.`);
+}
+
+async function waitForPlatformConnection(platformId: string, attempts = 45) {
+  let lastMessage = `${platformId} has not reported a connection yet.`;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await api.testMessagingPlatform(platformId);
+    lastMessage = result.message || lastMessage;
+    if (result.ok) return;
+    if (result.state === "fatal") throw new Error(lastMessage);
+    await sleep(2000);
+  }
+  throw new Error(`${lastMessage} Retry the gateway connection.`);
+}
 
 function formatExpiry(expiresAt: string): string {
   const ms = Date.parse(expiresAt) - Date.now();
@@ -179,11 +208,11 @@ export default function ChannelsPage() {
   const handleRestart = async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      const started = await api.restartGateway();
+      await waitForAction(started.name);
+      showToast("Gateway restarted", "success");
       setRestartNeeded(false);
-      // Give the gateway a moment to come up, then refresh status.
-      setTimeout(() => void load(), 4000);
+      await load();
     } catch (e) {
       showToast(`Failed to restart: ${e}`, "error");
     } finally {
@@ -477,7 +506,13 @@ function TelegramOnboardingPanel({
   );
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [phase, setPhase] = useState<
-    "idle" | "starting" | "waiting" | "ready" | "applying"
+    | "idle"
+    | "starting"
+    | "waiting"
+    | "ready"
+    | "applying"
+    | "connecting"
+    | "restart_failed"
   >("idle");
   const [botUsername, setBotUsername] = useState<string | null>(null);
   const [allowedIds, setAllowedIds] = useState<string[]>([]);
@@ -598,6 +633,25 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
+  const restartAndVerify = async () => {
+    setPhase("connecting");
+    setError("");
+    try {
+      const started = await api.restartGateway();
+      await waitForAction(started.name);
+      await waitForPlatformConnection("telegram");
+      resetSetup();
+      showToast("Telegram connected", "success");
+      setRestartNeeded(false);
+      await onChanged();
+    } catch (restartError) {
+      setPhase("restart_failed");
+      setError(String(restartError));
+      onRestartNeeded();
+      showToast(`Telegram saved; connection failed: ${restartError}`, "error");
+    }
+  };
+
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
@@ -610,18 +664,7 @@ function TelegramOnboardingPanel({
       await api.applyTelegramOnboarding(setup.pairing_id, {
         allowed_user_ids: allowedIds,
       });
-      resetSetup();
-      showToast("Telegram saved", "success");
-      try {
-        await api.restartGateway();
-        showToast("Gateway restarting…", "success");
-        setRestartNeeded(false);
-        setTimeout(() => void onChanged(), 4000);
-      } catch (restartError) {
-        onRestartNeeded();
-        showToast(`Telegram saved; restart failed: ${restartError}`, "error");
-      }
-      await onChanged();
+      await restartAndVerify();
     } catch (applyError) {
       setPhase("ready");
       setError(String(applyError));
@@ -641,10 +684,15 @@ function TelegramOnboardingPanel({
           size="sm"
           className="uppercase"
           onClick={() => void start()}
-          disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
+          disabled={
+            phase === "starting" ||
+            phase === "waiting" ||
+            phase === "applying" ||
+            phase === "connecting"
+          }
           prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
         >
-          {phase === "starting" ? "Starting…" : "Set up with QR"}
+          {phase === "starting" ? "Preparing Telegram support…" : "Set up with QR"}
         </Button>
         {platform.configured && (
           <span className="text-xs text-muted-foreground">
@@ -656,6 +704,23 @@ function TelegramOnboardingPanel({
       {error && (
         <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {phase === "connecting" && (
+        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner /> Restarting the gateway and verifying Telegram…
+        </div>
+      )}
+
+      {phase === "restart_failed" && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => void restartAndVerify()} prefix={<RotateCw className="h-4 w-4" />}>
+            Retry connection
+          </Button>
+          <Button size="sm" ghost onClick={resetSetup}>
+            Close
+          </Button>
         </div>
       )}
 
