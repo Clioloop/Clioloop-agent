@@ -221,7 +221,11 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
     monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
-    monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Clio\venv\Scripts\python.exe")
+    # The elevated child must use the VENV interpreter (carries site-packages so
+    # deps import across the UAC boundary), resolved via get_python_path — NOT
+    # the base interpreter / sys.executable.
+    monkeypatch.setattr(gateway, "get_python_path", lambda: r"C:\Clio\venv\Scripts\python.exe")
+    monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Python311\python.exe")
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
 
     assert gateway_windows._launch_elevated_gateway_command("install", ["--start-now", "--elevated-handoff"])
@@ -229,7 +233,8 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     assert len(calls) == 1
     _hwnd, verb, executable, params, cwd, show = calls[0]
     assert verb == "runas"
-    assert executable.endswith("pythonw.exe")
+    # Must be the VENV pythonw (under venv\Scripts), not the base interpreter.
+    assert executable == r"C:\Clio\venv\Scripts\pythonw.exe"
     assert "--profile alice gateway install --start-now --elevated-handoff" in params
     assert show == 0
     assert cwd
@@ -289,6 +294,78 @@ def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run
     assert any(call[0] == "report_start" for call in calls)
     out = capsys.readouterr().out
     assert "auto-start installed for Windows login" in out
+
+
+def test_install_non_admin_success_needs_no_uac(monkeypatch, tmp_path, capsys):
+    """A non-admin fresh install whose schtasks /Create SUCCEEDS must register
+    the task and start the gateway WITHOUT any UAC prompt or elevation handoff.
+    (The /SC ONLOGON /RL LIMITED task needs no admin for the current user.)"""
+    script_path = tmp_path / "Clio_Gateway_alice.cmd"
+    calls = []
+
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (True, True))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: False)  # NOT admin
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Clio_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, script_path: (True, "Created Scheduled Task 'Clio_Gateway_alice'"),
+    )
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda path=None: calls.append(("spawn", path)) or 12345)
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
+    monkeypatch.setattr(
+        gateway_windows,
+        "_launch_elevated_install",
+        lambda *a, **k: calls.append(("elevate", a, k)) or True,
+    )
+
+    def _no_prompt(prompt, default=True):
+        raise AssertionError(f"unexpected prompt: {prompt!r}")
+    monkeypatch.setattr(setup, "prompt_yes_no", _no_prompt)
+
+    gateway_windows.install(force=False)
+
+    assert not any(c[0] == "elevate" for c in calls), "must not elevate when create succeeds"
+    assert ("spawn", None) in calls
+    out = capsys.readouterr().out
+    assert "administrator approval" not in out
+    assert "UAC" not in out
+
+
+def test_start_noninteractive_installs_assume_yes_with_start_defaults(monkeypatch, capsys):
+    """The desktop restart (CLIO_NONINTERACTIVE=1) must auto-install with
+    assume_yes + start defaults so the visible window shows no y/n prompts."""
+    captured = {}
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setenv("CLIO_NONINTERACTIVE", "1")
+
+    def fake_install(force=False, *, start_now=None, start_on_login=None, **kwargs):
+        captured.update(
+            force=force, start_now=start_now, start_on_login=start_on_login,
+            assume_yes=kwargs.get("assume_yes"),
+        )
+
+    monkeypatch.setattr(gateway_windows, "install", fake_install)
+    # After the (faked) install, pretend nothing came up so start() returns early
+    # without trying schtasks /Run.
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    gateway_windows.start()
+
+    assert captured == {
+        "force": False,
+        "assume_yes": True,
+        "start_now": True,
+        "start_on_login": True,
+    }
 
 
 def test_install_scheduled_task_success_does_not_auto_start(monkeypatch, tmp_path, capsys):
@@ -404,6 +481,13 @@ def test_install_assume_yes_elevates_without_uac_prompt(monkeypatch, tmp_path, c
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Clio_Gateway_alice")
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
     monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: False)
+    # Non-elevated create is attempted first now; make it hit Access Denied so the
+    # post-failure path escalates to UAC.
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, script_path: (False, "schtasks /Create failed (code 1): ERROR: Access is denied."),
+    )
     monkeypatch.setattr(
         gateway_windows,
         "_launch_elevated_install",

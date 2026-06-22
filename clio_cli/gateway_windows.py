@@ -184,9 +184,18 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)
     cwd = str(Path(__file__).resolve().parent.parent)
-    # Use the uv-aware resolver (base pythonw for uv venvs) so the elevated
-    # child doesn't respawn a visible console — same reasoning as gateway.cmd.
-    elevated_python = _resolve_detached_python(sys.executable)[0]
+    # The elevated child must be able to import clio_cli AND its dependencies.
+    # Use the VENV pythonw launcher (not the base interpreter): it activates the
+    # venv's site-packages, and cwd is the repo so ``-m clio_cli.main`` resolves.
+    # NOTE: do NOT use _resolve_detached_python(...)[0] here — that returns the
+    # BASE pythonw and relies on PYTHONPATH being set, which does not survive the
+    # UAC/runas boundary (ShellExecuteW can't pass env), so the child would die
+    # on a missing-deps import. get_python_path() finds the venv independently of
+    # sys.executable (which may be the base console python after the round-4
+    # restart change).
+    from clio_cli.gateway import get_python_path
+
+    elevated_python = _derive_venv_pythonw(get_python_path())
     try:
         result = ctypes.windll.shell32.ShellExecuteW(
             None,
@@ -850,29 +859,14 @@ def install(
     task_name = get_task_name()
     script_path = _write_task_script()
 
-    # On machines where the current user's scheduled-task ACL is locked down,
-    # schtasks /Create or /Change can sit for the timeout before returning
-    # Access Denied. We already collected all intent questions above, so avoid
-    # a mysterious post-question pause: ask for UAC before touching schtasks.
-    if not _is_running_as_admin() and not elevated_handoff:
-        from clio_cli.setup import prompt_yes_no
-
-        print("↻ Scheduled Task install may need administrator approval on this Windows account.")
-        print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
-        if assume_yes or prompt_yes_no("  Open the UAC prompt now?", False):
-            if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
-                print("✓ Launched elevated Clio gateway install prompt.")
-                if start_now:
-                    print("  Approve the Windows UAC prompt; the elevated install will start the gateway afterwards.")
-                else:
-                    print("  Approve the Windows UAC prompt, then run: clio gateway status")
-                return
-            print("⚠ Falling back to Startup folder because elevation was unavailable or cancelled.")
-        else:
-            print("  Skipped elevation. Falling back to Startup folder.")
-        _install_startup_fallback(script_path, start_now, "administrator approval was not used")
-        return
-
+    # Try the non-elevated create FIRST. A ``/SC ONLOGON /RL LIMITED`` task for
+    # the current user normally needs NO admin, so the common case registers
+    # silently with no UAC at all — and the gateway then runs as the normal user
+    # (manageable by later non-admin restarts). Only if the create actually fails
+    # with Access Denied do we escalate to UAC below (the post-failure block).
+    # (We used to pre-emptively elevate here to dodge a slow Access-Denied
+    # timeout on locked-down ACLs, but that forced a needless UAC on every fresh
+    # install and routed into an environment where deps may not import.)
     ok, detail = _install_scheduled_task(task_name, script_path)
     if ok:
         print(f"✓ {detail}")
@@ -1135,7 +1129,11 @@ def start() -> None:
             # restart process before the gateway starts. Auto-install
             # instead — the user already chose to restart.
             print("✗ Gateway service is not installed — installing now (non-interactive)")
-            install(force=False)
+            # assume_yes + explicit start choices so the visible "Save & restart"
+            # window shows NO y/n prompts: register the login task and start now.
+            # On a normal account this needs no UAC (change #2); only a
+            # locked-down account triggers the native UAC dialog directly.
+            install(force=False, assume_yes=True, start_now=True, start_on_login=True)
             task_installed = is_task_registered()
             startup_installed = is_startup_entry_installed()
             if not task_installed and not startup_installed:
