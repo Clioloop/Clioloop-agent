@@ -4,7 +4,6 @@ contextBridge.exposeInMainWorld('clioDesktop', {
   getConnection: profile => ipcRenderer.invoke('clio:connection', profile),
   touchBackend: profile => ipcRenderer.invoke('clio:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('clio:gateway:ws-url', profile),
-  installGatewayService: () => ipcRenderer.invoke('clio:gateway:install'),
   getBootProgress: () => ipcRenderer.invoke('clio:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('clio:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('clio:connection-config:save', payload),

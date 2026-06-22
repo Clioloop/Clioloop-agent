@@ -48,11 +48,6 @@ export type OnboardingFlow =
       saving: boolean
       status: 'confirming_model'
     }
-  // Final onboarding step: offer to install the gateway as a background service
-  // that starts on login (keeps Clio answering messaging platforms after the
-  // app is closed). `installing` drives the button spinner; `error` shows a
-  // failed attempt while still letting the user skip on through.
-  | { status: 'gateway_install_prompt'; installing: boolean; error?: string }
   | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
 export interface DesktopOnboardingState {
@@ -916,9 +911,10 @@ export async function setOnboardingModel(model: string) {
 
 // User clicked "Start chatting" on the confirm card. The model was already
 // persisted by completeWithModelConfirm (or setOnboardingModel if changed), so
-// advance to the final step: offer to keep the gateway running in the
-// background. The desktop bridge runs the install, so this step is skipped when
-// the bridge isn't available (e.g. the web build).
+// all that's left is to mark onboarding done and unblock the app. The gateway
+// (messaging) is set up by the installer's gateway stage and (re)started from
+// the Messaging settings — onboarding itself never touches it (mirrors
+// upstream hermes-agent).
 export function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
@@ -927,54 +923,6 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
   }
 
   notifyReady(flow.label)
-
-  if (typeof window !== 'undefined' && window.clioDesktop?.installGatewayService) {
-    setFlow({ status: 'gateway_install_prompt', installing: false })
-
-    return
-  }
-
-  completeDesktopOnboarding()
-  ctx.onCompleted?.()
-}
-
-// "Run in the background": install the gateway as a login service via the
-// desktop bridge. On Windows without admin rights this opens the native UAC
-// dialog. Either way we finish onboarding afterwards — a failed install must
-// not trap the user on the final screen.
-export async function installGatewayService(ctx: OnboardingContext) {
-  const { flow } = $desktopOnboarding.get()
-
-  if (flow.status !== 'gateway_install_prompt' || flow.installing) {
-    return
-  }
-
-  setFlow({ status: 'gateway_install_prompt', installing: true })
-
-  try {
-    const res = await window.clioDesktop!.installGatewayService!()
-
-    if (!res?.ok) {
-      setFlow({ status: 'gateway_install_prompt', installing: false, error: res?.error || 'Install failed.' })
-
-      return
-    }
-  } catch (err) {
-    setFlow({
-      status: 'gateway_install_prompt',
-      installing: false,
-      error: err instanceof Error ? err.message : 'Install failed.',
-    })
-
-    return
-  }
-
-  completeDesktopOnboarding()
-  ctx.onCompleted?.()
-}
-
-// "Not now": finish onboarding without installing the background service.
-export function skipGatewayInstall(ctx: OnboardingContext) {
   completeDesktopOnboarding()
   ctx.onCompleted?.()
 }

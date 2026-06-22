@@ -4659,60 +4659,6 @@ ipcMain.handle('clio:backend:touch', async (_event, profile) => {
 })
 ipcMain.handle('clio:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
 
-// Install the gateway as a background service that starts on login. Spawns the
-// resolved `clio` non-interactively so the onboarding screen never blocks on a
-// terminal prompt; on Windows without admin rights this opens the native UAC
-// dialog directly (handled by `clio_cli/gateway_windows.install`).
-ipcMain.handle('clio:gateway:install', async () => {
-  const profile = readActiveDesktopProfile()
-  const installArgs = [
-    ...(profile ? ['--profile', profile] : []),
-    'gateway', 'install',
-    '--non-interactive', '--start-now', '--start-on-login',
-  ]
-  const backend = resolveClioBackend(installArgs)
-  if (!backend || !backend.command || backend.kind === 'bootstrap-needed') {
-    return { ok: false, error: 'Clio agent is not installed yet — finish setup first.' }
-  }
-
-  return await new Promise(resolve => {
-    let child
-    try {
-      child = spawn(backend.command, backend.args, {
-        cwd: CLIO_HOME,
-        env: { ...process.env, CLIO_HOME, ...(backend.env || {}) },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: backend.shell || false,
-        windowsHide: true,
-      })
-    } catch (err) {
-      resolve({ ok: false, error: err.message || 'Failed to launch gateway install' })
-      return
-    }
-
-    let out = ''
-    let err = ''
-    child.stdout?.on('data', d => { out += d.toString() })
-    child.stderr?.on('data', d => { err += d.toString() })
-    // The install is quick (on Windows it hands off to a detached elevated
-    // child and returns). Guard against a hang so the UI never sticks.
-    const timer = setTimeout(() => { try { child.kill() } catch { /* ignore */ } }, 120000)
-    child.on('error', e => {
-      clearTimeout(timer)
-      resolve({ ok: false, error: e.message || 'Failed to launch gateway install' })
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-      const tail = (out || err).trim().split('\n').filter(Boolean).slice(-3).join(' · ')
-      if (code === 0) {
-        resolve({ ok: true, message: tail || 'Gateway will now run in the background and start on login.' })
-      } else {
-        rememberLog(`gateway install exited ${code}: ${(err || out).slice(-500)}`)
-        resolve({ ok: false, error: tail || `Gateway install failed (exit ${code}).` })
-      }
-    })
-  })
-})
 ipcMain.handle('clio:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startClio() call restarts the

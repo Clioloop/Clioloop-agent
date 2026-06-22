@@ -15,8 +15,7 @@ import {
   KeyRound,
   Loader2,
   Sparkles,
-  Terminal,
-  Zap
+  Terminal
 } from '@/lib/icons'
 import {
   OMNI_PROVIDER_BADGE,
@@ -36,7 +35,6 @@ import {
   copyDeviceCode,
   copyExternalCommand,
   dismissFirstRunOnboarding,
-  installGatewayService,
   type OnboardingContext,
   type OnboardingFlow,
   peekPendingProviderOAuth,
@@ -46,7 +44,6 @@ import {
   setOnboardingCode,
   setOnboardingMode,
   setOnboardingModel,
-  skipGatewayInstall,
   startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
@@ -622,10 +619,6 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     return <ConfirmingModelPanel ctx={ctx} flow={flow} />
   }
 
-  if (flow.status === 'gateway_install_prompt') {
-    return <GatewayInstallPromptPanel ctx={ctx} flow={flow} />
-  }
-
   if (flow.status === 'error') {
     return (
       <div className="grid gap-3">
@@ -861,51 +854,6 @@ function ConfirmingModelPanel({
         }}
         open={pickerOpen}
       />
-    </div>
-  )
-}
-
-function GatewayInstallPromptPanel({
-  ctx,
-  flow
-}: {
-  ctx: OnboardingContext
-  flow: Extract<OnboardingFlow, { status: 'gateway_install_prompt' }>
-}) {
-  return (
-    <div className="grid gap-4">
-      <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
-        <Check className="size-4 shrink-0" />
-        <span>You're all set. One last thing.</span>
-      </div>
-
-      <div className="grid gap-3 rounded-2xl border border-border bg-background/60 p-4">
-        <div className="flex items-center gap-2">
-          <Zap className="size-4 shrink-0 text-primary" />
-          <p className="text-sm font-medium">Keep Clio running in the background?</p>
-        </div>
-        <ul className="grid gap-1.5 pl-6 text-sm text-muted-foreground">
-          <li className="list-disc">Stays available and answers your messaging platforms after you close the app.</li>
-          <li className="list-disc">Starts automatically when you sign in to your computer.</li>
-          <li className="list-disc">On Windows you may see a Windows admin (UAC) prompt — approve it to finish.</li>
-        </ul>
-      </div>
-
-      {flow.error && (
-        <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {flow.error}
-        </div>
-      )}
-
-      <div className="flex justify-end gap-2">
-        <Button disabled={flow.installing} onClick={() => skipGatewayInstall(ctx)} variant="outline">
-          Not now
-        </Button>
-        <Button disabled={flow.installing} onClick={() => void installGatewayService(ctx)}>
-          {flow.installing ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
-          {flow.installing ? 'Installing...' : 'Run in the background'}
-        </Button>
-      </div>
     </div>
   )
 }

@@ -11,10 +11,6 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
-      // Install the gateway as a background service that starts on login. On
-      // Windows without admin rights this opens the native UAC dialog directly.
-      // Optional: absent on older preload bridges / non-desktop builds.
-      installGatewayService?: () => Promise<{ ok: boolean; message?: string; error?: string }>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
