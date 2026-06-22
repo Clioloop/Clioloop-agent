@@ -1293,22 +1293,19 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 
 @app.post("/api/gateway/restart")
 async def restart_gateway():
-    """Kick off a ``clio gateway restart`` in the background.
+    """Kick off a ``clio gateway restart`` in the background (all platforms).
 
-    On Windows, spawn a **visible terminal window** running ``clio gateway
-    restart`` so the user can see the stop/start output and the process runs
-    in its own session — detached from the dashboard's process tree. The
-    detached subprocess approach (DETACHED_PROCESS) silently fails to kill
-    the old gateway because Windows process-tree kills don't propagate
-    across session boundaries created by the desktop app's spawn. A visible
-    terminal gives the restart a clean session context identical to what
-    ``clio gateway restart`` gets when run from a real terminal.
+    A plain detached spawn via ``_spawn_clio_action`` — it runs
+    ``<this-venv-python> -m clio_cli.main gateway restart`` so the restart
+    inherits the dashboard backend's venv/PYTHONPATH (imports reliably) and
+    streams to ``gateway-restart.log`` for the dashboard to surface. The
+    ``clio gateway restart`` it runs is itself robust on Windows (it stops the
+    old gateway, waits for it to clear, relaunches via the venv pythonw, and
+    raises if the gateway doesn't come up). Mirrors upstream hermes-agent — no
+    fragile visible cmd window / base-interpreter shim.
     """
     try:
-        if sys.platform == "win32":
-            proc = _spawn_visible_gateway_restart_win()
-        else:
-            proc = _spawn_clio_action(["gateway", "restart"], "gateway-restart")
+        proc = _spawn_clio_action(["gateway", "restart"], "gateway-restart")
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -1317,163 +1314,6 @@ async def restart_gateway():
         "pid": proc.pid,
         "name": "gateway-restart",
     }
-
-
-def _write_gateway_restart_cmd() -> Path:
-    """Write the ``gateway-restart.cmd`` batch file run by the visible window.
-
-    We write a real ``.cmd`` file and run ``cmd /k <file>`` instead of passing
-    a big shell string as a single argv to ``cmd /k``. The latter is a trap on
-    Windows: ``subprocess.list2cmdline`` escapes every inner ``"`` as ``\\"``,
-    which cmd.exe does NOT understand — so a quoted ``"C:\\...\\clio.exe"`` turns
-    into ``\\"C:\\...\\clio.exe\\"`` ("is not recognized"), and ``if exist
-    \\"...\\.env\\"`` always falls to the else branch (bogus ".env not found").
-    A batch file sidesteps every one of cmd.exe's argv-quoting rules; we quote
-    each path with cmd.exe's *own* rules via ``_quote_cmd_script_arg``.
-
-    The restart is invoked through the venv **console** ``python.exe`` (so its
-    output is visible in the window) running ``-m clio_cli.main … gateway
-    restart`` — never ``clio.exe`` off PATH, which may not resolve in the new
-    console's environment.
-    """
-    from clio_cli.config import get_clio_home, get_env_path
-    from clio_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path
-    from clio_cli.gateway_windows import _quote_cmd_script_arg, _resolve_console_python
-
-    clio_home = str(Path(get_clio_home()).resolve())
-    env_file = str(get_env_path())
-    env_display = env_file.replace("\\", "/")
-    qenv = _quote_cmd_script_arg(env_file)
-
-    # Resolve a CONSOLE python that won't respawn a second window. For uv venvs
-    # ``venv\Scripts\python.exe`` is a launcher that opens a new console; use the
-    # base python.exe + PYTHONPATH instead so output stays in THIS window and no
-    # blank second console pops up.
-    python_path, extra_pythonpath = _resolve_console_python(get_python_path())
-    profile_arg = _profile_arg(clio_home)  # "--profile coder" or ""
-    prog_args = [python_path, "-m", "clio_cli.main"]
-    if profile_arg:
-        prog_args.extend(profile_arg.split())
-    prog_args.extend(["gateway", "restart"])
-    restart_line = " ".join(_quote_cmd_script_arg(a) for a in prog_args)
-
-    pythonpath_line = None
-    if extra_pythonpath:
-        pp = os.pathsep.join([str(PROJECT_ROOT), *extra_pythonpath])
-        pythonpath_line = f'set "PYTHONPATH={pp};%PYTHONPATH%"'
-
-    lines = [
-        "@echo off",
-        "rem Clio gateway restart (desktop) — generated, safe to delete",
-        'set "PYTHONIOENCODING=utf-8"',
-        f'set "CLIO_HOME={clio_home}"',
-    ]
-    if pythonpath_line:
-        lines.append(pythonpath_line)
-    lines += [
-        "echo === Telegram Bot Token Check ===",
-        (
-            f"if exist {qenv} "
-            f'(findstr /C:"TELEGRAM_BOT_TOKEN" {qenv} >nul '
-            "&& echo Token found in .env "
-            "|| echo WARNING: Token NOT found in .env) "
-            f"else (echo WARNING: .env file not found at {env_display})"
-        ),
-        (
-            f"if exist {qenv} "
-            f'(findstr /C:"TELEGRAM_ALLOWED_USERS" {qenv} >nul '
-            "&& echo Allowed users: set "
-            "|| echo WARNING: Allowed users NOT set "
-            "- the bot ignores messages from senders not in TELEGRAM_ALLOWED_USERS) "
-            "else (echo .)"
-        ),
-        "echo.",
-        "echo === Restarting Gateway ===",
-        restart_line,
-        "echo.",
-        "echo === Gateway is starting in the background ===",
-        "echo Please wait about 30 seconds, then send your bot a message in Telegram.",
-        "echo You can close this window now.",
-        "pause",
-    ]
-    content = "\r\n".join(lines) + "\r\n"
-
-    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    script_path = _ACTION_LOG_DIR / "gateway-restart.cmd"
-    tmp = script_path.with_suffix(".cmd.tmp")
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(script_path)
-    return script_path
-
-
-def _spawn_visible_gateway_restart_win() -> subprocess.Popen:
-    """Spawn ``clio gateway restart`` in a visible cmd.exe window on Windows.
-
-    Uses CREATE_NEW_CONSOLE so a fresh terminal window appears (the user can
-    see "Gateway stopped" / "Gateway started" output), and the process runs
-    in its own session — completely independent of the dashboard backend's
-    process tree. This mirrors exactly what happens when the user opens a
-    terminal and types ``clio gateway restart``.
-
-    The actual commands live in a generated ``.cmd`` file (see
-    ``_write_gateway_restart_cmd``) so cmd.exe never sees backslash-escaped
-    quotes — running ``cmd /k <file>`` is a single quoted token cmd handles
-    cleanly.
-    """
-    log_file_name = _ACTION_LOG_FILES["gateway-restart"]
-    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _ACTION_LOG_DIR / log_file_name
-
-    script_path = _write_gateway_restart_cmd()
-
-    cmd = ["cmd.exe", "/k", str(script_path)]
-    env = {**os.environ, "CLIO_NONINTERACTIVE": "1"}
-
-    # CRITICAL: do NOT redirect stdin/stdout/stderr to pipes here. With
-    # CREATE_NEW_CONSOLE the child gets a fresh console, but if its std
-    # handles are pipes, cmd's ``echo`` and clio's prints go into the (never
-    # drained) pipes instead of the visible window — the user just sees an
-    # empty terminal, and ``pause``'s prompt is invisible. Leaving the std
-    # streams unset attaches them to the new console so output is visible and
-    # the keypress works, exactly like a real terminal.
-    #
-    # CREATE_BREAKAWAY_FROM_JOB lets the restart — and the gateway it starts —
-    # escape the Electron app's Job Object (children are killed when the app
-    # exits). This makes the desktop restart behave like a terminal one: the
-    # new gateway survives independently. The flag can raise on systems whose
-    # job object forbids breakaway, so fall back to without it.
-    base_flags = (
-        getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-
-    popen_kwargs: Dict[str, Any] = {
-        "cwd": str(PROJECT_ROOT),
-        "env": env,
-        "creationflags": base_flags | breakaway,
-    }
-
-    try:
-        proc = subprocess.Popen(cmd, **popen_kwargs)
-    except OSError:
-        # Job object forbids breakaway — retry attached to the job.
-        popen_kwargs["creationflags"] = base_flags
-        proc = subprocess.Popen(cmd, **popen_kwargs)
-    _ACTION_RESULTS.pop("gateway-restart", None)
-    _ACTION_PROCS["gateway-restart"] = proc
-
-    # Also log to the action log file for the /api/actions/status endpoint.
-    try:
-        with open(log_path, "ab") as f:
-            f.write(
-                f"\n=== gateway-restart (visible terminal) started "
-                f"{time.strftime('%Y-%m-%d %H:%M:%S')} PID={proc.pid} ===\n".encode()
-            )
-    except OSError:
-        pass
-
-    return proc
 
 
 @app.post("/api/clio/update")

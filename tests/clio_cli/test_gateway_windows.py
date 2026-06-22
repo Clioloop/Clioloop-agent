@@ -894,21 +894,17 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
 
 
-def test_restart_starts_fresh_on_clean_stop(monkeypatch):
-    """restart() should stop, observe a clean process table, then start —
-    without force-killing when stop() already settled."""
-    from gateway import status as status_mod
-
+def test_restart_clean_stop_then_start(monkeypatch):
+    """restart(): stop → wait-absent → start → wait-ready; no force-kill when
+    the old gateway clears on its own."""
     calls = []
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
     monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
-    monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda **k: True)
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **k: [123])
     monkeypatch.setattr(
-        gateway,
-        "kill_gateway_processes",
-        lambda *a, **k: calls.append("force_kill") or 0,
+        gateway, "kill_gateway_processes", lambda *a, **k: calls.append("force_kill") or 0
     )
     monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_: None)
 
@@ -917,94 +913,63 @@ def test_restart_starts_fresh_on_clean_stop(monkeypatch):
     assert calls == ["stop", "start"]
 
 
-def test_restart_force_kills_straggler_before_start(monkeypatch):
-    """If a gateway is still alive after stop(), restart() must hard-kill it
-    before start() — otherwise start() no-ops and the OLD gateway (which has
-    the stale config / no fresh token) keeps running."""
-    from gateway import status as status_mod
-
+def test_restart_force_kills_when_not_absent(monkeypatch):
+    """If the old gateway is still present after stop(), restart() force-kills,
+    re-waits, then starts."""
     calls = []
+    absent = iter([False, True])  # first wait fails, after force-kill it clears
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
     monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
-    # Process table never clears on its own.
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [4242])
-    monkeypatch.setattr(status_mod, "get_running_pid", lambda: 4242)
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda **k: next(absent))
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **k: [123])
     monkeypatch.setattr(
-        gateway,
-        "kill_gateway_processes",
-        lambda *a, **k: calls.append(("force_kill", a, k)) or 1,
+        gateway, "kill_gateway_processes",
+        lambda *a, **k: calls.append(("force_kill", k.get("force"))) or 1,
     )
     monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_: None)
-    # Advance the clock so the bounded wait exits quickly instead of polling
-    # for the real 10s grace window.
-    ticks = iter([0.0, 1.0, 2.0, 100.0, 200.0])
-    monkeypatch.setattr(
-        gateway_windows.time, "monotonic", lambda: next(ticks, 1000.0)
-    )
 
     gateway_windows.restart()
 
-    assert "stop" in calls
-    assert any(
-        isinstance(c, tuple) and c[0] == "force_kill" for c in calls
-    ), calls
-    # start() runs only AFTER the force-kill.
-    force_idx = next(i for i, c in enumerate(calls) if isinstance(c, tuple) and c[0] == "force_kill")
-    assert calls.index("start") > force_idx
-    # force-kill used force=True
-    fk = next(c for c in calls if isinstance(c, tuple) and c[0] == "force_kill")
-    assert fk[2].get("force") is True
+    assert ("force_kill", True) in calls
+    assert calls.index("start") > calls.index(("force_kill", True))
 
 
-def test_gateway_cmd_script_uv_venv_uses_base_pythonw_and_pythonpath(monkeypatch):
-    """For uv venvs the wrapper must run the BASE pythonw.exe (not the venv
-    launcher, which respawns a visible console) and set PYTHONPATH so imports
-    still resolve. Regression for the "second window opens" report."""
-    base_pythonw = r"C:\Python311\pythonw.exe"
-    venv_dir = r"C:\Clio\clio-agent\venv"
-    site_packages = r"C:\Clio\clio-agent\venv\Lib\site-packages"
+def test_restart_raises_when_gateway_not_ready(monkeypatch):
+    """If the relaunch produces no running gateway, restart() raises loudly
+    rather than leaving a silent outage."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "stop", lambda: None)
+    monkeypatch.setattr(gateway_windows, "start", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda **k: True)
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **k: [])  # never came up
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda *_: None)
+
+    with pytest.raises(RuntimeError, match="did not produce a running gateway"):
+        gateway_windows.restart()
+
+
+def test_gateway_cmd_script_uses_venv_launcher_not_base_pythonpath(monkeypatch):
+    """The scheduled-task wrapper must use the VENV pythonw launcher (which
+    activates the venv's site machinery so deps import) and must NOT hand-build
+    a PYTHONPATH around a base interpreter — that silently broke gateway startup.
+    Mirrors upstream hermes-agent."""
     monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda exe: (base_pythonw, venv_dir, [site_packages]),
+        gateway_windows, "_derive_venv_pythonw",
+        lambda exe: exe.replace("python.exe", "pythonw.exe"),
     )
 
     content = gateway_windows._build_gateway_cmd_script(
         r"C:\Clio\clio-agent\venv\Scripts\python.exe",
         r"C:\Clio\clio-agent",
         r"C:\ClioHome",
-        "",
+        "--profile alice",
     )
 
-    assert base_pythonw in content
-    # The venv launcher pythonw must NOT be what we launch.
-    assert r"venv\Scripts\pythonw.exe" not in content
-    assert "set \"PYTHONPATH=" in content
-    assert site_packages in content
-    assert "gateway run" in content
-
-
-def test_gateway_cmd_script_non_uv_venv_has_no_pythonpath(monkeypatch):
-    """Standard (non-uv) venvs keep the launcher and add no PYTHONPATH line."""
-    launcher = r"C:\Clio\clio-agent\venv\Scripts\pythonw.exe"
-    venv_dir = r"C:\Clio\clio-agent\venv"
-    monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda exe: (launcher, venv_dir, []),
-    )
-
-    content = gateway_windows._build_gateway_cmd_script(
-        r"C:\Clio\clio-agent\venv\Scripts\python.exe",
-        r"C:\Clio\clio-agent",
-        r"C:\ClioHome",
-        "",
-    )
-
-    assert launcher in content
+    assert r"venv\Scripts\pythonw.exe" in content  # the venv launcher
     assert "PYTHONPATH" not in content
-    assert "gateway run" in content
+    assert "--replace" not in content
+    assert "--profile alice gateway run" in content
 
 
 def test_start_refreshes_task_script_before_running(monkeypatch):
@@ -1058,40 +1023,9 @@ def test_start_survives_task_script_refresh_failure(monkeypatch):
     assert any(c == ("report_start", "Scheduled Task 'Clio_Gateway'") for c in calls)
 
 
-def test_resolve_console_python_uv_uses_base_python(tmp_path):
-    """uv venvs must run the BASE console python.exe, not the venv launcher
-    (which respawns a new console window)."""
-    venv = tmp_path / "venv"
-    (venv / "Scripts").mkdir(parents=True)
-    (venv / "Lib" / "site-packages").mkdir(parents=True)
-    (venv / "Scripts" / "python.exe").write_text("", encoding="utf-8")
-    base = tmp_path / "base"
-    base.mkdir()
-    (base / "python.exe").write_text("", encoding="utf-8")
-    (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = 0.5.0\n", encoding="utf-8")
-
-    exe, extra = gateway_windows._resolve_console_python(str(venv / "Scripts" / "python.exe"))
-
-    assert exe == str(base / "python.exe")
-    assert extra == [str(venv / "Lib" / "site-packages")]
-
-
-def test_resolve_console_python_non_uv_passthrough(tmp_path):
-    """Standard (non-uv) venvs return the given exe and no extra PYTHONPATH."""
-    venv = tmp_path / "venv"
-    (venv / "Scripts").mkdir(parents=True)
-    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")  # no uv key
-    p = str(venv / "Scripts" / "python.exe")
-
-    exe, extra = gateway_windows._resolve_console_python(p)
-
-    assert exe == p
-    assert extra == []
-
-
-def test_build_gateway_argv_uses_replace(monkeypatch, tmp_path):
-    """The direct-spawn gateway argv must pass --replace so a bypassing start
-    cleanly takes over a stale/old instance (single-instance guarantee)."""
+def test_build_gateway_argv_no_replace(monkeypatch, tmp_path):
+    """The direct-spawn gateway argv must be plain ``gateway run`` (no --replace);
+    single-instance is enforced by the runtime lock. Mirrors upstream."""
     import clio_cli.config as config
     import clio_cli.gateway as gateway
 
@@ -1107,7 +1041,8 @@ def test_build_gateway_argv_uses_replace(monkeypatch, tmp_path):
 
     argv, _wd, _env = gateway_windows._build_gateway_argv()
 
-    assert argv[-3:] == ["gateway", "run", "--replace"]
+    assert argv[-2:] == ["gateway", "run"]
+    assert "--replace" not in argv
 
 
 def test_build_startup_launcher_is_hidden_vbs():

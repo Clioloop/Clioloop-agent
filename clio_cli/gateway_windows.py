@@ -377,17 +377,6 @@ def _build_gateway_cmd_script(
     the per-user PATH the Scheduled Task was created with, and forcibly
     rewriting PATH tends to break Homebrew/nvm-style installations.
     """
-    # Resolve the interpreter the SAME way the direct-spawn path does. For
-    # uv-managed venvs, ``venv\Scripts\pythonw.exe`` is a launcher that starts
-    # hidden but then RESPAWNS the base interpreter as console ``python.exe`` —
-    # which opens a visible Windows Terminal tab (the dreaded "second window").
-    # ``_resolve_detached_python`` detects uv venvs and returns the base
-    # ``pythonw.exe`` directly plus the venv site-packages to put on PYTHONPATH,
-    # so the gateway runs truly windowless. (See _build_gateway_argv, which uses
-    # the same resolver for the non-cmd direct spawn.)
-    pythonw_path, venv_dir_path, extra_pythonpath = _resolve_detached_python(python_path)
-    venv_dir = str(venv_dir_path)
-
     lines = ["@echo off", f"rem {_TASK_DESCRIPTION}"]
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
     lines.append(f'set "CLIO_HOME={clio_home}"')
@@ -395,16 +384,18 @@ def _build_gateway_cmd_script(
     lines.append('set "CLIO_GATEWAY_DETACHED=1"')
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports clio_constants-based logic during startup.
+    venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
-    if extra_pythonpath:
-        # uv venv: we run the BASE pythonw.exe directly (not the venv launcher),
-        # so the repo + venv site-packages must be on PYTHONPATH for imports to
-        # resolve. Mirrors _build_gateway_argv's _prepend_pythonpath().
-        from clio_cli.gateway import PROJECT_ROOT
 
-        pp = os.pathsep.join([str(PROJECT_ROOT), *extra_pythonpath])
-        lines.append(f'set "PYTHONPATH={pp};%PYTHONPATH%"')
-
+    # Use the venv's ``pythonw.exe`` LAUNCHER (not a bare base interpreter with a
+    # hand-built PYTHONPATH). The launcher activates the venv properly — it runs
+    # the site machinery (``.pth`` files, editable installs, namespace packages)
+    # that a raw ``PYTHONPATH=site-packages`` does NOT — so ``clio_cli`` and all
+    # its dependencies import. A base interpreter + PYTHONPATH silently dies on
+    # an ImportError before logging starts, which is why the gateway stopped
+    # connecting. (On uv venvs this launcher can briefly show a console; a
+    # working bot beats a windowless dead one. Matches upstream hermes-agent.)
+    pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "clio_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
@@ -596,29 +587,6 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     return (windowed, venv_dir, [])
 
 
-def _resolve_console_python(python_exe: str) -> tuple[str, list[str]]:
-    """Return (console_python, extra_pythonpath) for a VISIBLE run.
-
-    The console twin of :func:`_resolve_detached_python`. uv-created Windows
-    venvs ship ``venv\\Scripts\\python.exe`` as a *launcher* that respawns the
-    base interpreter in a NEW console window — so running it inside a ``cmd /k``
-    window spawns a second, blank console. For uv venvs, return the base
-    ``python.exe`` directly (real console exe, no respawn) plus the venv
-    site-packages to put on ``PYTHONPATH`` so imports still resolve. Non-uv
-    venvs return the given exe unchanged.
-    """
-    p = Path(python_exe)
-    venv_dir = p.parent.parent
-    cfg = _read_pyvenv_cfg(venv_dir)
-    home = cfg.get("home", "")
-    if "uv" in cfg and home:
-        base_python = Path(home) / "python.exe"
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if base_python.exists() and site_packages.exists():
-            return (str(base_python), [str(site_packages)])
-    return (python_exe, [])
-
-
 def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:
     clean_entries = [entry for entry in entries if entry]
     if not clean_entries:
@@ -653,13 +621,10 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     argv = [python_exe, "-m", "clio_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())
-    # ``--replace`` so a direct spawn that bypassed the running-check (stale
-    # PID/lock from a crashed instance, or an ONLOGON-vs-desktop race) cleanly
-    # terminates the old gateway instead of exiting on the lock — guaranteeing a
-    # single live poller (no Telegram 409 storm / duplicate typing). The
-    # scheduled-task ``gateway.cmd`` deliberately omits this (its /Run is guarded
-    # by start()'s already-running early-return) to avoid task self-restart churn.
-    argv.extend(["gateway", "run", "--replace"])
+    # Plain ``gateway run`` (no ``--replace``): single-instance is enforced by the
+    # runtime lock (gateway/status.py) — a second instance exits cleanly before
+    # touching Telegram. Mirrors upstream hermes-agent; avoids takeover churn.
+    argv.extend(["gateway", "run"])
 
     env_overlay = {
         "CLIO_HOME": clio_home,
@@ -952,6 +917,25 @@ def _wait_for_gateway_ready(timeout_s: float = 6.0, interval_s: float = 0.4) -> 
             return pids
         time.sleep(interval_s)
     return []
+
+
+def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -> bool:
+    """Block until no gateway process is detectable, or the timeout elapses.
+
+    ``stop()`` can return while the previous gateway is still draining in-flight
+    agents (the drain runs up to the restart-drain timeout). Uses the
+    authoritative ``get_running_pid()`` (lock + liveness + start-time +
+    gateway-shape) plus the ``_gateway_pids()`` scan so a relaunch never races a
+    still-alive old process.
+    """
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + max(timeout_s, interval_s)
+    while time.monotonic() < deadline:
+        if get_running_pid() is None and not _gateway_pids():
+            return True
+        time.sleep(interval_s)
+    return get_running_pid() is None and not _gateway_pids()
 
 
 def _report_gateway_start(via: str) -> None:
@@ -1268,38 +1252,32 @@ def stop() -> None:
 def restart() -> None:
     """Stop the gateway then start it again.
 
-    Unlike a naive stop()+start(), this *verifies* every old gateway process is
-    actually gone before starting a new one. ``start()`` deliberately no-ops
-    when it sees a gateway already running (so repeated ``start`` is idempotent);
-    during a restart that early-return is a footgun — if ``stop()``'s kill hasn't
-    fully settled, ``start()`` would silently keep the *old* gateway alive, which
-    on Windows still holds the Telegram long-poll and never picks up freshly
-    saved config (e.g. a new bot token). We bound-wait for a clean process table
-    and force-kill any straggler before starting, guaranteeing exactly one fresh
-    gateway after this returns.
+    Waits for the old gateway to be authoritatively gone before relaunching --
+    otherwise ``start()``'s "already running" guard sees the still-draining old
+    process and no-ops, and when that process later exits nothing replaces it (a
+    silent outage). Fails loudly if the process can't be cleared or the relaunch
+    doesn't produce a running gateway. Mirrors upstream hermes-agent.
     """
     _assert_windows()
     from clio_cli.gateway import kill_gateway_processes
-    from gateway.status import get_running_pid
 
     stop()
 
-    # Bounded wait for the old gateway to actually exit. Poll both the PID file
-    # and the process-table scan; if either still reports a live gateway after
-    # the grace period, hard-kill the strays so start() sees a clean slate.
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if get_running_pid() is None and not _gateway_pids():
-            break
-        time.sleep(0.5)
-    else:
-        # Still something alive after the grace window — escalate.
-        killed = kill_gateway_processes(all_profiles=False, force=True)
-        if killed:
-            print(f"✓ Force-killed {killed} lingering gateway process(es)")
-        # Brief settle so the process table / listening port are released.
-        time.sleep(1.0)
+    if not _wait_for_gateway_absent(timeout_s=30.0):
+        print("⚠ Gateway still present after stop; forcing termination before restart...")
+        kill_gateway_processes(all_profiles=False, force=True)
+        if not _wait_for_gateway_absent(timeout_s=10.0):
+            raise RuntimeError(
+                "Gateway process still detected after force kill; refusing to "
+                "start a duplicate. Investigate stray PIDs before retrying."
+            )
 
-    # Give Windows a moment to release the listening port even on the fast path.
+    # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+    if not _wait_for_gateway_ready(timeout_s=15.0):
+        raise RuntimeError(
+            "Gateway restart did not produce a running gateway process. "
+            "Check logs/gateway.log and run `clio gateway status`."
+        )
