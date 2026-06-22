@@ -394,7 +394,7 @@ def _build_gateway_cmd_script(
     # its dependencies import. A base interpreter + PYTHONPATH silently dies on
     # an ImportError before logging starts, which is why the gateway stopped
     # connecting. (On uv venvs this launcher can briefly show a console; a
-    # working bot beats a windowless dead one. Matches upstream hermes-agent.)
+    # working bot beats a windowless dead one.)
     pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "clio_cli.main"]
     if profile_arg:
@@ -623,7 +623,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         argv.extend(profile_arg.split())
     # Plain ``gateway run`` (no ``--replace``): single-instance is enforced by the
     # runtime lock (gateway/status.py) — a second instance exits cleanly before
-    # touching Telegram. Mirrors upstream hermes-agent; avoids takeover churn.
+    # touching Telegram. Avoids takeover churn from racing --replace handoffs.
     argv.extend(["gateway", "run"])
 
     env_overlay = {
@@ -1256,7 +1256,7 @@ def restart() -> None:
     otherwise ``start()``'s "already running" guard sees the still-draining old
     process and no-ops, and when that process later exits nothing replaces it (a
     silent outage). Fails loudly if the process can't be cleared or the relaunch
-    doesn't produce a running gateway. Mirrors upstream hermes-agent.
+    doesn't produce a running gateway.
     """
     _assert_windows()
     from clio_cli.gateway import kill_gateway_processes

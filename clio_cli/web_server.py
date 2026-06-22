@@ -1301,8 +1301,8 @@ async def restart_gateway():
     streams to ``gateway-restart.log`` for the dashboard to surface. The
     ``clio gateway restart`` it runs is itself robust on Windows (it stops the
     old gateway, waits for it to clear, relaunches via the venv pythonw, and
-    raises if the gateway doesn't come up). Mirrors upstream hermes-agent — no
-    fragile visible cmd window / base-interpreter shim.
+    raises if the gateway doesn't come up). No fragile visible cmd window or
+    base-interpreter shim.
     """
     try:
         proc = _spawn_clio_action(["gateway", "restart"], "gateway-restart")

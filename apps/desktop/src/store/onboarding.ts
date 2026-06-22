@@ -913,8 +913,7 @@ export async function setOnboardingModel(model: string) {
 // persisted by completeWithModelConfirm (or setOnboardingModel if changed), so
 // all that's left is to mark onboarding done and unblock the app. The gateway
 // (messaging) is set up by the installer's gateway stage and (re)started from
-// the Messaging settings — onboarding itself never touches it (mirrors
-// upstream hermes-agent).
+// the Messaging settings — onboarding itself never touches it.
 export function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
