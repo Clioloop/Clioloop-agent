@@ -1473,6 +1473,23 @@ PY
 
     log_success "Main package installed"
 
+    # Pre-compile Python bytecode so the FIRST `clio dashboard` / `clio gateway`
+    # launch is fast instead of compiling the whole dependency tree to .pyc on
+    # first import (which can push first-launch past the desktop's readiness
+    # window). Non-fatal: compileall returns non-zero if any single file can't
+    # be compiled, which is fine.
+    if [ "$USE_VENV" = true ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        local _venv_py="$INSTALL_DIR/venv/bin/python"
+        local _site_pkgs
+        log_info "Pre-compiling Python bytecode (first-launch warm-up)..."
+        "$_venv_py" -m compileall -q -j 0 "$INSTALL_DIR" >/dev/null 2>&1 || true
+        _site_pkgs="$("$_venv_py" -c 'import sysconfig; print(sysconfig.get_path("purelib"))' 2>/dev/null || true)"
+        if [ -n "$_site_pkgs" ] && [ -d "$_site_pkgs" ]; then
+            "$_venv_py" -m compileall -q -j 0 "$_site_pkgs" >/dev/null 2>&1 || true
+        fi
+        log_success "Bytecode pre-compiled"
+    fi
+
     log_success "All dependencies installed"
 }
 

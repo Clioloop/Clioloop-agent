@@ -217,7 +217,12 @@ class ManagedSubscriptionFeatures:
             setattr(self, key, state)
 
     def items(self) -> list[ManagedFeatureState]:
-        return [self.features[key] for key, _ in _FEATURE_DEFS]
+        # Resilient to a features dict missing a canonical key (e.g. an older
+        # portal response, or a newly-added feature like ``music_gen`` absent
+        # from a cached/partial bundle). A bare ``self.features[key]`` would
+        # KeyError and blank the whole managed-provider feature list in
+        # ``/api/portal`` during onboarding.
+        return [self.features[key] for key, _ in _FEATURE_DEFS if key in self.features]
 
 
 def get_managed_subscription_features(

@@ -1555,9 +1555,32 @@ except Exception:
             }
         }
     }
-    
+
+    # Pre-compile Python bytecode so the FIRST `clio dashboard` / `clio gateway`
+    # launch is fast. Without this, the very first run compiles the entire
+    # dependency tree (fastapi/pydantic/uvicorn/telegram/anthropic/…) to .pyc on
+    # import, and on Windows antivirus scans each freshly-written file — which on
+    # slow laptops/VMs can push first-launch past the desktop's readiness window
+    # ("backend cannot connect", fixed by restarting). Doing it here warms .pyc
+    # AND triggers AV scanning during install (where a wait is expected). The
+    # user already waited through dependency sync; this adds a short, one-time
+    # step. Non-fatal: compileall returns non-zero if any single file can't be
+    # compiled (some packages ship version-incompatible files) — that's fine.
+    if (Test-Path $pythonExe) {
+        Write-Info "Pre-compiling Python bytecode (first-launch warm-up)..."
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $sitePackages = "$InstallDir\venv\Lib\site-packages"
+        & $pythonExe -m compileall -q -j 0 "$InstallDir" 2>&1 | Out-Null
+        if (Test-Path $sitePackages) {
+            & $pythonExe -m compileall -q -j 0 "$sitePackages" 2>&1 | Out-Null
+        }
+        $ErrorActionPreference = $prevEAP
+        Write-Success "Bytecode pre-compiled"
+    }
+
     Pop-Location
-    
+
     Write-Success "All dependencies installed"
 }
 

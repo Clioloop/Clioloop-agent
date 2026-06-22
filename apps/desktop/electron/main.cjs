@@ -2843,8 +2843,20 @@ function closePreviewWatchers() {
 }
 
 async function waitForClio(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  // Generous deadline: on the FIRST launch after a fresh install the venv has
+  // no compiled bytecode, so Python compiles the whole dependency tree on
+  // import (fastapi/pydantic/uvicorn/telegram/anthropic/…) — and on Windows
+  // antivirus scans each freshly-written file — which can take well over a
+  // minute on slow laptops/VMs before the dashboard binds its port. The old
+  // 45s deadline timed out and showed "backend cannot connect" on first run;
+  // a restart (warm .pyc + AV cache) then worked. This is SAFE to lengthen:
+  // both spawn paths race waitForClio against the backend's process-exit
+  // promise, so a backend that actually crashes still errors immediately — the
+  // longer deadline only tolerates a slow-but-alive cold start. (The installer
+  // also pre-compiles bytecode so real first launches are fast.)
+  const deadline = Date.now() + 180_000
   let lastError = null
+  let warned = false
 
   while (Date.now() < deadline) {
     try {
@@ -2852,6 +2864,12 @@ async function waitForClio(baseUrl, token) {
       return
     } catch (error) {
       lastError = error
+      // After the first few seconds, let the user know the wait is expected on
+      // a fresh install rather than leaving them staring at a blank spinner.
+      if (!warned && Date.now() > deadline - 175_000) {
+        warned = true
+        rememberLog('Waiting for Clio backend — first-time setup can take up to a minute on a fresh install…')
+      }
       await new Promise(resolve => setTimeout(resolve, 500))
     }
   }
