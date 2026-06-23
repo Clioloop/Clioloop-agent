@@ -2718,15 +2718,17 @@ class TestCuaToolCoverageExpansion:
         assert size["scale_factor"] == 2.0
 
     def test_zoom_full_args(self):
+        # cua-driver's zoom takes a bounding box as opposite corners
+        # (x1,y1)-(x2,y2) plus pid/window_id; we accept a rect and convert.
         backend = self._backend()
-        backend.zoom(window_id=1, x=10.0, y=20.0, w=300.0, h=400.0,
-                     factor=2.0, format="png", quality=90)
+        backend._active_pid = 4321
+        backend.zoom(window_id=1, x=10.0, y=20.0, w=300.0, h=400.0)
         name, args = backend._session.call_tool.call_args.args
         assert name == "zoom"
         assert args["window_id"] == 1
-        assert args["factor"] == 2.0
-        assert args["format"] == "png"
-        assert args["quality"] == 90
+        assert args["pid"] == 4321
+        assert args["x1"] == 10.0 and args["y1"] == 20.0
+        assert args["x2"] == 310.0 and args["y2"] == 420.0
 
     # ── Agent cursor (overlay) ──────────────────────────────────
 
@@ -2867,3 +2869,126 @@ class TestCuaToolCoverageExpansion:
         backend.call_tool("get_cursor_position")
         name, args = backend._session.call_tool.call_args.args
         assert args == {"session": backend._session_id}
+
+
+# ---------------------------------------------------------------------------
+# Coordinate transform: model image-pixel -> cua-driver screen-global click
+# ---------------------------------------------------------------------------
+
+class TestCoordinateTransform:
+    """cua-driver returns a window-cropped screenshot (origin = window top-left,
+    downscaled to max_image_dimension) but clicks in SCREEN-GLOBAL points. A raw
+    pixel the model picks off that screenshot must be mapped:
+    screen = win_origin + px * (win_size / img_size), then clamped."""
+
+    def _backend(self, rect=(788, 221, 410, 666), img=(410, 666)):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        b = CuaDriverBackend()
+        b._session = MagicMock()
+        b._session.call_tool.return_value = {
+            "data": "ok", "images": [], "structuredContent": None, "isError": False,
+        }
+        b._active_pid = 111
+        b._active_window_id = 222
+        b._active_window_rect = rect
+        b._active_image_size = img
+        return b
+
+    def test_offset_identity_scale(self):
+        # image == window size (no downscale): just offset by window origin.
+        assert self._backend()._to_screen_xy(32, 22) == (820, 243)
+
+    def test_downscaled_image_scales_up(self):
+        # image half the window size: coords scale x2, origin at (0,0).
+        b = self._backend(rect=(0, 0, 1920, 1080), img=(960, 540))
+        assert b._to_screen_xy(480, 270) == (960, 540)
+
+    def test_clamp_into_window_rect(self):
+        b = self._backend(rect=(100, 100, 200, 200), img=(200, 200))
+        assert b._to_screen_xy(99999, 99999) == (300, 300)   # clamp to right/bottom
+        assert b._to_screen_xy(-50, -50) == (100, 100)       # clamp to left/top
+
+    def test_passthrough_without_capture_context(self):
+        b = self._backend(rect=None, img=None)
+        assert b._to_screen_xy(50, 60) == (50, 60)
+
+    def test_click_xy_transformed_and_no_window_id(self):
+        b = self._backend()
+        b.click(x=32, y=22)
+        name, args = b._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["x"] == 820 and args["y"] == 243
+        # screen-global x,y must not carry window_id (avoids window-relative
+        # reinterpretation by the driver).
+        assert "window_id" not in args
+
+    def test_element_click_unaffected(self):
+        b = self._backend()
+        b.click(element=7)
+        _, args = b._session.call_tool.call_args.args
+        assert args.get("element_index") == 7
+        assert args.get("window_id") == 222
+        assert "x" not in args and "y" not in args
+
+    def test_drag_xy_transformed(self):
+        b = self._backend()
+        b.drag(from_xy=(10, 10), to_xy=(100, 100))
+        name, args = b._session.call_tool.call_args.args
+        assert name == "drag"
+        assert (args["from_x"], args["from_y"]) == (798, 231)
+        assert (args["to_x"], args["to_y"]) == (888, 321)
+
+    def test_scroll_xy_transformed(self):
+        b = self._backend()
+        b.scroll(direction="down", amount=3, x=5, y=5)
+        name, args = b._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert (args["x"], args["y"]) == (793, 226)
+
+
+# ---------------------------------------------------------------------------
+# Window enumeration + management actions
+# ---------------------------------------------------------------------------
+
+class TestWindowActions:
+    def test_list_windows_dispatch(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "list_windows"})
+        data = json.loads(out)
+        assert "windows" in data and "count" in data
+        assert any(c[0] == "list_windows" for c in noop_backend.calls)
+
+    def test_list_windows_is_safe_action(self):
+        # list_windows must not require approval (read-only enumeration).
+        from tools.computer_use.tool import _SAFE_ACTIONS
+        assert "list_windows" in _SAFE_ACTIONS
+
+    def test_focus_window_by_pid_brings_to_front(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "focus_window", "pid": 4321, "window_id": 99})
+        call = next(c for c in noop_backend.calls if c[0] == "bring_to_front")
+        assert call[1]["pid"] == 4321 and call[1]["window_id"] == 99
+
+    def test_focus_window_by_app_raises(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "focus_window", "app": "Telegram"})
+        call = next(c for c in noop_backend.calls if c[0] == "focus_app")
+        assert call[1]["raise"] is True
+
+    def test_focus_window_requires_target(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "focus_window"})
+        assert "error" in json.loads(out)
+
+    def test_minimize_dispatch(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "minimize", "pid": 7, "window_id": 8})
+        call = next(c for c in noop_backend.calls if c[0] == "minimize")
+        assert call[1]["pid"] == 7 and call[1]["window_id"] == 8
+
+    def test_new_actions_in_schema_enum(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        enum = COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        for a in ("list_windows", "focus_window", "minimize"):
+            assert a in enum

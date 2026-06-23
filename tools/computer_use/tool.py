@@ -77,12 +77,13 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "list_windows"})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "focus_window", "minimize",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -221,6 +222,20 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
+
+    def list_windows(self, on_screen_only: bool = False) -> List[Dict[str, Any]]:
+        self.calls.append(("list_windows", {"on_screen_only": on_screen_only}))
+        return []
+
+    def minimize(self, *, pid: Optional[int] = None,
+                 window_id: Optional[int] = None) -> ActionResult:
+        self.calls.append(("minimize", {"pid": pid, "window_id": window_id}))
+        return ActionResult(ok=True, action="minimize")
+
+    def bring_to_front(self, *, pid: int,
+                       window_id: Optional[int] = None) -> ActionResult:
+        self.calls.append(("bring_to_front", {"pid": pid, "window_id": window_id}))
+        return ActionResult(ok=True, action="bring_to_front")
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
@@ -364,6 +379,41 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "list_windows":
+        wins = backend.list_windows(
+            on_screen_only=bool(args.get("on_screen_only", False))
+        )
+        return json.dumps({"windows": wins, "count": len(wins)})
+
+    if action == "focus_window":
+        pid = args.get("pid")
+        wid = args.get("window_id")
+        app = args.get("app")
+        if pid is not None:
+            res = backend.bring_to_front(
+                pid=int(pid),
+                window_id=int(wid) if wid is not None else None,
+            )
+        elif app:
+            res = backend.focus_app(app, raise_window=True)
+        else:
+            return json.dumps({
+                "error": "focus_window requires pid (+ window_id) or app",
+            })
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "minimize":
+        pid = args.get("pid")
+        wid = args.get("window_id")
+        app = args.get("app")
+        if pid is None and app:
+            backend.focus_app(app)  # resolve to active pid/window_id
+        res = backend.minimize(
+            pid=int(pid) if pid is not None else None,
+            window_id=int(wid) if wid is not None else None,
+        )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:

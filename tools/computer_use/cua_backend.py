@@ -800,7 +800,13 @@ class _CuaDriverSession:
         self._start_lifecycle_locked()
         self._started = True
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
+        # 15s ceiling (was 30): a slow/blocked cua-driver op — e.g.
+        # get_window_state on a busy app, or an interaction on a window whose
+        # UI thread is momentarily stalled — should fail fast with a clear
+        # error instead of hanging the agent. A plain timeout raises
+        # (TimeoutError) and is NOT a closed-session error, so it does NOT
+        # trigger the reconnect-retry below (no compounding to 2×).
         self._require_started()
         try:
             return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
@@ -923,6 +929,18 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
+        # Coordinate mapping context (updated by capture()): the active
+        # window's screen-global rect (x, y, w, h) from list_windows, and the
+        # dimensions of the screenshot the model actually saw. cua-driver
+        # screenshots are a window crop (downscaled to max_image_dimension)
+        # whose origin is the window's top-left, but its click/drag/scroll
+        # coordinates are SCREEN-GLOBAL points. So a raw pixel the model picks
+        # off the screenshot must be mapped: screen = win_origin + px * win/img.
+        # Without this, coordinate clicks land offset by the window origin and
+        # mis-scaled under HiDPI (the "off-screen / misclick" bug). Element
+        # index actions are unaffected — cua-driver resolves them server-side.
+        self._active_window_rect: Optional[Tuple[int, int, int, int]] = None
+        self._active_image_size: Optional[Tuple[int, int]] = None
         # Surface 6 of the cua-driver integration: per-snapshot
         # `element_index -> element_token` map populated on capture().
         # Action tools (click/scroll/set_value/...) attach the matching
@@ -1023,9 +1041,13 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
+        # on_screen_only=False so minimized / background windows are
+        # enumerable and targetable (e.g. capture(app="Telegram") after it's
+        # been minimized). Target selection below still prefers on-screen
+        # windows, so the default frontmost-capture behaviour is unchanged.
         lw_out = self._session.call_tool(
             "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
+            {"on_screen_only": False, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = []
@@ -1044,6 +1066,12 @@ class CuaDriverBackend(ComputerUseBackend):
                 "off_screen": not w.get("is_on_screen", True),
                 "title": w.get("title") or "",
                 "z_index": w.get("z_index") or 0,
+                # Screen-global window rect — used to map model image pixels to
+                # cua-driver's screen-global click coordinates.
+                "x": w.get("x"),
+                "y": w.get("y"),
+                "width": w.get("width"),
+                "height": w.get("height"),
             })
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
@@ -1116,6 +1144,15 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
+        # Remember the target's screen rect for image→screen coordinate mapping.
+        self._active_window_rect = (
+            (int(target["x"]), int(target["y"]),
+             int(target["width"]), int(target["height"]))
+            if all(target.get(k) is not None
+                   for k in ("x", "y", "width", "height"))
+            else None
+        )
+        self._active_image_size = None  # set once the screenshot dims are known
         # Record the resolved app name so capture_after= follow-ups can re-target
         # the same app rather than falling back to the frontmost window.
         if app or not self._last_app:
@@ -1242,6 +1279,10 @@ class CuaDriverBackend(ComputerUseBackend):
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 
+        # Record the screenshot dims the model will see, so raw coordinates it
+        # picks off this image map correctly onto the window's screen rect.
+        self._active_image_size = (width, height) if (width and height) else None
+
         return CaptureResult(
             mode=mode,
             width=width,
@@ -1255,6 +1296,31 @@ class CuaDriverBackend(ComputerUseBackend):
         )
 
     # ── Pointer ────────────────────────────────────────────────────
+    def _to_screen_xy(self, x: int, y: int) -> Tuple[int, int]:
+        """Map a pixel the model picked off the last capture's screenshot to the
+        SCREEN-GLOBAL coordinate cua-driver clicks in.
+
+        cua-driver returns a window-cropped screenshot (origin = the window's
+        top-left, downscaled to max_image_dimension) but expects screen-global
+        points for x/y. Translate by the window origin and rescale by
+        window/image, then clamp into the window rect so a bad guess can't fling
+        the cursor off-screen. If we don't have both the window rect and the
+        image size, pass the value through unchanged (defensive)."""
+        rect = self._active_window_rect
+        img = self._active_image_size
+        if not rect or not img:
+            return int(x), int(y)
+        wx, wy, ww, wh = rect
+        iw, ih = img
+        if not (ww and wh and iw and ih):
+            return int(x), int(y)
+        sx = wx + x * (ww / iw)
+        sy = wy + y * (wh / ih)
+        # Clamp into the captured window's screen rect.
+        sx = min(max(sx, wx), wx + ww)
+        sy = min(max(sy, wy), wy + wh)
+        return int(round(sx)), int(round(sy))
+
     def click(
         self,
         *,
@@ -1292,8 +1358,7 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
-            args["x"] = x
-            args["y"] = y
+            args["x"], args["y"] = self._to_screen_xy(x, y)
         else:
             return ActionResult(ok=False, action=tool,
                                 message="click requires element= or x/y.")
@@ -1325,8 +1390,8 @@ class CuaDriverBackend(ComputerUseBackend):
             args["to_element"] = to_element
             args["window_id"] = self._active_window_id
         elif from_xy is not None and to_xy is not None:
-            args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
-            args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
+            args["from_x"], args["from_y"] = self._to_screen_xy(from_xy[0], from_xy[1])
+            args["to_x"], args["to_y"] = self._to_screen_xy(to_xy[0], to_xy[1])
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
@@ -1355,8 +1420,7 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
-            args["x"] = x
-            args["y"] = y
+            args["x"], args["y"] = self._to_screen_xy(x, y)
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
@@ -1421,22 +1485,63 @@ class CuaDriverBackend(ComputerUseBackend):
             return apps
         return []
 
+    def list_windows(self, on_screen_only: bool = False) -> List[Dict[str, Any]]:
+        """Enumerate ALL top-level windows (incl. minimized / background by
+        default) so the agent can see and target every window, not just the
+        frontmost one. Returns ``[{app, pid, window_id, title, on_screen}]``."""
+        out = self._session.call_tool(
+            "list_windows",
+            {"on_screen_only": bool(on_screen_only), "session": self._session_id},
+        )
+        raw = (out.get("structuredContent") or {}).get("windows") or []
+        result: List[Dict[str, Any]] = []
+        for w in raw:
+            if w.get("pid") is None or w.get("window_id") is None:
+                continue
+            result.append({
+                "app": w.get("app_name") or "",
+                "pid": int(w["pid"]),
+                "window_id": int(w["window_id"]),
+                "title": w.get("title") or "",
+                "on_screen": bool(w.get("is_on_screen", True)),
+            })
+        return result
+
+    def minimize(self, *, pid: Optional[int] = None,
+                 window_id: Optional[int] = None) -> ActionResult:
+        """Minimize a window. cua-driver has no minimize tool, so route the OS
+        minimize shortcut to the window (best-effort: bring it to front first so
+        the shell shortcut targets it). If this proves unreliable for an app,
+        the agent can capture the window and click its minimize button by
+        element index instead."""
+        pid = pid if pid is not None else self._active_pid
+        window_id = window_id if window_id is not None else self._active_window_id
+        if pid is None:
+            return ActionResult(ok=False, action="minimize",
+                                message="No window — call capture()/list_windows first.")
+        # Activate the target so the shell minimize shortcut lands on it.
+        self.bring_to_front(pid=pid, window_id=window_id)
+        if sys.platform == "darwin":
+            keys = "cmd+m"
+        elif sys.platform == "win32":
+            keys = "win+down"
+        else:
+            keys = "super+h"
+        args: Dict[str, Any] = {"keys": keys, "pid": pid}
+        if window_id is not None:
+            args["window_id"] = window_id
+        res = self._action("hotkey", args)
+        return ActionResult(ok=res.ok, action="minimize", message=res.message, meta=res.meta)
+
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        """Target an app for subsequent actions without stealing system focus.
-
-        cua-driver background-automation never needs to bring a window to the
-        front: capture(app=...) already selects the right window via
-        list_windows. We implement focus_app as a pure window-selector —
-        enumerate on-screen windows, find the best match for *app*, and store
-        its pid/window_id so that subsequent click/type calls hit the right
-        process.
-
-        raise_window=True is intentionally ignored: stealing the user's focus
-        is exactly what this backend is designed to avoid.
+        """Target an app for subsequent actions. By default selects the window
+        without stealing focus; when ``raise_window`` is set, bring it to the
+        front (used to restore/activate a minimized or background window so it
+        can be controlled).
         """
         lw_out = self._session.call_tool(
             "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
+            {"on_screen_only": False, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = []
@@ -1464,13 +1569,19 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
             self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+            if raise_window:
+                self.bring_to_front(pid=target["pid"], window_id=target["window_id"])
             return ActionResult(
                 ok=True, action="focus_app",
-                message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
-                        f"window {self._active_window_id}) without raising window.",
+                message=(
+                    f"Targeted {target['app_name']} (pid {self._active_pid}, "
+                    f"window {self._active_window_id})"
+                    + (" and brought it to front."
+                       if raise_window else " without raising window.")
+                ),
             )
         return ActionResult(ok=False, action="focus_app",
-                            message=f"No on-screen window found for app '{app}'.")
+                            message=f"No window found for app '{app}'.")
 
     # ── App lifecycle ────────────────────────────────────────────────
     #
@@ -1534,7 +1645,8 @@ class CuaDriverBackend(ComputerUseBackend):
         explicitly avoids stealing pointer focus). The overlay glides
         smoothly to the target, so consumers use it before a click to
         give a visible "where the agent is going" cue."""
-        return self._action("move_cursor", {"x": int(x), "y": int(y)})
+        sx, sy = self._to_screen_xy(x, y)
+        return self._action("move_cursor", {"x": sx, "y": sy})
 
     def get_cursor_position(self) -> Tuple[int, int]:
         """Return the *real* OS cursor position in screen points
@@ -1555,16 +1667,16 @@ class CuaDriverBackend(ComputerUseBackend):
         return out.get("structuredContent") or {}
 
     def zoom(self, *, window_id: int, x: float, y: float, w: float, h: float,
-             factor: float = 1.0, format: str = "jpeg",
-             quality: int = 85) -> Dict[str, Any]:
-        """Return a JPEG / PNG of a sub-region of a window, optionally
-        scaled. cua-driver supports zoom-to-rect for callers that need
-        a higher-resolution view of a specific element."""
+             pid: Optional[int] = None) -> Dict[str, Any]:
+        """Return a higher-resolution crop of a sub-region of a window for a
+        closer look at a specific element. cua-driver's `zoom` takes a bounding
+        box as opposite corners (x1,y1)-(x2,y2) plus pid/window_id — we accept a
+        rect (x,y,w,h) and convert."""
         return self._session.call_tool("zoom", {
+            "pid": int(pid) if pid is not None else self._active_pid,
             "window_id": int(window_id),
-            "x": float(x), "y": float(y), "w": float(w), "h": float(h),
-            "factor": float(factor),
-            "format": format, "quality": int(quality),
+            "x1": float(x), "y1": float(y),
+            "x2": float(x + w), "y2": float(y + h),
             "session": self._session_id,
         })
 
@@ -1736,7 +1848,7 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Generic escape hatch ────────────────────────────────────────
 
     def call_tool(self, name: str, args: Optional[Dict[str, Any]] = None,
-                  *, timeout: float = 30.0) -> Dict[str, Any]:
+                  *, timeout: float = 15.0) -> Dict[str, Any]:
         """Call any cua-driver MCP tool by name with arbitrary args.
         ``session`` is injected (preserves the caller's explicit one
         via setdefault). For tools the wrapper doesn't already type-

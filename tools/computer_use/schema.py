@@ -44,14 +44,24 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "list_windows",
                     "focus_app",
+                    "focus_window",
+                    "minimize",
                 ],
                 "description": (
-                    "Which action to perform. `capture` is free (no side "
-                    "effects). All other actions require approval unless "
-                    "auto-approved. Use `set_value` for select/popup elements "
-                    "and sliders — it selects the matching option directly "
-                    "without opening the native menu (no focus steal)."
+                    "Which action to perform. `capture`, `list_apps`, "
+                    "`list_windows`, `wait` are free (read-only). All other "
+                    "actions require approval unless auto-approved. "
+                    "`list_windows` enumerates ALL top-level windows (incl. "
+                    "minimized) — call it first when multiple windows are "
+                    "open or a window may be minimized. `focus_window` "
+                    "restores/activates a window (by pid+window_id from "
+                    "list_windows, or app=) so it can be captured and "
+                    "controlled; `minimize` minimizes the target window. "
+                    "Use `set_value` for select/popup elements and sliders — "
+                    "it selects the matching option directly without opening "
+                    "the native menu (no focus steal)."
                 ),
             },
             # ── capture ────────────────────────────────────────────
@@ -200,6 +210,22 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "window to front (DISRUPTS the user). Default false "
                     "— input is routed to the app without raising, "
                     "matching the background co-work model."
+                ),
+            },
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Process id of a target window, as returned by "
+                    "action='list_windows'. Used with `window_id` for "
+                    "focus_window / minimize. Optional — omit to use the "
+                    "active window (or pass `app`)."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Window id of a target window, from action='list_windows'. "
+                    "Used with `pid` for focus_window / minimize."
                 ),
             },
             # ── return shape ───────────────────────────────────────

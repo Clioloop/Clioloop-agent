@@ -36,6 +36,9 @@ Use the `computer_use` tool when you need to interact with native desktop applic
 | `set_value` | Set a native value on an element |
 | `focus_app` | Target an app for subsequent actions (no raise) |
 | `list_apps` | List running GUI applications |
+| `list_windows` | List ALL top-level windows incl. minimized (app, pid, window_id, title, on_screen) |
+| `focus_window` | Restore/activate a window by pid+window_id (or app=) so it can be controlled |
+| `minimize` | Minimize the target window (pid+window_id, or app=) |
 | `wait` | Wait N seconds |
 
 ## Platform-Specific Notes

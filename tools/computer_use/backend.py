@@ -155,6 +155,24 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
+    # Window management — concrete defaults so a backend that can't manage
+    # windows still instantiates; cua-driver overrides all three.
+    def list_windows(self, on_screen_only: bool = False) -> List[Dict[str, Any]]:
+        """Enumerate all top-level windows (incl. minimized when
+        ``on_screen_only`` is False). Returns ``[{app, pid, window_id, title,
+        on_screen}]``."""
+        return []
+
+    def minimize(self, *, pid: Optional[int] = None,
+                 window_id: Optional[int] = None) -> ActionResult:
+        """Minimize a window. Default: unsupported."""
+        return ActionResult(ok=False, action="minimize", message="not supported")
+
+    def bring_to_front(self, *, pid: int,
+                       window_id: Optional[int] = None) -> ActionResult:
+        """Activate/restore a window (e.g. un-minimize). Default: no-op."""
+        return ActionResult(ok=True, action="bring_to_front")
+
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
