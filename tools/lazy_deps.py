@@ -172,6 +172,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Tools ─────────────────────────────────────────────────────────────
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
+    # Computer use — MCP client SDK to talk to the cua-driver stdio server.
+    "tool.computer_use": (
+        "mcp==1.26.0",
+        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+    ),
     # Dashboard (`clio dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",

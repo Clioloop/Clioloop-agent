@@ -70,7 +70,7 @@ _CLIO_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
-    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    # Computer use (macOS/Windows/Linux, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
 
@@ -154,9 +154,10 @@ TOOLSETS = {
 
     "computer_use": {
         "description": (
-            "Background macOS desktop control via cua-driver — screenshots, "
+            "Background desktop control via cua-driver — screenshots, "
             "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
-            "or keyboard focus. Works with any tool-capable model."
+            "or keyboard focus. Works on macOS, Windows, and Linux with "
+            "any tool-capable model."
         ),
         "tools": ["computer_use"],
         "includes": []

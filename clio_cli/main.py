@@ -10183,6 +10183,65 @@ def _cmd_update_pip(args):
         print("⚠ One or more configured messaging platforms still need dependencies.")
 
 
+def _computer_use_enabled() -> bool:
+    """True if the ``computer_use`` toolset is enabled for any configured surface.
+
+    A simple membership check over ``platform_toolsets`` (and the legacy
+    top-level ``toolsets`` list). computer_use is a configurable opt-in
+    toolset, so when enabled it is listed explicitly — no composite-toolset
+    expansion is needed here. Used by ``clio update`` to decide whether to
+    install the cua-driver binary on a machine that has the toolset enabled
+    but no binary yet (e.g. the first update on a new OS).
+    """
+    try:
+        from clio_cli.config import load_config
+        cfg = load_config() or {}
+        pts = cfg.get("platform_toolsets") or {}
+        for lst in pts.values():
+            if isinstance(lst, list) and "computer_use" in [str(x) for x in lst]:
+                return True
+        ts = cfg.get("toolsets")
+        if isinstance(ts, list) and "computer_use" in [str(x) for x in ts]:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _post_update_install_cua_driver() -> None:
+    """Install/refresh the cua-driver binary + MCP deps after a successful update.
+
+    Runs from BOTH the git-pull and the ZIP-download update paths. On every
+    platform cua-driver supports (macOS/Windows/Linux): refresh the binary if
+    present; if it's missing but the Computer Use toolset is enabled (e.g. the
+    first update on a new OS), install it so Computer Use works without a
+    separate manual step; then pre-install the MCP client SDK so the first call
+    doesn't pay a lazy-install hop. Best-effort — never fail the update.
+    """
+    import shutil
+    try:
+        if sys.platform not in ("darwin", "win32", "linux"):
+            return
+        from clio_cli.tools_config import install_cua_driver, _cua_driver_cmd
+
+        if shutil.which(_cua_driver_cmd()):
+            print()
+            print("→ Refreshing cua-driver (Computer Use)...")
+            install_cua_driver(upgrade=True)
+        elif _computer_use_enabled():
+            print()
+            print("→ Installing cua-driver (Computer Use toolset is enabled)...")
+            install_cua_driver(upgrade=False)
+        if _computer_use_enabled() and shutil.which(_cua_driver_cmd()):
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+                _lazy_ensure("tool.computer_use", prompt=False)
+            except Exception as _dep_e:
+                logger.debug("computer_use dep pre-install skipped: %s", _dep_e)
+    except Exception as e:
+        logger.debug("cua-driver refresh/install failed: %s", e)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -10300,6 +10359,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         _update_via_zip(args)
+        _post_update_install_cua_driver()
         return
 
     # Fetch and pull
@@ -10931,21 +10991,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Refresh the cua-driver binary used by the Computer Use toolset.
-        # The upstream installer is gated on macOS and on the binary already
-        # being on PATH, so this is a no-op for users who don't have it.
-        # Tying the refresh to ``clio update`` gives users a predictable
-        # cadence (matches when they pull new agent code) without adding
-        # startup latency or a per-launch GitHub API call.
-        try:
-            if sys.platform == "darwin" and shutil.which("cua-driver"):
-                from clio_cli.tools_config import install_cua_driver
-
-                print()
-                print("→ Refreshing cua-driver (Computer Use)...")
-                install_cua_driver(upgrade=True)
-        except Exception as e:
-            logger.debug("cua-driver refresh failed: %s", e)
+        # Install/refresh cua-driver (+ MCP deps) for the Computer Use toolset.
+        # Best-effort, all supported platforms; shared with the ZIP path below.
+        _post_update_install_cua_driver()
 
         # Write exit code *before* the gateway restart attempt.
         # When running as ``clio update --gateway`` (spawned by the gateway's
@@ -11539,6 +11587,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
+            _post_update_install_cua_driver()
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)
@@ -14690,40 +14739,86 @@ Examples:
     tools_parser.set_defaults(func=cmd_tools)
 
     # =========================================================================
-    # computer-use command — manage Computer Use (cua-driver) on macOS
+    # computer-use command — manage Computer Use (cua-driver)
     # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
-        help="Manage the Computer Use (cua-driver) backend (macOS)",
+        help="Manage the Computer Use (cua-driver) backend",
         description=(
             "Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. macOS-only.\n\n"
+            "`computer_use` toolset. Works on macOS, Windows, and Linux.\n\n"
             "Use `clio computer-use install` to fetch and run the\n"
             "upstream cua-driver installer. This is equivalent to the\n"
             "post-setup hook that `clio tools` runs when you first\n"
             "enable the Computer Use toolset, and is a stable target\n"
             "for re-running the install if it didn't fire (e.g. when\n"
-            "toggling the toolset on a returning-user setup)."
+            "toggling the toolset on a returning-user setup).\n\n"
+            "Use `clio computer-use doctor` to run cross-platform\n"
+            "health diagnostics."
         ),
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
     computer_use_install = computer_use_sub.add_parser(
         "install",
-        help="Install or repair the cua-driver binary (macOS)",
+        help="Install or repair the cua-driver binary",
     )
     computer_use_install.add_argument(
         "--upgrade",
         action="store_true",
         help=(
             "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
+            "PATH. The upstream installer always pulls the latest release, "
             "so this performs an in-place upgrade."
         ),
     )
     computer_use_sub.add_parser(
         "status",
         help="Print whether cua-driver is installed and on PATH",
+    )
+    computer_use_doctor = computer_use_sub.add_parser(
+        "doctor",
+        help="Run cua-driver health diagnostics (cross-platform)",
+    )
+    computer_use_doctor.add_argument(
+        "--json", action="store_true",
+        help="Emit raw structured JSON payload from cua-driver",
+    )
+    computer_use_doctor.add_argument(
+        "--include", action="append",
+        help="Run only listed checks (repeatable)",
+    )
+    computer_use_doctor.add_argument(
+        "--skip", action="append",
+        help="Skip listed checks (repeatable, wins over --include)",
+    )
+
+    computer_use_perms = computer_use_sub.add_parser(
+        "permissions",
+        help="Check or grant macOS Accessibility + Screen Recording (macOS)",
+        description=(
+            "Computer Use drives the Mac through cua-driver, whose TCC grants\n"
+            "attach to cua-driver's own identity (com.trycua.driver) — not the\n"
+            "terminal or the Clio app. `status` reports the driver's grant\n"
+            "state; `grant` launches CuaDriver via LaunchServices so the macOS\n"
+            "permission dialog is attributed to the process that does the work."
+        ),
+    )
+    computer_use_perms_sub = computer_use_perms.add_subparsers(
+        dest="computer_use_perms_action"
+    )
+    computer_use_perms_status = computer_use_perms_sub.add_parser(
+        "status",
+        help="Report Accessibility + Screen Recording grant state (read-only)",
+    )
+    computer_use_perms_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the normalized permission payload as JSON.",
+    )
+    computer_use_perms_sub.add_parser(
+        "grant",
+        help="Request the grants (opens the dialog attributed to CuaDriver)",
     )
 
     def cmd_computer_use(args):
@@ -14733,6 +14828,7 @@ Examples:
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
+            import platform as _plat
             import shutil
             import subprocess
             path = shutil.which("cua-driver")
@@ -14745,14 +14841,75 @@ Examples:
                     ).stdout.strip()
                 except Exception:
                     pass
+                system = _plat.system()
                 if version:
                     print(f"cua-driver: installed at {path} ({version})")
                 else:
                     print(f"cua-driver: installed at {path}")
+                print(f"  Platform: {system}")
+                # Check for daemon status on Windows
+                if system == "Windows":
+                    try:
+                        daemon = subprocess.run(
+                            ["cua-driver", "status"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if daemon.returncode == 0 and daemon.stdout.strip():
+                            print(f"  Daemon: {daemon.stdout.strip()}")
+                        else:
+                            print("  Daemon: not running (run 'cua-driver autostart enable' for SSH)")
+                    except Exception:
+                        pass
                 print("  Refresh to latest: clio computer-use install --upgrade")
+                print("  Diagnostics: clio computer-use doctor")
                 return
             print("cua-driver: not installed")
             print("  Run: clio computer-use install")
+            return
+        if action == "doctor":
+            import sys as _sys
+            from tools.computer_use.doctor import run_doctor
+            code = run_doctor(
+                include=list(getattr(args, "include", []) or []),
+                skip=list(getattr(args, "skip", []) or []),
+                json_output=bool(getattr(args, "json", False)),
+            )
+            _sys.exit(code)
+        if action == "permissions":
+            import sys as _sys
+            perms_action = getattr(args, "computer_use_perms_action", None)
+            if perms_action == "grant":
+                from tools.computer_use.permissions import request_permissions_grant
+                _sys.exit(request_permissions_grant())
+            if perms_action == "status":
+                import json as _json
+                from tools.computer_use.permissions import computer_use_status
+                st = computer_use_status()
+                if bool(getattr(args, "json", False)):
+                    print(_json.dumps(st, indent=2, sort_keys=True))
+                    _sys.exit(0 if st["ready"] else 1)
+                if not st["platform_supported"]:
+                    print(f"Computer Use is not supported on {st['platform']}.")
+                    _sys.exit(1)
+                if not st["installed"]:
+                    print("cua-driver: not installed. Run: clio computer-use install")
+                    _sys.exit(1)
+                glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
+                print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")
+                if st["can_grant"]:  # macOS TCC permissions
+                    print(f"  {glyph(st['accessibility'])} Accessibility")
+                    print(f"  {glyph(st['screen_recording'])} Screen Recording")
+                    if not st["ready"]:
+                        print("  Grant: clio computer-use permissions grant")
+                else:  # no TCC model — readiness is driver health
+                    print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
+                for c in st["checks"]:
+                    if c["status"] != "ok":
+                        print(f"  ⚠ {c['label']}: {c['message']}")
+                if st["error"]:
+                    print(f"  ⚠ {st['error']}")
+                _sys.exit(0 if st["ready"] else 1)
+            computer_use_perms.print_help()
             return
         # No subcommand → show help
         computer_use_parser.print_help()

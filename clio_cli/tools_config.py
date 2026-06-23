@@ -99,7 +99,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
-    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
 
 
@@ -535,21 +535,22 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS)",
+        "name": "Computer Use (macOS/Windows/Linux)",
         "icon": "🖱️",
-        "platform_gate": "darwin",
+        "platform_gate": ["darwin", "win32", "linux"],
         "providers": [
             {
                 "name": "cua-driver (background)",
                 "badge": "★ recommended · free · local",
                 "tag": (
-                    "macOS background computer-use via SkyLight SPIs — does "
-                    "NOT steal your cursor or focus. Works with any model."
+                    "Cross-platform background computer-use — does NOT steal "
+                    "your cursor or focus. Works with any model. macOS, "
+                    "Windows, and Linux."
                 ),
                 "env_vars": [
                     # cua-driver reads HOME/TMPDIR from the process env, no
                     # extra keys required. CLIO_CUA_DRIVER_VERSION is an
-                    # optional pin for reproducibility across macOS updates.
+                    # optional pin for reproducibility across OS updates.
                 ],
                 "post_setup": "cua_driver",
             },
@@ -596,6 +597,20 @@ TOOLSET_ENV_REQUIREMENTS = {
 def _cua_driver_cmd() -> str:
     """Return the cua-driver executable name/path, honoring non-empty overrides."""
     return os.environ.get("CLIO_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+
+
+def _cua_driver_env() -> dict:
+    """Environment for spawning cua-driver during install / version probes.
+
+    Applies the same telemetry policy (disabled by default) the runtime MCP
+    backend uses, so it's consistent across every cua-driver spawn site.
+    Falls back to ``os.environ`` if the backend helper can't be imported.
+    """
+    try:
+        from tools.computer_use.cua_backend import cua_driver_child_env
+        return cua_driver_child_env()
+    except Exception:
+        return dict(os.environ)
 
 
 def _pip_install(
@@ -667,54 +682,6 @@ def _pip_install(
 
 
 
-def _check_cua_driver_asset_for_arch() -> bool:
-    """Check whether the latest CUA release ships an asset for this architecture.
-
-    Returns True if the asset likely exists (or if we cannot determine it).
-    Returns False and prints a warning when the asset is confirmed missing,
-    so callers can skip the install attempt and avoid a raw 404.
-    """
-    import platform as _plat
-    import urllib.request
-
-    machine = _plat.machine()  # "x86_64" or "arm64"
-    if machine == "arm64":
-        # arm64 (Apple Silicon) assets are always published.
-        return True
-
-    # x86_64 / Intel — probe the latest release for an architecture-specific
-    # asset before falling through to the upstream installer.
-    api_url = (
-        "https://api.github.com/repos/trycua/cua/releases/latest"
-    )
-    try:
-        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            release = _json.loads(resp.read().decode())
-        tag = release.get("tag_name", "")
-        assets = release.get("assets", [])
-        arch_names = {"x86_64", "amd64"}
-        has_asset = any(
-            any(a in a_info.get("name", "").lower() for a in arch_names)
-            for a_info in assets
-        )
-        if not has_asset:
-            _print_warning(
-                f"    Latest CUA release ({tag}) has no Intel (x86_64) asset."
-            )
-            _print_info(
-                "    CUA Driver currently only ships Apple Silicon builds."
-            )
-            _print_info(
-                "    See: https://github.com/trycua/cua/issues/1493"
-            )
-            return False
-    except Exception:
-        # Network / API failure — proceed and let the installer handle it.
-        pass
-    return True
-
-
 def install_cua_driver(upgrade: bool = False) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
@@ -729,32 +696,41 @@ def install_cua_driver(upgrade: bool = False) -> bool:
       by ``clio computer-use install --upgrade``.
 
     Returns True iff cua-driver is installed (or successfully refreshed)
-    when the function returns. macOS-only — silently returns False on
-    other platforms.
+    when the function returns. Works on macOS, Windows, and Linux.
     """
     import platform as _plat
     import shutil
     import subprocess
 
-    if _plat.system() != "Darwin":
-        if upgrade:
-            # Silent on non-macOS — `clio update` calls this for every
-            # user; only macOS users with cua-driver care.
-            return False
-        _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+    system = _plat.system()  # "Darwin", "Windows", "Linux"
+
+    # cua-driver ships for macOS, Windows, and Linux. On anything else, no-op:
+    # silently for the upgrade/update caller (so `clio update` never warns), and
+    # with a warning for an explicit toolset-enable.
+    if system not in ("Darwin", "Windows", "Linux"):
+        if not upgrade:
+            _print_warning(f"    Computer Use (cua-driver) isn't supported on {system}.")
         return False
 
     driver_cmd = _cua_driver_cmd()
     binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
+    # We do NOT pre-probe the GitHub release for a matching arch asset: the
+    # upstream installer bakes the release tag and errors cleanly on a missing
+    # asset, and the probe produced false negatives (cua-driver-rs cuts are all
+    # prereleases) that wrongly blocked installs on Windows / Linux / Intel mac.
     if not binary and not upgrade:
-        if not shutil.which("curl"):
-            _print_warning("    curl not found — install manually:")
-            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
-            return False
-        if not _check_cua_driver_asset_for_arch():
-            return False
+        if system == "Windows":
+            if not shutil.which("powershell"):
+                _print_warning("    PowerShell not found — install manually:")
+                _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+                return False
+        else:
+            if not shutil.which("curl"):
+                _print_warning("    curl not found — install manually:")
+                _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
+                return False
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
@@ -763,22 +739,23 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             version = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                env=_cua_driver_env(),
             ).stdout.strip()
             _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
-        _print_info("    Grant macOS permissions if not done yet:")
-        _print_info("      System Settings > Privacy & Security > Accessibility")
-        _print_info("      System Settings > Privacy & Security > Screen Recording")
+        _print_platform_permission_hints(system)
         return True
 
     # upgrade=True path — refresh to the latest upstream release.
-    if not shutil.which("curl"):
-        _print_warning("    curl not found — cannot refresh cua-driver.")
-        return bool(binary)
-
-    if not _check_cua_driver_asset_for_arch():
-        return bool(binary)
+    if system == "Windows":
+        if not shutil.which("powershell"):
+            _print_warning("    PowerShell not found — cannot refresh cua-driver.")
+            return bool(binary)
+    else:
+        if not shutil.which("curl"):
+            _print_warning("    curl not found — cannot refresh cua-driver.")
+            return bool(binary)
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
@@ -786,6 +763,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             before = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                env=_cua_driver_env(),
             ).stdout.strip()
         except Exception:
             before = ""
@@ -798,6 +776,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             after = subprocess.run(
                 [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
+                env=_cua_driver_env(),
             ).stdout.strip()
             if after and after != before:
                 _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
@@ -805,40 +784,77 @@ def install_cua_driver(upgrade: bool = False) -> bool:
                 _print_info(f"    {driver_cmd} up to date: {after}")
         except Exception:
             pass
+    if ok:
+        _print_platform_permission_hints(system)
     return ok
 
 
-def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
-    """Run the upstream cua-driver install.sh. Returns True on success.
+def _print_platform_permission_hints(system: str) -> None:
+    """Print platform-specific permission/setup hints after install."""
+    if system == "Darwin":
+        _print_info("    Grant macOS permissions if not done yet:")
+        _print_info("      System Settings > Privacy & Security > Accessibility")
+        _print_info("      System Settings > Privacy & Security > Screen Recording")
+    elif system == "Windows":
+        _print_info("    For SSH access, enable the daemon in your interactive session:")
+        _print_info("      cua-driver autostart enable")
+        _print_info("      cua-driver autostart kick")
+    elif system == "Linux":
+        _print_info("    Ensure AT-SPI accessibility is enabled:")
+        _print_info("      GNOME: gsettings set org.gnome.desktop.interface toolkit-accessibility true")
+        _print_info("    For SSH: loginctl enable-linger $USER")
+        _print_info("    Wayland preview: set CUA_DRIVER_RS_ENABLE_WAYLAND=1")
 
+
+def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
+    """Run the upstream cua-driver installer. Returns True on success.
+
+    Uses install.sh on macOS/Linux and install.ps1 on Windows.
     The script is idempotent: it always downloads the latest release, so
     re-running it on an already-installed system performs an upgrade.
     """
     import shutil
     import subprocess
+    import sys as _sys
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
-        "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
-    )
+    is_windows = _sys.platform == "win32"
+
+    if is_windows:
+        install_cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            "irm https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.ps1 | iex",
+        ]
+        install_hint = (
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            '"irm https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.ps1 | iex"'
+        )
+    else:
+        install_cmd = (
+            '/bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.sh)"'
+        )
+        install_hint = install_cmd
+
     if verbose:
-        _print_info(f"    {label} cua-driver (macOS background computer-use)...")
+        _print_info(f"    {label} cua-driver (background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
+
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        if is_windows:
+            result = subprocess.run(install_cmd, timeout=300, env=_cua_driver_env())
+        else:
+            result = subprocess.run(install_cmd, shell=True, timeout=300, env=_cua_driver_env())
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
-                _print_info("    IMPORTANT — grant macOS permissions now:")
-                _print_info("      System Settings > Privacy & Security > Accessibility")
-                _print_info("      System Settings > Privacy & Security > Screen Recording")
-                _print_info("    Both must allow the terminal / Clio process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      {install_hint}")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
