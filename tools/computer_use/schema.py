@@ -69,12 +69,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["som", "vision", "ax"],
                 "description": (
-                    "Capture mode. `som` (default) is a screenshot with "
-                    "numbered overlays on every interactable element plus "
-                    "the AX tree — best for vision models, lets you click "
-                    "by element index. `vision` is a plain screenshot. "
-                    "`ax` is the accessibility tree only (no image; useful "
-                    "for text-only models)."
+                    "Capture mode. `ax` (DEFAULT) is the accessibility tree "
+                    "only — NO screenshot, so it's fast and cheap; use it to "
+                    "navigate apps that expose a good AX tree (browsers, "
+                    "native apps, IDEs) by clicking elements by index. `som` "
+                    "is a screenshot with numbered overlays on every element "
+                    "plus the AX tree — use it only when you need to SEE the "
+                    "pixels (visual verification, or targets with no AX "
+                    "element like canvas/games/desktop icons); it costs a full "
+                    "screenshot every call and is much slower. `vision` is a "
+                    "plain screenshot (no overlays)."
                 ),
             },
             "app": {
@@ -234,7 +238,19 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "If true, take a follow-up capture after the action "
                     "and include it in the response. Saves a round-trip "
-                    "when you need to verify an action's effect."
+                    "when you need to verify an action's effect. The "
+                    "follow-up uses the fast AX tree by default (no "
+                    "screenshot) — see `capture_after_mode`."
+                ),
+            },
+            "capture_after_mode": {
+                "type": "string",
+                "enum": ["som", "vision", "ax"],
+                "description": (
+                    "Mode for the `capture_after` follow-up. Defaults to "
+                    "`ax` (fast, no screenshot) — enough to confirm most "
+                    "state changes. Set to `som`/`vision` only when you need "
+                    "to VISUALLY verify the result."
                 ),
             },
         },

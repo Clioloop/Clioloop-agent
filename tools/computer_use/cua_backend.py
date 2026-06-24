@@ -126,6 +126,27 @@ def _cua_telemetry_disabled() -> bool:
         return True
 
 
+def _configured_max_image_dimension() -> Optional[int]:
+    """Longest-side cap (px) for the screenshots cua-driver emits.
+
+    Smaller images mean faster vision round-trips on the (now rare, AX-first)
+    screenshot captures. Reads ``computer_use.max_image_dimension`` from
+    config.yaml; default 1280. Return None (or config 0) to leave cua-driver's
+    own default (1568) untouched.
+    """
+    try:
+        from clio_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        val = cu.get("max_image_dimension", 1280)
+        if val in (None, 0, "0"):
+            return None
+        return int(val)
+    except Exception:
+        return 1280
+
+
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Return the environment dict for spawning cua-driver.
 
@@ -1001,6 +1022,17 @@ class CuaDriverBackend(ComputerUseBackend):
         except Exception as e:
             logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
 
+        # Cap the screenshot resolution cua-driver emits at the source, so the
+        # (now rare, AX-first) screenshot captures send a smaller image to the
+        # model — faster vision round-trips. Configurable via
+        # computer_use.max_image_dimension; 0/None leaves cua-driver's default.
+        try:
+            dim = _configured_max_image_dimension()
+            if dim:
+                self.set_config(max_image_dimension=int(dim))
+        except Exception as e:
+            logger.debug("cua-driver set max_image_dimension failed: %s", e)
+
     def stop(self) -> None:
         # Tear the cua-driver session down before disconnecting so the
         # driver can clean up per-session state (cursor overlay, recording
@@ -1220,13 +1252,19 @@ class CuaDriverBackend(ComputerUseBackend):
                 if wt:
                     window_title = wt.group(1)
         else:
-            # get_window_state: AX tree + screenshot.
+            # get_window_state: AX tree (+ screenshot only for 'som').
+            # Pass capture_mode through so 'ax' skips rendering/transferring a
+            # screenshot entirely (the fast, text-only navigation path);
+            # 'som' still gets the numbered-overlay screenshot. Without this we
+            # fell back to cua-driver's default (som) and produced an image
+            # even for 'ax'.
             gws_out = self._session.call_tool(
                 "get_window_state",
                 {
                     "pid": self._active_pid,
                     "window_id": self._active_window_id,
                     "session": self._session_id,
+                    "capture_mode": mode,
                 },
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
@@ -1259,8 +1297,13 @@ class CuaDriverBackend(ComputerUseBackend):
 
             # Image may arrive as an MCP image part or inside
             # structuredContent (screenshot_png_b64) depending on the driver
-            # build — _image_from_tool_result handles both.
-            png_b64, image_mime_type = _image_from_tool_result(gws_out)
+            # build — _image_from_tool_result handles both. In 'ax' mode we
+            # never want pixels: drop any image an older driver returns so the
+            # response stays text-only (fast, no per-step screenshot).
+            if mode == "ax":
+                png_b64, image_mime_type = None, None
+            else:
+                png_b64, image_mime_type = _image_from_tool_result(gws_out)
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)

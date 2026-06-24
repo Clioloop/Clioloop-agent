@@ -2992,3 +2992,104 @@ class TestWindowActions:
         enum = COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"]
         for a in ("list_windows", "focus_window", "minimize"):
             assert a in enum
+
+
+# ---------------------------------------------------------------------------
+# Latency defaults: AX-first navigation (no screenshot per step)
+# ---------------------------------------------------------------------------
+
+class TestAxFirstDefaults:
+    def test_capture_defaults_to_ax_no_screenshot(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "capture"})  # no mode specified
+        cap = next(c for c in noop_backend.calls if c[0] == "capture")
+        assert cap[1]["mode"] == "ax"
+
+    def test_capture_som_still_available(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "capture", "mode": "som"})
+        cap = next(c for c in noop_backend.calls if c[0] == "capture")
+        assert cap[1]["mode"] == "som"
+
+    def test_capture_after_follows_with_ax_by_default(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "click", "element": 5, "capture_after": True})
+        caps = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert caps, "capture_after should trigger a follow-up capture"
+        assert caps[-1][1]["mode"] == "ax"  # AX, not a screenshot
+
+    def test_capture_after_mode_override_to_som(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "click", "element": 5,
+            "capture_after": True, "capture_after_mode": "som",
+        })
+        caps = [c for c in noop_backend.calls if c[0] == "capture"]
+        assert caps[-1][1]["mode"] == "som"
+
+    def test_schema_documents_capture_after_mode(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "capture_after_mode" in props
+        assert set(props["capture_after_mode"]["enum"]) == {"som", "vision", "ax"}
+
+    def test_configured_max_image_dimension_default(self):
+        from unittest.mock import patch
+        import tools.computer_use.cua_backend as cb
+        with patch("clio_cli.config.load_config", return_value={}):
+            assert cb._configured_max_image_dimension() == 1280
+
+    def test_configured_max_image_dimension_zero_means_unset(self):
+        from unittest.mock import patch
+        import tools.computer_use.cua_backend as cb
+        with patch("clio_cli.config.load_config",
+                   return_value={"computer_use": {"max_image_dimension": 0}}):
+            assert cb._configured_max_image_dimension() is None
+
+    def test_configured_max_image_dimension_custom(self):
+        from unittest.mock import patch
+        import tools.computer_use.cua_backend as cb
+        with patch("clio_cli.config.load_config",
+                   return_value={"computer_use": {"max_image_dimension": 900}}):
+            assert cb._configured_max_image_dimension() == 900
+
+    @staticmethod
+    def _gws_responses(windows):
+        # list_windows, then a get_window_state that DOES include a screenshot
+        # (older drivers / som default) so we can prove 'ax' drops it.
+        return [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": "✅ App — 1 elements\n", "images": [], "isError": False,
+             "structuredContent": {
+                 "elements": [{"element_index": 0, "role": "button",
+                               "label": "x", "frame": {"x": 0, "y": 0, "w": 10, "h": 10}}],
+                 "screenshot_png_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+                 "screenshot_width": 100, "screenshot_height": 100,
+             }},
+        ]
+
+    def test_capture_ax_passes_capture_mode_and_drops_image(self):
+        windows = [{"app_name": "App", "pid": 1, "window_id": 2,
+                    "is_on_screen": True, "title": "t", "z_index": 0,
+                    "x": 0, "y": 0, "width": 100, "height": 100}]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = self._gws_responses(windows)
+        cap = backend.capture(mode="ax")
+        assert cap.png_b64 is None, "ax must not carry a screenshot"
+        assert cap.elements, "ax must still return the AX tree"
+        gws = [c for c in backend._session.call_tool.call_args_list
+               if c.args and c.args[0] == "get_window_state"]
+        assert gws and gws[-1].args[1].get("capture_mode") == "ax"
+
+    def test_capture_som_keeps_image_and_passes_capture_mode(self):
+        windows = [{"app_name": "App", "pid": 1, "window_id": 2,
+                    "is_on_screen": True, "title": "t", "z_index": 0,
+                    "x": 0, "y": 0, "width": 100, "height": 100}]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = self._gws_responses(windows)
+        cap = backend.capture(mode="som")
+        assert cap.png_b64 is not None, "som must keep the screenshot"
+        gws = [c for c in backend._session.call_tool.call_args_list
+               if c.args and c.args[0] == "get_window_state"]
+        assert gws and gws[-1].args[1].get("capture_mode") == "som"

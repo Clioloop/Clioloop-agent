@@ -357,9 +357,15 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    # Post-action verification defaults to the fast AX tree (text, no
+    # screenshot). The model can opt back into a screenshot for visual
+    # verification with capture_after_mode='som' (or 'vision').
+    follow_mode = str(args.get("capture_after_mode", "ax"))
+    if follow_mode not in {"som", "vision", "ax"}:
+        follow_mode = "ax"
 
     if action == "capture":
-        mode = str(args.get("mode", "som"))
+        mode = str(args.get("mode", "ax"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
@@ -379,7 +385,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "list_windows":
         wins = backend.list_windows(
@@ -402,7 +408,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             return json.dumps({
                 "error": "focus_window requires pid (+ window_id) or app",
             })
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "minimize":
         pid = args.get("pid")
@@ -414,7 +420,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             pid=int(pid) if pid is not None else None,
             window_id=int(wid) if wid is not None else None,
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -435,7 +441,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -452,7 +458,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -464,22 +470,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -885,6 +891,7 @@ def _route_capture_through_aux_vision(
 
 def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    mode: str = "ax",
 ) -> Any:
     if not do_capture:
         return _text_response(res)
@@ -897,8 +904,10 @@ def _maybe_follow_capture(
         # Preserve the app context established by the preceding capture/focus_app so
         # that capture_after=True re-captures the same app rather than the frontmost
         # window (which may have changed if the action caused a focus shift).
+        # Default to the fast AX tree (no screenshot); the caller passes
+        # mode='som'/'vision' only when a visual check is needed.
         last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        cap = backend.capture(mode=mode, app=last_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
