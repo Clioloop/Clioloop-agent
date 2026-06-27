@@ -169,9 +169,16 @@ def _get_backend() -> ComputerUseBackend:
         return _backend
 
 
-def reset_backend_for_tests() -> None:  # pragma: no cover
-    """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
+def shutdown_backend() -> None:
+    """Tear down the cached computer-use backend, if any.
+
+    Stops the cua-driver MCP subprocess + its asyncio bridge thread and clears
+    the process-global singleton. A no-op (and import-light) when computer-use
+    was never used this process. Called from the agent's close() path so the
+    cua-driver child does not linger as an orphan across agent lifecycles — a
+    real problem on Windows, where these accumulate.
+    """
+    global _backend
     with _backend_lock:
         if _backend is not None:
             try:
@@ -179,6 +186,12 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             except Exception:
                 pass
         _backend = None
+
+
+def reset_backend_for_tests() -> None:  # pragma: no cover
+    """Test helper — tear down the cached backend and session approval state."""
+    global _session_auto_approve, _always_allow
+    shutdown_backend()
     _session_auto_approve = False
     _always_allow = set()
 

@@ -2923,6 +2923,15 @@ class AIAgent:
         except Exception:
             pass
 
+        # 3b. Tear down the computer-use (cua-driver) backend so the MCP
+        # subprocess + its bridge thread don't linger as orphans. Process-
+        # global singleton, so this is a no-op when computer-use was unused.
+        try:
+            from tools.computer_use import shutdown_backend as _cu_shutdown
+            _cu_shutdown()
+        except Exception:
+            pass
+
         # 4. Close active child agents
         try:
             with self._active_children_lock:

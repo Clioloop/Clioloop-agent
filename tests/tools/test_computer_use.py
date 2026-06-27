@@ -1416,6 +1416,8 @@ class TestCuaDriverSessionReconnect:
         session._lifecycle_future = None
         session._setup_error = None
         session._call_tool_async = lambda name, args: ("call", name, args)
+        session._reconnecting = False
+        session.on_reconnect = None
         # Record what reconnect does — stop then start, in that order.
         session._reconnect_log = []
         session._stop_lifecycle_locked = lambda: session._reconnect_log.append("stop")
@@ -1467,6 +1469,157 @@ class TestCuaDriverSessionReconnect:
             session.call_tool("list_apps", {})
         # Exactly one attempt, no reconnect.
         assert len(bridge.calls) == 1
+
+    def _mcp_connection_closed_error(self):
+        """Build the McpError the SDK raises to an in-flight request when the
+        cua-driver read stream closes mid-call (code CONNECTION_CLOSED)."""
+        from mcp.shared.exceptions import McpError
+        from mcp.types import CONNECTION_CLOSED, ErrorData
+        return McpError(ErrorData(code=CONNECTION_CLOSED, message="Connection closed"))
+
+    def test_call_tool_reconnects_after_mcp_connection_closed(self):
+        """A dead daemon surfaces as McpError(CONNECTION_CLOSED), not a raw
+        anyio transport error — it must still trigger reconnect-once."""
+        err = self._mcp_connection_closed_error()
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.effects = [err, {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 2
+
+    def test_call_tool_timeout_reconnects_only_when_ping_dead(self):
+        """A timeout from a DEAD daemon (ping fails) must reconnect+retry; a
+        timeout from a genuinely SLOW op (ping ok) must propagate untouched."""
+        import concurrent.futures
+
+        # Dead: ping reports not-alive -> reconnect + retry succeeds.
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.effects = [concurrent.futures.TimeoutError(), {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+        session.ping_alive = lambda timeout=2.0: False
+        assert session.call_tool("capture", {}) == {"ok": True}
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 2
+
+        # Slow-but-alive: ping ok -> timeout propagates, no reconnect.
+        class FakeBridgeSlow:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise concurrent.futures.TimeoutError()
+
+        bridge2 = FakeBridgeSlow()
+        session2 = self._make_session(bridge2)
+        session2.ping_alive = lambda timeout=2.0: True
+        import pytest
+        with pytest.raises(concurrent.futures.TimeoutError):
+            session2.call_tool("capture", {})
+        assert session2._reconnect_log == []
+        assert len(bridge2.calls) == 1
+
+    def test_reconnect_reissues_session_identity_via_callback(self):
+        """After a transport rebuild the on_reconnect hook must run once so
+        start_session/config are re-declared on the fresh connection."""
+        from anyio import ClosedResourceError
+
+        class FakeBridge:
+            def __init__(self):
+                self.effects = [ClosedResourceError(), {"ok": True}]
+
+            def run(self, value, timeout=None):
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        session = self._make_session(FakeBridge())
+        ran = []
+        session.on_reconnect = lambda: ran.append("reinit")
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert ran == ["reinit"]
+
+    def test_restart_is_a_noop_while_reconnecting(self):
+        """The re-entrancy guard: a failed call inside the on_reconnect hook
+        must NOT spawn a nested reconnect (no recursion / no extra stop+start)."""
+        session = self._make_session(_DummyBridge())
+        session._reconnecting = True
+        session._restart_session_locked()
+        assert session._reconnect_log == []
+
+
+class _DummyBridge:
+    def run(self, value, timeout=None):
+        return None
+
+
+class TestShutdownBackend:
+    """shutdown_backend() tears down the cached cua-driver backend so its MCP
+    subprocess + bridge thread don't linger as orphans across agent lifecycles.
+    """
+
+    def test_shutdown_backend_stops_and_clears_singleton(self):
+        from tools.computer_use import tool as cu_tool
+
+        class FakeBackend:
+            def __init__(self):
+                self.stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        fake = FakeBackend()
+        with cu_tool._backend_lock:
+            cu_tool._backend = fake
+        cu_tool.shutdown_backend()
+        assert fake.stopped is True
+        assert cu_tool._backend is None
+
+    def test_shutdown_backend_noop_when_unused(self):
+        from tools.computer_use import tool as cu_tool
+        with cu_tool._backend_lock:
+            cu_tool._backend = None
+        # Must not raise when computer-use was never started this process.
+        cu_tool.shutdown_backend()
+        assert cu_tool._backend is None
+
+    def test_shutdown_backend_swallows_stop_errors(self):
+        from tools.computer_use import tool as cu_tool
+
+        class BoomBackend:
+            def stop(self):
+                raise RuntimeError("teardown blew up")
+
+        with cu_tool._backend_lock:
+            cu_tool._backend = BoomBackend()
+        cu_tool.shutdown_backend()  # error swallowed
+        assert cu_tool._backend is None
 
 
 class TestCaptureAppFilterNoMatch:

@@ -47,7 +47,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
     ActionResult,
@@ -575,6 +575,14 @@ class _CuaDriverSession:
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
         self._setup_error: Optional[BaseException] = None
+        # Invoked once after a successful reconnect (NOT on the first start)
+        # so the owner can re-establish session-scoped state — cua-driver's
+        # start_session identity + config overrides are lost when the daemon
+        # dies, and a bare transport reconnect would silently degrade them.
+        # Set by CuaDriverBackend. Runs while _reconnecting is True so the
+        # re-init calls can't recurse into another reconnect.
+        self.on_reconnect: Optional[Callable[[], None]] = None
+        self._reconnecting = False
 
     def _require_started(self) -> None:
         if not self._started:
@@ -797,18 +805,68 @@ class _CuaDriverSession:
 
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
-        """Return True for MCP/stdio failures that are recoverable by reconnecting."""
+        """Return True for MCP/stdio failures that are recoverable by reconnecting.
+
+        Covers two distinct death signatures observed when cua-driver exits:
+          * stdio transport teardown — anyio ``ClosedResourceError`` /
+            ``BrokenResourceError`` / ``EndOfStream`` or a plain
+            ``BrokenPipeError`` / ``EOFError`` (e.g. writing to a dead stdin).
+          * a clean in-flight failure — when the read stream closes mid-request
+            the MCP SDK answers every pending request with a ``JSONRPCError``
+            carrying code ``CONNECTION_CLOSED`` (-32000), surfaced as an
+            ``McpError`` (mcp/shared/session.py). The class name is generic, so
+            we match on the error code / message rather than the type name.
+        """
         name = exc.__class__.__name__
         module = getattr(exc.__class__, "__module__", "")
-        return (
+        if (
             name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
             or (module.startswith("anyio") and "Resource" in name)
             or isinstance(exc, (BrokenPipeError, EOFError))
-        )
+        ):
+            return True
+        # McpError("Connection closed") — the dead-driver signal for a request
+        # that was in flight when the transport dropped. Inspect defensively so
+        # an SDK shape change (missing `.error`, renamed constant) degrades to
+        # "not recoverable" rather than crashing the detector.
+        err = getattr(exc, "error", None)
+        if err is not None:
+            try:
+                from mcp.types import CONNECTION_CLOSED as _CC
+            except Exception:
+                _CC = -32000
+            if getattr(err, "code", None) == _CC:
+                return True
+            msg = getattr(err, "message", None)
+            if isinstance(msg, str) and "connection closed" in msg.lower():
+                return True
+        return False
+
+    async def _ping_async(self) -> Any:
+        return await self._session.send_ping()
+
+    def ping_alive(self, timeout: float = 2.0) -> bool:
+        """Best-effort liveness probe. Returns True only if the driver answers
+        a ``ping`` within ``timeout``; any failure/timeout/dead-session returns
+        False. Used to tell a genuinely-slow op apart from a dead daemon when a
+        ``call_tool`` times out — a dead daemon never answers, so the ping also
+        times out and we conclude the session must be rebuilt."""
+        if not self._started or self._session is None:
+            return False
+        try:
+            self._bridge.run(self._ping_async(), timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     def _restart_session_locked(self) -> None:
         """Recreate the MCP session after the daemon/stdin transport was closed.
         Caller must hold self._lock (the reconnect-once retry path holds it)."""
+        if self._reconnecting:
+            # Re-entrancy guard: the on_reconnect callback re-issues
+            # start_session/set_config through call_tool; those must never
+            # trigger another reconnect from inside this one.
+            return
         if self._started:
             try:
                 self._stop_lifecycle_locked()
@@ -820,19 +878,46 @@ class _CuaDriverSession:
         self._capability_version = ""
         self._start_lifecycle_locked()
         self._started = True
+        # Re-establish session-scoped state on the fresh transport. Runs with
+        # the guard set so nested call_tool failures don't recurse; best-effort
+        # so a re-init hiccup never defeats the reconnect itself.
+        if self.on_reconnect is not None:
+            self._reconnecting = True
+            try:
+                self.on_reconnect()
+            except Exception as e:
+                logger.debug("cua-driver post-reconnect re-init failed: %s", e)
+            finally:
+                self._reconnecting = False
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
         # 15s ceiling (was 30): a slow/blocked cua-driver op — e.g.
         # get_window_state on a busy app, or an interaction on a window whose
         # UI thread is momentarily stalled — should fail fast with a clear
-        # error instead of hanging the agent. A plain timeout raises
-        # (TimeoutError) and is NOT a closed-session error, so it does NOT
-        # trigger the reconnect-retry below (no compounding to 2×).
+        # error instead of hanging the agent.
         self._require_started()
         try:
             return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except Exception as e:
-            if not self._is_closed_session_error(e):
+            # While re-initialising a fresh transport (start_session/set_config
+            # re-issued by the on_reconnect callback), don't attempt to recover
+            # again — surface the error and let the outer call_tool own retries.
+            if self._reconnecting:
+                raise
+            recover = self._is_closed_session_error(e)
+            if not recover and isinstance(e, (TimeoutError, concurrent.futures.TimeoutError)):
+                # A timeout is ambiguous: the daemon may be dead (the
+                # between-tasks case — the request hangs forever and only our
+                # bridge timeout fires) or the op may be genuinely slow. Probe
+                # liveness with a short ping: no answer ⇒ dead ⇒ rebuild; an
+                # answer ⇒ slow op ⇒ propagate (preserve fail-fast, no 2× cost).
+                if not self.ping_alive():
+                    logger.warning(
+                        "cua-driver unresponsive during %s (ping failed); reconnecting once",
+                        name,
+                    )
+                    recover = True
+            if not recover:
                 raise
             # Daemon restart closes the cached stdio channel. Reconnect once and
             # retry exactly one more time — never loop, to avoid hammering a
@@ -988,8 +1073,41 @@ class CuaDriverBackend(ComputerUseBackend):
         # degrade to the anonymous / unsynced path documented in the
         # MCP server instructions.
         self._session_id: str = f"clio-{uuid.uuid4().hex[:12]}"
+        # Re-establish session identity + config whenever the session layer
+        # rebuilds a dead transport, so a recovered driver keeps this run's
+        # cursor identity and screenshot-cap config instead of silently
+        # degrading to the anonymous/default path.
+        self._session.on_reconnect = self._post_connect_init
 
     # ── Lifecycle ──────────────────────────────────────────────────
+    def _post_connect_init(self) -> None:
+        """Declare session identity + apply config on a freshly-connected
+        transport. Shared by start() (first connect) and the session's
+        on_reconnect hook (after a dead-daemon rebuild). Each step is
+        best-effort — cua-driver accepts anonymous/default calls, so a
+        failure here degrades rather than aborts."""
+        # Declare the run's session identity to cua-driver. From the
+        # cua-driver server instructions: "start_session(session) once
+        # at the start of a run → declares THIS run's identity (a
+        # stable id you choose). Pass that same `session` on every
+        # action below. It owns your agent cursor (a distinct color
+        # per id) and follows the run across apps/windows."
+        try:
+            self._session.call_tool("start_session", {"session": self._session_id})
+        except Exception as e:
+            logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
+
+        # Cap the screenshot resolution cua-driver emits at the source, so the
+        # (now rare, AX-first) screenshot captures send a smaller image to the
+        # model — faster vision round-trips. Configurable via
+        # computer_use.max_image_dimension; 0/None leaves cua-driver's default.
+        try:
+            dim = _configured_max_image_dimension()
+            if dim:
+                self.set_config(max_image_dimension=int(dim))
+        except Exception as e:
+            logger.debug("cua-driver set max_image_dimension failed: %s", e)
+
     def start(self) -> None:
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
@@ -1007,31 +1125,7 @@ class CuaDriverBackend(ComputerUseBackend):
         import importlib
         importlib.invalidate_caches()
         self._session.start()
-
-        # Declare the run's session identity to cua-driver. From the
-        # cua-driver server instructions: "start_session(session) once
-        # at the start of a run → declares THIS run's identity (a
-        # stable id you choose). Pass that same `session` on every
-        # action below. It owns your agent cursor (a distinct color
-        # per id) and follows the run across apps/windows." Failure
-        # to start the session is non-fatal — cua-driver's tools
-        # accept anonymous calls (the cursor just won't render),
-        # so we degrade rather than abort.
-        try:
-            self._session.call_tool("start_session", {"session": self._session_id})
-        except Exception as e:
-            logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
-
-        # Cap the screenshot resolution cua-driver emits at the source, so the
-        # (now rare, AX-first) screenshot captures send a smaller image to the
-        # model — faster vision round-trips. Configurable via
-        # computer_use.max_image_dimension; 0/None leaves cua-driver's default.
-        try:
-            dim = _configured_max_image_dimension()
-            if dim:
-                self.set_config(max_image_dimension=int(dim))
-        except Exception as e:
-            logger.debug("cua-driver set max_image_dimension failed: %s", e)
+        self._post_connect_init()
 
     def stop(self) -> None:
         # Tear the cua-driver session down before disconnecting so the

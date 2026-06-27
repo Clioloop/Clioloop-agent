@@ -37,4 +37,5 @@ from tools.computer_use.tool import (  # noqa: F401
     set_approval_callback,
     check_computer_use_requirements,
     get_computer_use_schema,
+    shutdown_backend,
 )
