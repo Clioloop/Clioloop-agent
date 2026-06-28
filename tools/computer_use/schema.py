@@ -1,9 +1,12 @@
 """Schema for the generic `computer_use` tool.
 
-Model-agnostic. Any tool-calling model can drive this. Vision-capable models
-should prefer `capture(mode='som')` then `click(element=N)` — much more
-reliable than pixel coordinates. Pixel coordinates remain supported for
-models that were trained on them (e.g. Claude's computer-use RL).
+Model-agnostic. Any tool-calling model can drive this. The default capture
+mode is `som` (screenshot + numbered element overlays): the model SEES the
+screen and clicks elements by their visible index — much more reliable than
+pixel coordinates, and essential on Windows/Linux where the accessibility
+tree is often incomplete. `ax` (tree only, no screenshot) is an opt-in fast
+path for apps with a known-good AX tree. Pixel coordinates remain supported
+for models that were trained on them (e.g. Claude's computer-use RL).
 """
 
 from __future__ import annotations
@@ -69,15 +72,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["som", "vision", "ax"],
                 "description": (
-                    "Capture mode. `ax` (DEFAULT) is the accessibility tree "
-                    "only — NO screenshot, so it's fast and cheap; use it to "
-                    "navigate apps that expose a good AX tree (browsers, "
-                    "native apps, IDEs) by clicking elements by index. `som` "
-                    "is a screenshot with numbered overlays on every element "
-                    "plus the AX tree — use it only when you need to SEE the "
-                    "pixels (visual verification, or targets with no AX "
-                    "element like canvas/games/desktop icons); it costs a full "
-                    "screenshot every call and is much slower. `vision` is a "
+                    "Capture mode. `som` (DEFAULT) is a screenshot with "
+                    "numbered overlays on every interactable element plus the "
+                    "AX tree — you SEE the screen and click the numbered "
+                    "element you want; the most reliable path on every "
+                    "platform, and the only dependable one on Windows/Linux "
+                    "where the AX tree is often incomplete. `ax` is the "
+                    "accessibility tree only — NO screenshot, fast and cheap; "
+                    "use it as a speed optimization for apps with a known-good "
+                    "AX tree (browsers, native apps, IDEs) once you've "
+                    "confirmed the elements are well-labeled. `vision` is a "
                     "plain screenshot (no overlays)."
                 ),
             },

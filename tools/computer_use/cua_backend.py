@@ -78,6 +78,14 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
+# Capture (get_window_state / screenshot) renders AND transfers an image —
+# with SOM the default it draws numbered overlays on every step, which is far
+# heavier than a click. The generic 15s call timeout was tripping on slower
+# Windows hosts (observed ~22s capture hangs), blinding the agent for the rest
+# of the task. Give captures more headroom; clicks/keys keep the fast default
+# so they still fail fast and trigger reconnect.
+_CAPTURE_TIMEOUT = 30.0
+
 # Whole-screen / desktop capture. cua-driver is a window-oriented driver —
 # its `get_window_state` / `screenshot` tools capture a single window (by
 # pid + window_id), and there is no MCP tool that captures the entire virtual
@@ -129,22 +137,24 @@ def _cua_telemetry_disabled() -> bool:
 def _configured_max_image_dimension() -> Optional[int]:
     """Longest-side cap (px) for the screenshots cua-driver emits.
 
-    Smaller images mean faster vision round-trips on the (now rare, AX-first)
-    screenshot captures. Reads ``computer_use.max_image_dimension`` from
-    config.yaml; default 1280. Return None (or config 0) to leave cua-driver's
-    own default (1568) untouched.
+    Smaller images mean faster, cheaper vision round-trips. Since SOM is now
+    the default capture mode, a screenshot is sent on most steps, so the cap
+    matters: 1280px PNGs ran ~2.7MB and drove 15-27s vision turns. Default
+    1024 roughly halves the bytes while keeping numbered overlays legible.
+    Reads ``computer_use.max_image_dimension`` from config.yaml. Return None
+    (or config 0) to leave cua-driver's own default (1568) untouched.
     """
     try:
         from clio_cli.config import load_config
 
         cfg = load_config() or {}
         cu = cfg.get("computer_use") or {}
-        val = cu.get("max_image_dimension", 1280)
+        val = cu.get("max_image_dimension", 1024)
         if val in (None, 0, "0"):
             return None
         return int(val)
     except Exception:
-        return 1280
+        return 1024
 
 
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -294,9 +304,31 @@ def cua_driver_update_nudge() -> Optional[str]:
 _update_checked = False
 
 
+def _auto_upgrade_driver_enabled() -> bool:
+    """Whether to auto-upgrade cua-driver on a detected version mismatch.
+
+    Off by default — an upgrade shells out to the installer (network +
+    binary replace), so we only do it when the user opts in via
+    ``computer_use.auto_upgrade_driver: true`` in config.yaml.
+    """
+    try:
+        from clio_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        return bool(cu.get("auto_upgrade_driver", False))
+    except Exception:
+        return False
+
+
 def _maybe_nudge_update() -> None:
     """Emit an update nudge at most once per process, off-thread so the
-    (cached, ~20h) GitHub poll never blocks the first computer_use action."""
+    (cached, ~20h) GitHub poll never blocks the first computer_use action.
+
+    A stale driver is the usual cause of platform-specific click/drag
+    regressions (the 0.6.5→0.6.8 drift behind the misclick reports), so the
+    nudge is a WARNING, not info — and when the user has opted in, the
+    upgrade runs automatically."""
     global _update_checked
     if _update_checked:
         return
@@ -304,11 +336,34 @@ def _maybe_nudge_update() -> None:
 
     def _run() -> None:
         try:
-            msg = cua_driver_update_nudge()
+            state = cua_driver_update_check()
         except Exception:
             return
-        if msg:
-            logger.info("computer_use: %s", msg)
+        if not state or not state.get("update_available"):
+            return
+        latest = state.get("latest_version") or "?"
+        current = state.get("current_version") or "?"
+        if _auto_upgrade_driver_enabled():
+            logger.warning(
+                "computer_use: upgrading cua-driver %s → %s "
+                "(computer_use.auto_upgrade_driver is on)…", current, latest,
+            )
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "clio_cli.main",
+                     "computer-use", "install", "--upgrade"],
+                    capture_output=True, text=True, timeout=300,
+                    stdin=subprocess.DEVNULL, env=cua_driver_child_env(),
+                )
+            except Exception as e:
+                logger.warning("computer_use: auto-upgrade failed: %s", e)
+            return
+        logger.warning(
+            "computer_use: cua-driver %s is available (you have %s); update "
+            "with `clio computer-use install --upgrade` (stale drivers cause "
+            "click/drag misfires). Set computer_use.auto_upgrade_driver: true "
+            "to upgrade automatically.", latest, current,
+        )
 
     threading.Thread(
         target=_run, name="cua-driver-update-check", daemon=True
@@ -1319,6 +1374,7 @@ class CuaDriverBackend(ComputerUseBackend):
                         "quality": 85,
                         "session": self._session_id,
                     },
+                    timeout=_CAPTURE_TIMEOUT,
                 )
                 png_b64, image_mime_type = _image_from_tool_result(sc_out)
                 if not png_b64:
@@ -1335,6 +1391,7 @@ class CuaDriverBackend(ComputerUseBackend):
                         "window_id": self._active_window_id,
                         "session": self._session_id,
                     },
+                    timeout=_CAPTURE_TIMEOUT,
                 )
                 png_b64, image_mime_type = _image_from_tool_result(gws_out)
                 # Still grab the window title — it's cheap and useful in the
@@ -1360,6 +1417,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     "session": self._session_id,
                     "capture_mode": mode,
                 },
+                timeout=_CAPTURE_TIMEOUT,
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
@@ -1502,7 +1560,19 @@ class CuaDriverBackend(ComputerUseBackend):
         if modifiers:
             args["modifier"] = modifiers
 
-        return self._action(tool, args)
+        res = self._action(tool, args)
+
+        # Double-click is the gesture most often reported as "didn't take"
+        # (e.g. opening a desktop icon). It can fail transiently — a stale
+        # element snapshot, or the OS swallowing one of the two events under
+        # load. Retry the identical call once before giving up. This is
+        # coordinate-space-agnostic (we re-send the same args, not a guessed
+        # pixel) so it can't make a good target worse.
+        if tool == "double_click" and not res.ok:
+            logger.debug("double_click failed (%s); retrying once", res.message)
+            res = self._action(tool, args)
+
+        return res
 
     def drag(
         self,

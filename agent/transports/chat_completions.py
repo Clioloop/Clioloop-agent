@@ -15,6 +15,7 @@ from typing import Any, Dict
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from agent.screenshot_eviction import evict_openai_screenshots
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
@@ -275,6 +276,11 @@ class ChatCompletionsTransport(ProviderTransport):
         # Pass model so the Gemini thought_signature (extra_content) is kept for
         # Gemini targets and stripped for strict non-Gemini providers.
         sanitized = self.convert_messages(messages, model=model)
+
+        # Drop stale computer-use screenshots so a long capture-heavy task
+        # doesn't re-send every prior image on each turn (token + latency
+        # blowup). Copy-on-write — safe on the canonical history.
+        sanitized = evict_openai_screenshots(sanitized)
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")

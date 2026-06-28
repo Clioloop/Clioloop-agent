@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -75,10 +76,25 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
+
+    On Windows, ``os.replace`` raises ``PermissionError`` (WinError 5,
+    "Access is denied") when the target is momentarily held open by another
+    process — antivirus on-access scanners and search indexers routinely do
+    this for files just written. That surfaced as ``Failed to save config:
+    [WinError 5]`` and a lost write. Retry the replace a few times with a
+    short backoff so a transient lock no longer drops the user's config.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    attempts = 5 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(str(tmp_path), real_path)
+            return real_path
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1 * (attempt + 1))
     return real_path
 
 

@@ -2216,7 +2216,7 @@ class TestStructuredElementsConsumption:
             }],
         }
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -2266,7 +2266,7 @@ class TestStructuredElementsConsumption:
             }],
         }
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -2316,7 +2316,7 @@ class TestStructuredElementsConsumption:
             "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         )
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -2361,7 +2361,7 @@ class TestStructuredElementsConsumption:
             ],
         }
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -2396,7 +2396,7 @@ class TestStructuredElementsConsumption:
             ],
         }
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -2585,7 +2585,7 @@ class TestElementTokenAttachment:
             "is_on_screen": True, "title": "", "z_index": 0,
         }]}
 
-        def fake_call_tool(name, args):
+        def fake_call_tool(name, args, **kwargs):
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
@@ -3148,13 +3148,22 @@ class TestWindowActions:
 
 
 # ---------------------------------------------------------------------------
-# Latency defaults: AX-first navigation (no screenshot per step)
+# Capture defaults: SOM-first (screenshot + overlays) for reliable grounding,
+# AX-only as an opt-in fast path. capture_after stays AX (cheap verification).
 # ---------------------------------------------------------------------------
 
 class TestAxFirstDefaults:
-    def test_capture_defaults_to_ax_no_screenshot(self, noop_backend):
+    def test_capture_defaults_to_som_screenshot(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
         handle_computer_use({"action": "capture"})  # no mode specified
+        cap = next(c for c in noop_backend.calls if c[0] == "capture")
+        # SOM is the default so the model always SEES the screen — essential on
+        # Windows/Linux where the AX tree is sparse (caused the misclicks).
+        assert cap[1]["mode"] == "som"
+
+    def test_capture_ax_mode_opt_in(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "capture", "mode": "ax"})
         cap = next(c for c in noop_backend.calls if c[0] == "capture")
         assert cap[1]["mode"] == "ax"
 
@@ -3190,7 +3199,7 @@ class TestAxFirstDefaults:
         from unittest.mock import patch
         import tools.computer_use.cua_backend as cb
         with patch("clio_cli.config.load_config", return_value={}):
-            assert cb._configured_max_image_dimension() == 1280
+            assert cb._configured_max_image_dimension() == 1024
 
     def test_configured_max_image_dimension_zero_means_unset(self):
         from unittest.mock import patch
@@ -3246,3 +3255,153 @@ class TestAxFirstDefaults:
         gws = [c for c in backend._session.call_tool.call_args_list
                if c.args and c.args[0] == "get_window_state"]
         assert gws and gws[-1].args[1].get("capture_mode") == "som"
+
+
+# ---------------------------------------------------------------------------
+# Forgiving action aliasing — model synonyms must not hard-fail
+# (root cause of the observed `unknown action 'press'` error).
+# ---------------------------------------------------------------------------
+
+class TestActionAliasing:
+    def test_press_aliases_to_key(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "press", "keys": "enter"})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        assert any(c[0] == "key" for c in noop_backend.calls)
+
+    def test_screenshot_aliases_to_capture(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "screenshot"})
+        assert any(c[0] == "capture" for c in noop_backend.calls)
+
+    def test_left_click_aliases_to_click(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "left_click", "element": 4})
+        assert any(c[0] == "click" for c in noop_backend.calls)
+
+    def test_doubleclick_alias_sets_click_count(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "doubleclick", "element": 2})
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert click_kw["click_count"] == 2
+
+    def test_type_text_alias_routes_to_type(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "type_text", "text": "hi"})
+        type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
+        assert type_kw["text"] == "hi"
+
+    def test_press_alias_still_safety_checked(self, noop_backend):
+        """An aliased `press` of a blocked combo must still be blocked."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "press", "keys": "cmd+shift+q"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "blocked key combo" in parsed["error"]
+
+
+# ---------------------------------------------------------------------------
+# Forgiving drag parameters — models use many shapes for source/target.
+# ---------------------------------------------------------------------------
+
+class TestDragAliasing:
+    def test_generic_from_to_elements(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "drag", "from": 3, "to": 7})
+        assert "error" not in json.loads(out)
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_element"] == 3 and drag_kw["to_element"] == 7
+
+    def test_start_end_coordinates(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "drag", "start": [10, 20], "end": [30, 40],
+        })
+        assert "error" not in json.loads(out)
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_xy"] == (10, 20) and drag_kw["to_xy"] == (30, 40)
+
+    def test_coordinate_plus_to_coordinate(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "drag", "coordinate": [1, 2], "to_coordinate": [3, 4],
+        })
+        assert "error" not in json.loads(out)
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_xy"] == (1, 2) and drag_kw["to_xy"] == (3, 4)
+
+    def test_source_target_elements(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "drag", "source_element": 1, "target_element": 9,
+        })
+        assert "error" not in json.loads(out)
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw["from_element"] == 1 and drag_kw["to_element"] == 9
+
+    def test_missing_target_returns_helpful_error(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "drag", "from_element": 3})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        # The hint must show a concrete example so the model can self-correct.
+        assert "from_element" in parsed.get("hint", "")
+
+
+# ---------------------------------------------------------------------------
+# Double-click reliability — coordinate fallback when element fails.
+# ---------------------------------------------------------------------------
+
+class TestDoubleClickFallback:
+    def test_double_click_falls_back_to_coordinate_on_element_failure(self):
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use import tool as cu_tool
+
+        class FlakyBackend:
+            def __init__(self):
+                self.click_calls = []
+
+            def click(self, **kw):
+                self.click_calls.append(kw)
+                # Element path fails; coordinate path succeeds.
+                if kw.get("element") is not None:
+                    return ActionResult(ok=False, action="click",
+                                        message="element not found")
+                return ActionResult(ok=True, action="click")
+
+        backend = FlakyBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "double_click", "element": 5, "coordinate": [120, 240],
+            })
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        # Two attempts: element (failed), then coordinate (succeeded), both 2x.
+        assert len(backend.click_calls) == 2
+        assert backend.click_calls[0]["element"] == 5
+        assert backend.click_calls[1]["element"] is None
+        assert backend.click_calls[1]["x"] == 120 and backend.click_calls[1]["y"] == 240
+        assert backend.click_calls[1]["click_count"] == 2
+
+    def test_double_click_no_fallback_without_coordinate(self):
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use import tool as cu_tool
+
+        class FailBackend:
+            def __init__(self):
+                self.click_calls = []
+
+            def click(self, **kw):
+                self.click_calls.append(kw)
+                return ActionResult(ok=False, action="click", message="nope")
+
+        backend = FailBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "double_click", "element": 5,
+            })
+        parsed = json.loads(out)
+        assert parsed.get("ok") is False
+        # No coordinate available → exactly one attempt, no fallback.
+        assert len(backend.click_calls) == 1

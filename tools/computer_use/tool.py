@@ -76,6 +76,42 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
+# Synonyms models commonly emit for the canonical action names. Normalizing
+# here keeps the schema enum tight while accepting reasonable variation
+# instead of hard-failing with "unknown action" (e.g. some models trained on
+# other computer-use tools emit `press` for a key press or `screenshot` for a
+# capture).
+_ACTION_ALIASES: Dict[str, str] = {
+    "press": "key",
+    "keypress": "key",
+    "key_press": "key",
+    "press_key": "key",
+    "hotkey": "key",
+    "screenshot": "capture",
+    "screen_capture": "capture",
+    "screencap": "capture",
+    "snapshot": "capture",
+    "left_click": "click",
+    "leftclick": "click",
+    "tap": "click",
+    "double-click": "double_click",
+    "doubleclick": "double_click",
+    "dblclick": "double_click",
+    "right-click": "right_click",
+    "rightclick": "right_click",
+    "middle-click": "middle_click",
+    "middleclick": "middle_click",
+    "type_text": "type",
+    "typetext": "type",
+    "input_text": "type",
+    "enter_text": "type",
+    "list_applications": "list_apps",
+    "list_apps_running": "list_apps",
+    "focus": "focus_app",
+    "activate": "focus_app",
+}
+
+
 # Actions that read, not mutate. Always allowed.
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "list_windows"})
 
@@ -272,6 +308,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
+    # Accept common synonyms so model variation doesn't hard-fail.
+    action = _ACTION_ALIASES.get(action, action)
 
     # Safety: validate actions before approval prompt.
     if action == "type":
@@ -368,6 +406,79 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
+def _coerce_point(val: Any) -> Optional[Tuple[int, int]]:
+    """Coerce a [x, y]-ish value to an (x, y) tuple, or None."""
+    if isinstance(val, (list, tuple)) and len(val) >= 2:
+        try:
+            return (int(val[0]), int(val[1]))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _normalize_drag_args(
+    args: Dict[str, Any]
+) -> Tuple[Optional[int], Optional[int], Optional[Tuple[int, int]], Optional[Tuple[int, int]]]:
+    """Resolve drag source/target across the many shapes models emit.
+
+    Canonical params are from_element/to_element and from_coordinate/
+    to_coordinate, but models frequently use from/to, start/end, or
+    source/target — and pass either an element index (int) or a coordinate
+    ([x, y]). Resolve all of them to (from_element, to_element, from_xy,
+    to_xy).
+    """
+    from_keys = ("from_element", "source_element", "start_element")
+    to_keys = ("to_element", "target_element", "end_element")
+    from_coord_keys = (
+        "from_coordinate", "source_coordinate", "start_coordinate", "from_coord",
+    )
+    to_coord_keys = (
+        "to_coordinate", "target_coordinate", "end_coordinate", "to_coord",
+    )
+    # Generic from/to that may carry either an element int or a coordinate.
+    from_generic = ("from", "source", "start")
+    to_generic = ("to", "target", "end")
+
+    def first_int(keys) -> Optional[int]:
+        for k in keys:
+            v = args.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int):
+                return v
+            if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+                return int(v)
+        return None
+
+    def first_point(keys) -> Optional[Tuple[int, int]]:
+        for k in keys:
+            pt = _coerce_point(args.get(k))
+            if pt is not None:
+                return pt
+        return None
+
+    from_element = first_int(from_keys)
+    to_element = first_int(to_keys)
+    from_xy = first_point(from_coord_keys)
+    to_xy = first_point(to_coord_keys)
+
+    # Generic from/to: int -> element, list -> coordinate.
+    if from_element is None and from_xy is None:
+        from_element = first_int(from_generic)
+        if from_element is None:
+            from_xy = first_point(from_generic)
+    if to_element is None and to_xy is None:
+        to_element = first_int(to_generic)
+        if to_element is None:
+            to_xy = first_point(to_generic)
+
+    # `coordinate` as the source paired with `to_coordinate`/`to` as target.
+    if from_element is None and from_xy is None:
+        from_xy = _coerce_point(args.get("coordinate"))
+
+    return from_element, to_element, from_xy, to_xy
+
+
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
     # Post-action verification defaults to the fast AX tree (text, no
@@ -378,7 +489,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         follow_mode = "ax"
 
     if action == "capture":
-        mode = str(args.get("mode", "ax"))
+        mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         cap = backend.capture(mode=mode, app=args.get("app"))
@@ -454,20 +565,40 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
+        # If a double_click by element didn't take but the model also gave a
+        # coordinate (off the SOM screenshot), retry by pixel — that path is
+        # coordinate-space-correct (mapped via _to_screen_xy) and rescues the
+        # common "open the icon" gesture when element resolution misses.
+        if (
+            not res.ok
+            and click_count == 2
+            and element is not None
+            and x is not None
+            and y is not None
+        ):
+            res = backend.click(
+                element=None, x=x, y=y, button=button or "left",
+                click_count=2, modifiers=args.get("modifiers"),
+            )
         return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action == "drag":
-        has_elements = args.get("from_element") is not None and args.get("to_element") is not None
-        has_coords = args.get("from_coordinate") and args.get("to_coordinate")
-        if not has_elements and not has_coords:
+        from_element, to_element, from_xy, to_xy = _normalize_drag_args(args)
+        has_source = from_element is not None or from_xy is not None
+        has_target = to_element is not None or to_xy is not None
+        if not (has_source and has_target):
             return json.dumps({
-                "error": "drag requires from_coordinate/to_coordinate or from_element/to_element",
+                "error": "drag needs a source AND a target.",
+                "hint": "By visible element: drag from_element=3 to_element=7. "
+                        "By pixel: drag from_coordinate=[120,340] "
+                        "to_coordinate=[800,340]. Run capture(mode='som') first "
+                        "to get element numbers.",
             })
         res = backend.drag(
-            from_element=args.get("from_element"),
-            to_element=args.get("to_element"),
-            from_xy=tuple(args["from_coordinate"]) if args.get("from_coordinate") else None,
-            to_xy=tuple(args["to_coordinate"]) if args.get("to_coordinate") else None,
+            from_element=from_element,
+            to_element=to_element,
+            from_xy=from_xy,
+            to_xy=to_xy,
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
