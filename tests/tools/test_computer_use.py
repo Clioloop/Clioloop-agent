@@ -3405,3 +3405,116 @@ class TestDoubleClickFallback:
         assert parsed.get("ok") is False
         # No coordinate available → exactly one attempt, no fallback.
         assert len(backend.click_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# CUA backend: scroll targeting & list_windows robustness
+# ---------------------------------------------------------------------------
+
+class _RecordingSession:
+    """Minimal stand-in for _CuaDriverSession that records call_tool() and
+    returns canned results. `responses` maps a tool name to either a result
+    dict or a callable(name, args) -> dict (which may raise)."""
+
+    def __init__(self, responses: Dict[str, Any] | None = None):
+        self.calls: List[Dict[str, Any]] = []
+        self.responses = responses or {}
+
+    def call_tool(self, name, args, timeout: float = 15.0):
+        self.calls.append({"name": name, "args": dict(args), "timeout": timeout})
+        resp = self.responses.get(name)
+        if callable(resp):
+            return resp(name, args)
+        if resp is not None:
+            return resp
+        return {"isError": False, "data": {"message": "ok"}}
+
+    def supports_capability(self, capability, tool=None):
+        return False
+
+
+def _make_cua_backend(session):
+    """Build a ComputerUseCUABackend with its session swapped for a fake,
+    bypassing __init__ so no real cua-driver bridge/thread is started."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+    b = CuaDriverBackend.__new__(CuaDriverBackend)
+    b._session = session
+    b._session_id = "test-session"
+    b._snapshot_tokens = {}
+    b._active_pid = 4321
+    b._active_window_id = 7
+    b._active_window_rect = (100, 200, 800, 600)
+    b._active_image_size = None
+    return b
+
+
+class TestCuaScrollTargeting:
+    def test_scroll_without_target_defaults_to_window_centre(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        res = b.scroll(direction="down", amount=3)
+        assert res.ok
+        call = session.calls[-1]
+        assert call["name"] == "scroll"
+        # (100 + 800/2, 200 + 600/2) = (500, 500) — over the window content.
+        assert call["args"]["x"] == 500
+        assert call["args"]["y"] == 500
+        assert call["args"]["direction"] == "down"
+        assert "element_index" not in call["args"]
+
+    def test_scroll_with_element_does_not_add_centre_coords(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.scroll(direction="down", element=3)
+        call = session.calls[-1]
+        assert call["args"]["element_index"] == 3
+        assert "x" not in call["args"] and "y" not in call["args"]
+
+    def test_scroll_without_target_and_no_rect_omits_coords(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b._active_window_rect = None
+        b.scroll(direction="up")
+        call = session.calls[-1]
+        # Degrades gracefully to the pre-existing target-less behaviour.
+        assert "x" not in call["args"] and "y" not in call["args"]
+        assert "element_index" not in call["args"]
+
+
+class TestCuaListWindowsRetry:
+    def test_list_windows_uses_wide_timeout(self):
+        from tools.computer_use.cua_backend import _LIST_WINDOWS_TIMEOUT
+        session = _RecordingSession(
+            {"list_windows": {"structuredContent": {"windows": []}}})
+        b = _make_cua_backend(session)
+        b.list_windows()
+        assert session.calls[-1]["timeout"] == _LIST_WINDOWS_TIMEOUT
+
+    def test_list_windows_retries_once_on_timeout(self):
+        state = {"n": 0}
+
+        def flaky(name, args):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise TimeoutError()
+            return {"structuredContent": {"windows": [
+                {"pid": 10, "window_id": 2, "app_name": "Chrome",
+                 "title": "x", "is_on_screen": True},
+            ]}}
+
+        session = _RecordingSession({"list_windows": flaky})
+        b = _make_cua_backend(session)
+        wins = b.list_windows()
+        assert state["n"] == 2  # one failure + one retry
+        assert wins and wins[0]["app"] == "Chrome"
+
+    def test_list_windows_does_not_retry_more_than_once(self):
+        def always_timeout(name, args):
+            raise TimeoutError()
+
+        session = _RecordingSession({"list_windows": always_timeout})
+        b = _make_cua_backend(session)
+        with pytest.raises(TimeoutError):
+            b.list_windows()
+        # Exactly two attempts (initial + single retry), never a loop.
+        assert len(session.calls) == 2

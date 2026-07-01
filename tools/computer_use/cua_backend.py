@@ -86,6 +86,13 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
 # so they still fail fast and trigger reconnect.
 _CAPTURE_TIMEOUT = 30.0
 
+# list_windows enumerates EVERY top-level window (including minimized /
+# background ones). On a busy Windows box that can exceed the default 15s
+# call_tool ceiling — the source of the observed `list_windows failed:` /
+# `capture failed:` TimeoutErrors. Give the enumeration a wider budget than a
+# normal action (it's read-only and can't damage anything by running long).
+_LIST_WINDOWS_TIMEOUT = 25.0
+
 # Whole-screen / desktop capture. cua-driver is a window-oriented driver —
 # its `get_window_state` / `screenshot` tools capture a single window (by
 # pid + window_id), and there is no MCP tool that captures the entire virtual
@@ -1226,11 +1233,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # enumerable and targetable (e.g. capture(app="Telegram") after it's
         # been minimized). Target selection below still prefers on-screen
         # windows, so the default frontmost-capture behaviour is unchanged.
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": False, "session": self._session_id},
-        )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
+        raw_windows = self._list_windows_raw(on_screen_only=False)
         windows = []
         for w in raw_windows:
             # cua-driver on Linux/X11 surfaces compositor-side windows (the
@@ -1628,6 +1631,17 @@ class CuaDriverBackend(ComputerUseBackend):
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
             args["x"], args["y"] = self._to_screen_xy(x, y)
+        elif self._active_window_rect:
+            # No target given: aim the wheel at the CONTENT of the captured
+            # window. cua-driver's wheel event lands wherever the pointer
+            # (screen coords) is; without a point it hits whatever is under the
+            # OS cursor — on Windows that's often the taskbar/desktop, so Chrome
+            # (and other scroll regions) never move and the model reports it
+            # "cannot scroll". Defaulting to the window centre puts the wheel
+            # over the scrollable viewport. The rect is already screen-global
+            # (set in capture()), so it does NOT go through _to_screen_xy.
+            wx, wy, ww, wh = self._active_window_rect
+            args["x"], args["y"] = int(wx + ww / 2), int(wy + wh / 2)
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
@@ -1692,15 +1706,29 @@ class CuaDriverBackend(ComputerUseBackend):
             return apps
         return []
 
+    def _list_windows_raw(self, on_screen_only: bool = False) -> List[Dict[str, Any]]:
+        """Call the cua-driver `list_windows` MCP tool and return the raw window
+        dicts. Uses a wider timeout than a normal action and retries once on a
+        slow-op timeout: enumeration on a busy Windows host regularly overran
+        the 15s default, surfacing as `list_windows failed:` / `capture
+        failed:` and blinding the agent. call_tool already recovers a
+        dead/closed daemon; this only adds headroom + one retry for a live-but-
+        slow enumeration."""
+        args = {"on_screen_only": bool(on_screen_only), "session": self._session_id}
+        try:
+            out = self._session.call_tool(
+                "list_windows", args, timeout=_LIST_WINDOWS_TIMEOUT)
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            logger.warning("cua-driver list_windows timed out; retrying once")
+            out = self._session.call_tool(
+                "list_windows", args, timeout=_LIST_WINDOWS_TIMEOUT)
+        return (out.get("structuredContent") or {}).get("windows") or []
+
     def list_windows(self, on_screen_only: bool = False) -> List[Dict[str, Any]]:
         """Enumerate ALL top-level windows (incl. minimized / background by
         default) so the agent can see and target every window, not just the
         frontmost one. Returns ``[{app, pid, window_id, title, on_screen}]``."""
-        out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": bool(on_screen_only), "session": self._session_id},
-        )
-        raw = (out.get("structuredContent") or {}).get("windows") or []
+        raw = self._list_windows_raw(on_screen_only)
         result: List[Dict[str, Any]] = []
         for w in raw:
             if w.get("pid") is None or w.get("window_id") is None:
@@ -1746,11 +1774,7 @@ class CuaDriverBackend(ComputerUseBackend):
         front (used to restore/activate a minimized or background window so it
         can be controlled).
         """
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": False, "session": self._session_id},
-        )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
+        raw_windows = self._list_windows_raw(on_screen_only=False)
         windows = []
         for w in raw_windows:
             # Skip compositor windows with a null pid/window_id/app_name
