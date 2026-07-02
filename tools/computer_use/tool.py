@@ -109,16 +109,42 @@ _ACTION_ALIASES: Dict[str, str] = {
     "list_apps_running": "list_apps",
     "focus": "focus_app",
     "activate": "focus_app",
+    "browser": "page",
+    "browser_page": "page",
 }
+
+# Synonyms for the `page` sub-action (page_action). Models trained on other
+# browser tools emit the cua-driver verb names or generic ones.
+_PAGE_ACTION_ALIASES: Dict[str, str] = {
+    "get_text": "read",
+    "text": "read",
+    "read_page": "read",
+    "extract": "read",
+    "query_dom": "query",
+    "dom": "query",
+    "find": "query",
+    "click_element": "click",
+    "execute_javascript": "js",
+    "eval": "js",
+    "evaluate": "js",
+    "javascript": "js",
+    "scroll_page": "scroll",
+}
+
+# `page` sub-actions that only read page state — exempt from the approval
+# gate, like capture/list_apps.
+_PAGE_READONLY = frozenset({"read", "query"})
 
 
 # Actions that read, not mutate. Always allowed.
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "list_windows"})
 
 # Actions that mutate user-visible state. Go through approval.
+# `page` is here because scroll/click/js mutate the page; the read-only
+# sub-actions (see _PAGE_READONLY) are exempted at the approval gate.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "drag", "scroll", "page", "type", "key", "set_value", "focus_app",
     "focus_window", "minimize",
 })
 
@@ -294,6 +320,15 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("set_value", {"value": value, "element": element}))
         return ActionResult(ok=True, action="set_value")
 
+    def page(self, *, pid: Optional[int] = None, action: str,
+             **page_args: Any) -> Dict[str, Any]:
+        self.calls.append(("page", {"pid": pid, "action": action, **page_args}))
+        return {"data": "", "isError": False}
+
+    def page_scroll(self, **kw) -> ActionResult:
+        self.calls.append(("page_scroll", kw))
+        return ActionResult(ok=True, action="page_scroll")
+
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -331,8 +366,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
+    # Approval gate (destructive actions only). Read-only page sub-actions
+    # (text extraction, DOM queries) don't mutate anything — treat them
+    # like capture/list_apps.
+    needs_approval = action in _DESTRUCTIVE_ACTIONS
+    if action == "page" and _canon_page_action(args) in _PAGE_READONLY:
+        needs_approval = False
+    if needs_approval:
         err = _request_approval(action, args)
         if err is not None:
             return err
@@ -382,6 +422,12 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     return json.dumps({"error": "denied by user", "action": action})
 
 
+def _canon_page_action(args: Dict[str, Any]) -> str:
+    """Resolve the `page` sub-action, accepting common synonyms."""
+    sub = str(args.get("page_action") or args.get("subaction") or "").strip().lower()
+    return _PAGE_ACTION_ALIASES.get(sub, sub)
+
+
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     if action in {"click", "double_click", "right_click", "middle_click"}:
         if args.get("element") is not None:
@@ -395,7 +441,22 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         dst = args.get("to_element") or args.get("to_coordinate")
         return f"drag {src} → {dst}"
     if action == "scroll":
-        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
+        unit = " pages" if args.get("by") == "page" else ""
+        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{unit}"
+    if action == "page":
+        sub = _canon_page_action(args)
+        if sub == "scroll":
+            if args.get("to") in ("top", "bottom"):
+                return f"page scroll to {args['to']}"
+            px = args.get("amount_px")
+            return (f"page scroll {args.get('direction', 'down')}"
+                    + (f" {px}px" if px else ""))
+        if sub in {"click", "query"}:
+            return f"page {sub} {str(args.get('selector', ''))[:60]!r}"
+        if sub == "js":
+            js = str(args.get("javascript", ""))
+            return f"page js {js[:60]!r}" + ("..." if len(js) > 60 else "")
+        return f"page {sub or '?'}"
     if action == "type":
         text = args.get("text", "")
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
@@ -606,6 +667,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
+        by = args.get("by")
         res = backend.scroll(
             direction=args.get("direction", "down"),
             amount=int(args.get("amount", 3)),
@@ -613,8 +675,12 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=coord[0] if coord and coord[0] is not None else None,
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
+            by=by if by in ("line", "page") else None,
         )
         return _maybe_follow_capture(backend, res, capture_after, follow_mode)
+
+    if action == "page":
+        return _dispatch_page(backend, args, capture_after, follow_mode)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
@@ -632,6 +698,129 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     return json.dumps({"error": f"unknown action {action!r}"})
+
+
+# Default / max cap on text returned by page read/query/js. Feed pages
+# (Facebook, X, …) can carry hundreds of KB of visible text; uncapped
+# extraction would blow the session context in one call.
+_PAGE_DEFAULT_MAX_CHARS = 10_000
+_PAGE_MAX_MAX_CHARS = 100_000
+
+_PAGE_UNAVAILABLE_HINT = (
+    "Browser page access needs a supported bridge: Chromium browsers "
+    "(Chrome/Edge/Brave/Electron) on Windows/Linux need to be launched with "
+    "--remote-debugging-port=9222 for scroll/click/js; macOS drives "
+    "Safari/Chrome via Apple Events (see enable_javascript_apple_events). "
+    "Text extraction (page_action='read'/'query') may still work via the "
+    "accessibility tree. Otherwise fall back to action='scroll' (wheel) + "
+    "capture."
+)
+
+
+def _coerce_page_max_chars(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return _PAGE_DEFAULT_MAX_CHARS
+    if n < 1:
+        return _PAGE_DEFAULT_MAX_CHARS
+    return min(n, _PAGE_MAX_MAX_CHARS)
+
+
+def _page_response(out: Dict[str, Any], sub: str, max_chars: int) -> str:
+    """Normalize a raw cua-driver `page` result into the model-facing JSON."""
+    is_err = bool(out.get("isError"))
+    data = out.get("structuredContent") or out.get("data")
+    if isinstance(data, (dict, list)):
+        text = json.dumps(data, ensure_ascii=False)
+    else:
+        text = str(data) if data is not None else ""
+    payload: Dict[str, Any] = {"ok": not is_err, "page_action": sub}
+    if len(text) > max_chars:
+        payload["result"] = text[:max_chars]
+        payload["truncated"] = True
+        payload["total_chars"] = len(text)
+        payload["note"] = (
+            f"result truncated to {max_chars} of {len(text)} chars; raise "
+            "max_chars or narrow with selector="
+        )
+    else:
+        payload["result"] = text
+    if is_err:
+        payload["hint"] = _PAGE_UNAVAILABLE_HINT
+    return json.dumps(payload)
+
+
+def _dispatch_page(backend: ComputerUseBackend, args: Dict[str, Any],
+                   capture_after: bool, follow_mode: str) -> Any:
+    """Route action='page' to the browser-page bridge.
+
+    Sub-actions: scroll (deterministic pixel scroll + metrics), read (visible
+    text), query (DOM query by CSS), click (CSS click), js (arbitrary JS).
+    """
+    sub = _canon_page_action(args)
+    if sub not in {"scroll", "read", "query", "click", "js"}:
+        return json.dumps({
+            "error": f"unknown page_action {sub or '(missing)'!r}",
+            "hint": "use page_action='scroll'|'read'|'query'|'click'|'js'",
+        })
+    pid = args.get("pid")
+    pid = int(pid) if pid is not None else None
+    max_chars = _coerce_page_max_chars(args.get("max_chars"))
+
+    if sub == "scroll":
+        res = backend.page_scroll(
+            pid=pid,
+            direction=str(args.get("direction", "down")),
+            amount_px=(int(args["amount_px"])
+                       if args.get("amount_px") is not None else None),
+            selector=args.get("selector"),
+            to=args.get("to"),
+        )
+        if not res.ok:
+            res.message = (f"{res.message} | {_PAGE_UNAVAILABLE_HINT}"
+                           if res.message else _PAGE_UNAVAILABLE_HINT)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
+
+    if sub == "read":
+        out = backend.page(pid=pid, action="get_text")
+        return _page_response(out, sub, max_chars)
+
+    if sub == "query":
+        selector = args.get("selector") or args.get("css_selector")
+        if not selector:
+            return json.dumps({"error": "page query requires `selector`"})
+        page_args: Dict[str, Any] = {"css_selector": str(selector)}
+        attributes = args.get("attributes")
+        if isinstance(attributes, list) and attributes:
+            page_args["attributes"] = [str(a) for a in attributes]
+        out = backend.page(pid=pid, action="query_dom", **page_args)
+        return _page_response(out, sub, max_chars)
+
+    if sub == "click":
+        selector = args.get("selector")
+        if not selector:
+            return json.dumps({"error": "page click requires `selector`"})
+        out = backend.page(pid=pid, action="click_element",
+                           selector=str(selector))
+        is_err = bool(out.get("isError"))
+        data = out.get("data")
+        res = ActionResult(
+            ok=not is_err, action="page_click",
+            message=str(data)[:500] if isinstance(data, str) else "",
+        )
+        if is_err:
+            res.message = (f"{res.message} | {_PAGE_UNAVAILABLE_HINT}"
+                           if res.message else _PAGE_UNAVAILABLE_HINT)
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
+
+    # sub == "js"
+    javascript = args.get("javascript") or args.get("js")
+    if not javascript:
+        return json.dumps({"error": "page js requires `javascript`"})
+    out = backend.page(pid=pid, action="execute_javascript",
+                       javascript=str(javascript))
+    return _page_response(out, sub, max_chars)
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +924,88 @@ def _coerce_max_elements(value: Any) -> int:
     return n
 
 
+def _compute_scroll_state(
+    elements: List[UIElement],
+    window_rect: Optional[Tuple[int, int, int, int]],
+) -> Optional[Dict[str, Any]]:
+    """Detect content extending past the visible viewport.
+
+    AT-SPI/UIA/AX trees include nodes that are scrolled out of view; their
+    frames land outside the window rect. Counting them gives the model the
+    signal it otherwise lacks — "this form/page continues below the fold" —
+    without any extra driver round-trip.
+
+    Element frames are screen-global on most driver builds but some AT-SPI
+    toolkits report window-local coordinates; disambiguate by majority vote
+    on which interpretation fits the elements horizontally (the x-axis
+    rarely scrolls). Returns None when there is no positive evidence of
+    off-viewport content — absence of a scroll_state is NOT proof the page
+    ends (some browsers prune far-off-screen AX nodes).
+    """
+    if not window_rect or not elements:
+        return None
+    wx, wy, ww, wh = window_rect
+    if ww <= 0 or wh <= 0:
+        return None
+    sized = [e for e in elements if e.bounds[2] > 0 and e.bounds[3] > 0]
+    if not sized:
+        return None
+
+    slack = 2
+    fit_global = sum(
+        1 for e in sized
+        if wx - slack <= e.bounds[0] and e.bounds[0] + e.bounds[2] <= wx + ww + slack
+    )
+    fit_local = sum(
+        1 for e in sized
+        if -slack <= e.bounds[0] and e.bounds[0] + e.bounds[2] <= ww + slack
+    )
+    # Tie goes to screen-global — the documented cua-driver frame space.
+    origin_x, origin_y = (wx, wy) if fit_global >= fit_local else (0, 0)
+    bottom = origin_y + wh
+    right = origin_x + ww
+
+    below = [e for e in sized if e.bounds[1] >= bottom - 1]
+    above = [e for e in sized if e.bounds[1] + e.bounds[3] <= origin_y + 1]
+    beside = [e for e in sized if e.bounds[0] >= right - 1]
+    scrollbars = [e.index for e in elements if "scroll" in e.role.lower()]
+
+    if not below and not above and not beside and not scrollbars:
+        return None
+    state: Dict[str, Any] = {}
+    if below:
+        state["content_below"] = len(below)
+        sample = [
+            f"#{e.index} {e.role} {e.label[:40]!r}" for e in below[:3]
+        ]
+        state["below_sample"] = sample
+    if above:
+        state["content_above"] = len(above)
+    if beside:
+        state["content_right"] = len(beside)
+    if scrollbars:
+        state["scrollbar_elements"] = scrollbars[:8]
+    return state
+
+
+def _scroll_state_summary(state: Dict[str, Any]) -> Optional[str]:
+    parts: List[str] = []
+    below = state.get("content_below")
+    if below:
+        sample = ", ".join(state.get("below_sample", [])[:3])
+        parts.append(
+            f"⚠ {below} element(s) extend BELOW the visible area"
+            + (f" (e.g. {sample})" if sample else "")
+            + " — scroll down before assuming the page/form ends here"
+        )
+    above = state.get("content_above")
+    if above:
+        parts.append(f"{above} element(s) are above the viewport (scroll up to reach)")
+    if not parts:
+        return None
+    return "  " + "; ".join(parts)
+
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
@@ -763,6 +1034,13 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if element_index:
         summary_lines.extend(element_index)
+    # Off-viewport content warning — computed over the FULL element list
+    # (not the max_elements-truncated view) so a long form's below-the-fold
+    # fields register even when the response is capped.
+    scroll_state = _compute_scroll_state(cap.elements, cap.window_rect)
+    scroll_state_line = _scroll_state_summary(scroll_state) if scroll_state else None
+    if scroll_state_line:
+        summary_lines.append(scroll_state_line)
     # Multimodal and AX paths both reference `summary`; build it once up-front
     # so the aux-vision routing branch (which fires before either path is
     # selected) has a valid value to hand to _route_capture_through_aux_vision.
@@ -815,6 +1093,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 "summary": "\n".join(summary_lines),
                 "vision_unavailable": True,
             }
+            if scroll_state:
+                payload["scroll_state"] = scroll_state
             if truncated_elements:
                 payload["truncated_elements"] = truncated_elements
             return json.dumps(payload)
@@ -840,7 +1120,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
-                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
+                     "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                     **({"scroll_state": scroll_state} if scroll_state else {})},
         }
     # AX-only (or image-missing fallback): text path actually carries the
     # `elements` array, so the truncation note applies here.
@@ -860,6 +1141,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         "total_elements": total_elements,
         "summary": summary,
     }
+    if scroll_state:
+        payload["scroll_state"] = scroll_state
     if truncated_elements:
         payload["truncated_elements"] = truncated_elements
     return json.dumps(payload)

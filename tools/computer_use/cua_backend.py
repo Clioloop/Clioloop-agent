@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import concurrent.futures
+import hashlib
 import json
 import logging
 import os
@@ -475,6 +476,42 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
             element_token=token,
         ))
     return elements
+
+
+def _parse_page_scroll_metrics(data: Any) -> Optional[Dict[str, Any]]:
+    """Extract the JSON metrics object page_scroll's JS returns.
+
+    The driver relays execute_javascript results as a string (sometimes
+    wrapped in prose or quoted, depending on the browser bridge), or as an
+    already-decoded dict. Find the first JSON object in the payload; None
+    when there isn't one.
+    """
+    if isinstance(data, dict):
+        return data
+    if not isinstance(data, str) or not data.strip():
+        return None
+    text = data.strip()
+    # Direct parse first; then a doubly-encoded string; then the first
+    # {...} block embedded in prose.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, str):
+            inner = json.loads(parsed)
+            if isinstance(inner, dict):
+                return inner
+    except (ValueError, TypeError):
+        pass
+    m = re.search(r"\{[^{}]*\}", text)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            pass
+    return None
 
 
 def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
@@ -1491,6 +1528,7 @@ class CuaDriverBackend(ComputerUseBackend):
             window_title=window_title,
             png_bytes_len=png_bytes_len,
             image_mime_type=image_mime_type,
+            window_rect=self._active_window_rect,
         )
 
     # ── Pointer ────────────────────────────────────────────────────
@@ -1616,6 +1654,8 @@ class CuaDriverBackend(ComputerUseBackend):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        by: Optional[str] = None,
+        verify: bool = True,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1626,23 +1666,92 @@ class CuaDriverBackend(ComputerUseBackend):
             "direction": direction,
             "amount": max(1, min(50, amount)),
         }
+        if by in ("line", "page"):
+            args["by"] = by
+        # Always pin the target window. cua-driver's scroll delivers wheel
+        # events to the pid's focused region; with a multi-window pid (every
+        # browser) that's ambiguous, and some driver builds outright refuse
+        # ("Provide window_id"). The window we captured is the one the model
+        # is reasoning about — send it on every path, not just element ones.
+        # (An earlier fix aimed x/y at the window centre instead, but the
+        # driver's scroll schema carries no x/y at all — those args are
+        # silently dropped, so window_id is the targeting that actually
+        # holds. Explicit coordinates are still forwarded below for any
+        # future driver that grows wheel-at-point support.)
+        if self._active_window_id is not None:
+            args["window_id"] = self._active_window_id
         if element is not None and self._active_window_id is not None:
             args["element_index"] = element
-            args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
             args["x"], args["y"] = self._to_screen_xy(x, y)
-        elif self._active_window_rect:
-            # No target given: aim the wheel at the CONTENT of the captured
-            # window. cua-driver's wheel event lands wherever the pointer
-            # (screen coords) is; without a point it hits whatever is under the
-            # OS cursor — on Windows that's often the taskbar/desktop, so Chrome
-            # (and other scroll regions) never move and the model reports it
-            # "cannot scroll". Defaulting to the window centre puts the wheel
-            # over the scrollable viewport. The rect is already screen-global
-            # (set in capture()), so it does NOT go through _to_screen_xy.
-            wx, wy, ww, wh = self._active_window_rect
-            args["x"], args["y"] = int(wx + ww / 2), int(wy + wh / 2)
-        return self._action("scroll", args)
+
+        # Wheel scrolls fail *silently*: the driver reports success even when
+        # the events landed on a non-scrollable region (focused address bar,
+        # comment box, taskbar) and nothing moved. Fingerprint the window's
+        # AX state around the scroll so the model gets an explicit
+        # moved=true/false instead of discovering the failure two captures
+        # later. Skipped for element-targeted scrolls: the fingerprint's
+        # get_window_state takes a fresh driver-side snapshot, which can
+        # mark the element_token this very scroll carries as stale.
+        verify = verify and element is None
+        before = self._viewport_fingerprint() if verify else None
+        res = self._action("scroll", args)
+        if verify and res.ok and before is not None:
+            after = self._viewport_fingerprint()
+            if after is not None:
+                moved = after != before
+                res.meta["moved"] = moved
+                if not moved:
+                    hint = (
+                        "viewport did not change after the scroll — the wheel "
+                        "likely landed on a non-scrollable region. Try "
+                        "element=<a scrollable container from capture>, a "
+                        "coordinate over the pane you want to move, by='page', "
+                        "or click inside the pane first to move focus."
+                    )
+                    res.message = f"{res.message} | {hint}" if res.message else hint
+        return res
+
+    def _viewport_fingerprint(self) -> Optional[str]:
+        """Hash of the active window's AX state (roles + labels + frames).
+
+        Used to detect whether a wheel scroll actually moved anything: any
+        viewport movement shifts element frames (or swaps elements entirely),
+        changing the hash. Returns None when no fingerprint could be taken —
+        callers treat that as "unknown", never as evidence of movement.
+        Text-only AX walk (capture_mode='ax'): no screenshot is rendered or
+        transferred, so this is the cheap path, same as ax-mode capture.
+        """
+        if self._active_pid is None:
+            return None
+        args: Dict[str, Any] = {
+            "pid": self._active_pid,
+            "session": self._session_id,
+            "capture_mode": "ax",
+        }
+        if self._active_window_id is not None:
+            args["window_id"] = self._active_window_id
+        try:
+            out = self._session.call_tool("get_window_state", args,
+                                          timeout=_CAPTURE_TIMEOUT)
+        except Exception as e:
+            logger.debug("scroll-verify get_window_state failed: %s", e)
+            return None
+        if out.get("isError"):
+            return None
+        sc_elements = (out.get("structuredContent") or {}).get("elements")
+        if isinstance(sc_elements, list) and sc_elements:
+            elements = _parse_elements_from_structured(sc_elements)
+            sig = ";".join(
+                f"{e.role}|{e.label}|{e.bounds[0]},{e.bounds[1]}"
+                for e in elements
+            )
+        else:
+            data = out.get("data")
+            sig = data if isinstance(data, str) and data else ""
+        if not sig:
+            return None
+        return hashlib.sha1(sig.encode("utf-8", "replace")).hexdigest()
 
     # ── Keyboard ───────────────────────────────────────────────────
     def type_text(self, text: str) -> ActionResult:
@@ -2060,21 +2169,128 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Browser page tool ───────────────────────────────────────────
 
-    def page(self, *, pid: int, action: str,
+    def page(self, *, pid: Optional[int] = None, action: str,
              **page_args: Any) -> Dict[str, Any]:
         """Interact with a browser page loaded in a running app (Chrome,
         Safari, Edge, ...). cua-driver routes through CDP / Apple Events
         / AX tree depending on the target. ``action`` + ``page_args``
-        shape depends on the requested operation (e.g. ``action="eval"``
-        takes ``js: str``); see cua-driver's ``page`` tool description
-        for the full grammar."""
+        shape depends on the requested operation (``execute_javascript``
+        takes ``javascript``, ``query_dom`` takes ``css_selector``, ...);
+        see cua-driver's ``page`` tool description for the full grammar.
+
+        ``pid`` defaults to the window captured last (the one the model is
+        reasoning about); pass it explicitly to target another browser."""
+        if pid is None:
+            pid = self._active_pid
+        if pid is None:
+            return {"data": "No active window — call capture() first "
+                            "(or pass pid= from list_windows).",
+                    "isError": True}
         args: Dict[str, Any] = {
             "pid": int(pid),
             "action": action,
             "session": self._session_id,
         }
+        # Pin the window only when we're implicitly targeting the captured
+        # one — an explicit pid may belong to a different window entirely.
+        if pid == self._active_pid and self._active_window_id is not None:
+            args.setdefault("window_id", self._active_window_id)
         args.update(page_args)
-        return self._session.call_tool("page", args)
+        return self._session.call_tool("page", args, timeout=_CAPTURE_TIMEOUT)
+
+    # JS run inside the page for page_scroll. Deterministic pixel scrolling
+    # with exact metrics back — the wheel path can't tell the model whether
+    # more content exists; this can. Placeholders are filled with
+    # json.dumps'd values so selector strings can't break out of the JS.
+    _PAGE_SCROLL_JS = """
+(() => {
+  const sel = %(selector)s;
+  let el = null;
+  if (sel) {
+    el = document.querySelector(sel);
+    if (!el) return JSON.stringify({error: "no element matches selector: " + sel});
+  }
+  const doc = document.scrollingElement || document.documentElement;
+  const target = el || doc;
+  const horizontal = %(direction)s === "left" || %(direction)s === "right";
+  const vh = el ? el.clientHeight : window.innerHeight;
+  const vw = el ? el.clientWidth : window.innerWidth;
+  const beforeTop = target.scrollTop, beforeLeft = target.scrollLeft;
+  let amount = %(amount_px)s;
+  if (amount === null) amount = Math.max(1, Math.round((horizontal ? vw : vh) * 0.8));
+  const dir = %(direction)s, to = %(to)s;
+  if (to === "top") target.scrollTop = 0;
+  else if (to === "bottom") target.scrollTop = target.scrollHeight;
+  else if (horizontal) target.scrollLeft = beforeLeft + (dir === "left" ? -amount : amount);
+  else target.scrollTop = beforeTop + (dir === "up" ? -amount : amount);
+  const st = target.scrollTop, sh = target.scrollHeight;
+  return JSON.stringify({
+    scrolled_px: Math.round(horizontal ? target.scrollLeft - beforeLeft : st - beforeTop),
+    scroll_top: Math.round(st),
+    scroll_height: Math.round(sh),
+    viewport_height: Math.round(vh),
+    at_top: st <= 1,
+    at_bottom: st + vh >= sh - 2,
+    content_below_px: Math.max(0, Math.round(sh - vh - st))
+  });
+})()
+""".strip()
+
+    def page_scroll(
+        self,
+        *,
+        pid: Optional[int] = None,
+        direction: str = "down",
+        amount_px: Optional[int] = None,
+        selector: Optional[str] = None,
+        to: Optional[str] = None,
+    ) -> ActionResult:
+        """Scroll the browser page (or a CSS-selected scroll container) by an
+        exact pixel amount and return scroll metrics: how far it moved, the
+        current offset, total scrollable height, and whether the bottom was
+        reached. The reliable path for feeds and long forms — unlike wheel
+        events it cannot miss the scrollable region, and the metrics tell
+        the model whether content remains below the fold."""
+        js = self._PAGE_SCROLL_JS % {
+            "selector": json.dumps(selector),
+            "direction": json.dumps(direction),
+            "amount_px": json.dumps(amount_px),
+            "to": json.dumps(to if to in ("top", "bottom") else None),
+        }
+        try:
+            out = self.page(pid=pid, action="execute_javascript", javascript=js)
+        except Exception as e:
+            logger.exception("page_scroll failed")
+            return ActionResult(ok=False, action="page_scroll",
+                                message=f"cua-driver error: {e}")
+        if out.get("isError"):
+            msg = out.get("data") if isinstance(out.get("data"), str) else "page JS failed"
+            return ActionResult(ok=False, action="page_scroll", message=str(msg))
+        metrics = _parse_page_scroll_metrics(out.get("data"))
+        if metrics is None:
+            # JS ran but returned something we can't parse (older driver
+            # wrapping, browser quirk). The scroll itself likely happened —
+            # report ok with the raw payload rather than a false failure.
+            raw = out.get("data")
+            return ActionResult(ok=True, action="page_scroll",
+                                message=f"scrolled (unparsed result: {str(raw)[:200]})")
+        if "error" in metrics:
+            return ActionResult(ok=False, action="page_scroll",
+                                message=str(metrics["error"]))
+        parts = [f"scrolled {metrics.get('scrolled_px', 0)}px {direction}"]
+        below = metrics.get("content_below_px")
+        if metrics.get("at_bottom"):
+            parts.append("reached the bottom (infinite feeds may load more "
+                         "after a moment — scroll again or wait)")
+        elif isinstance(below, (int, float)) and below > 0:
+            parts.append(f"{int(below)}px of content remains below")
+        if metrics.get("scrolled_px") == 0 and not metrics.get("at_bottom") \
+                and not metrics.get("at_top"):
+            parts.append("nothing moved — the target may not be the "
+                         "scrollable container; pass selector= for the "
+                         "scrolling pane")
+        return ActionResult(ok=True, action="page_scroll",
+                            message="; ".join(parts), meta=metrics)
 
     # ── Generic escape hatch ────────────────────────────────────────
 

@@ -20,6 +20,10 @@ Use the `computer_use` tool when you need to interact with native desktop applic
 
 4. **Narrow the scope**: Pass `app='AppName'` to capture only the target app's window, reducing noise and context usage.
 
+5. **Check for content below the fold**: Captures include a `scroll_state` field (and a ⚠ summary line) when elements extend past the visible viewport — scroll down before assuming a form or page ends at the screenshot's edge.
+
+6. **Prefer `page` in browsers**: For feeds and long pages, `action='page'` scrolls by exact pixels with metrics back (`at_bottom`, `content_below_px`), reads posts as text without screenshots, and clicks elements by CSS selector. Chromium on Windows/Linux needs `--remote-debugging-port` for scroll/click/js.
+
 ## Available Actions
 
 | Action | Description |
@@ -30,7 +34,8 @@ Use the `computer_use` tool when you need to interact with native desktop applic
 | `right_click` | Right-click (context menu) |
 | `middle_click` | Middle-click |
 | `drag` | Drag from one element/point to another |
-| `scroll` | Scroll up/down/left/right |
+| `scroll` | Scroll up/down/left/right (`by='page'` for viewport-sized jumps; result carries `moved: true/false`) |
+| `page` | Browser-page bridge — `page_action='scroll'` (pixel-exact, returns scroll metrics), `'read'` (visible text), `'query'` (CSS DOM query), `'click'` (CSS click), `'js'` (run JavaScript) |
 | `type` | Type text into the focused element |
 | `key` | Send key combinations (e.g., `cmd+s`, `ctrl+alt+t`) |
 | `set_value` | Set a native value on an element |

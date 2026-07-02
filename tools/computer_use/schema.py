@@ -42,6 +42,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "middle_click",
                     "drag",
                     "scroll",
+                    "page",
                     "type",
                     "key",
                     "set_value",
@@ -64,7 +65,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "controlled; `minimize` minimizes the target window. "
                     "Use `set_value` for select/popup elements and sliders — "
                     "it selects the matching option directly without opening "
-                    "the native menu (no focus steal)."
+                    "the native menu (no focus steal). `page` talks to the "
+                    "BROWSER PAGE itself (Chrome/Edge/Brave/Safari/Electron): "
+                    "see `page_action` — the preferred way to scroll and read "
+                    "feeds/long pages, with exact scroll metrics back."
                 ),
             },
             # ── capture ────────────────────────────────────────────
@@ -182,7 +186,80 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             },
             "amount": {
                 "type": "integer",
-                "description": "Scroll wheel ticks. Default 3.",
+                "description": (
+                    "Scroll wheel ticks (or pages when by='page'). Default 3."
+                ),
+            },
+            "by": {
+                "type": "string",
+                "enum": ["line", "page"],
+                "description": (
+                    "Scroll unit for action='scroll'. Default 'line' (wheel "
+                    "ticks); 'page' scrolls a full viewport per `amount` — "
+                    "use it to traverse long forms/pages in fewer calls."
+                ),
+            },
+            # ── page (browser) ─────────────────────────────────────
+            "page_action": {
+                "type": "string",
+                "enum": ["scroll", "read", "query", "click", "js"],
+                "description": (
+                    "For action='page' — talk to the browser page in the "
+                    "captured window directly. `scroll`: scroll the page (or "
+                    "a `selector` container) by `amount_px` (default ~one "
+                    "viewport) or to='top'/'bottom'; returns exact metrics "
+                    "(scrolled_px, scroll_height, at_bottom, "
+                    "content_below_px) so you always know whether more "
+                    "content exists. `read`: extract the page's visible text "
+                    "— read feeds/articles WITHOUT screenshots. `query`: "
+                    "find elements by CSS `selector` (with `attributes`). "
+                    "`click`: click the element matching `selector`. `js`: "
+                    "run `javascript` and return its result. Needs a "
+                    "browser; Chromium on Windows/Linux needs "
+                    "--remote-debugging-port for scroll/click/js."
+                ),
+            },
+            "selector": {
+                "type": "string",
+                "description": (
+                    "CSS selector for page_action='query'/'click', or the "
+                    "scroll container for page_action='scroll' (omit to "
+                    "scroll the page itself)."
+                ),
+            },
+            "javascript": {
+                "type": "string",
+                "description": "JavaScript to run for page_action='js'.",
+            },
+            "amount_px": {
+                "type": "integer",
+                "description": (
+                    "Pixels to scroll for page_action='scroll'. Default: "
+                    "~80% of the viewport height."
+                ),
+            },
+            "to": {
+                "type": "string",
+                "enum": ["top", "bottom"],
+                "description": (
+                    "For page_action='scroll': jump straight to the top or "
+                    "bottom instead of scrolling by amount_px."
+                ),
+            },
+            "attributes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Element attributes to include in page_action='query' "
+                    "results (e.g. ['href', 'aria-label'])."
+                ),
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": (
+                    "Cap on text returned by page_action='read'/'query'/'js'. "
+                    "Default 10000."
+                ),
             },
             # ── set_value ──────────────────────────────────────────
             "value": {

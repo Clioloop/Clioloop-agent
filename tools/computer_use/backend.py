@@ -65,6 +65,11 @@ class CaptureResult:
     # When None, downstream consumers fall back to base64-prefix
     # sniffing for back-compat with older drivers.
     image_mime_type: Optional[str] = None
+    # Screen-global rect (x, y, w, h) of the captured window, when the
+    # backend knows it. Lets the response layer compare element bounds
+    # against the visible viewport and warn when content extends past it
+    # (the "didn't realize the form was longer" failure mode).
+    window_rect: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass
@@ -131,11 +136,13 @@ class ComputerUseBackend(ABC):
         self,
         *,
         direction: str,                 # up | down | left | right
-        amount: int = 3,                # wheel ticks
+        amount: int = 3,                # wheel ticks (or pages when by="page")
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        by: Optional[str] = None,       # "line" (default) | "page"
+        verify: bool = True,            # confirm the viewport actually moved
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
@@ -172,6 +179,31 @@ class ComputerUseBackend(ABC):
                        window_id: Optional[int] = None) -> ActionResult:
         """Activate/restore a window (e.g. un-minimize). Default: no-op."""
         return ActionResult(ok=True, action="bring_to_front")
+
+    # ── Browser page access — concrete defaults so non-browser backends
+    # still instantiate; cua-driver overrides both. ──────────────────
+    def page(self, *, pid: Optional[int] = None, action: str,
+             **page_args: Any) -> Dict[str, Any]:
+        """Interact with the browser page loaded in a running app
+        (JS eval / text extraction / DOM query / CSS click).
+        Default: unsupported."""
+        return {"data": "browser page access not supported by this backend",
+                "isError": True}
+
+    def page_scroll(
+        self,
+        *,
+        pid: Optional[int] = None,
+        direction: str = "down",
+        amount_px: Optional[int] = None,
+        selector: Optional[str] = None,
+        to: Optional[str] = None,
+    ) -> ActionResult:
+        """Scroll the browser page (or a CSS-selected container) by an exact
+        pixel amount via page JS and report scroll metrics. Default:
+        unsupported."""
+        return ActionResult(ok=False, action="page_scroll",
+                            message="browser page access not supported by this backend")
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod

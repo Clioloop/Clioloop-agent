@@ -3095,8 +3095,14 @@ class TestCoordinateTransform:
     def test_scroll_xy_transformed(self):
         b = self._backend()
         b.scroll(direction="down", amount=3, x=5, y=5)
-        name, args = b._session.call_tool.call_args.args
-        assert name == "scroll"
+        # Verification (moved-detection) issues get_window_state calls around
+        # the scroll — locate the scroll call rather than assuming it's last.
+        scroll_calls = [
+            c.args for c in b._session.call_tool.call_args_list
+            if c.args[0] == "scroll"
+        ]
+        assert len(scroll_calls) == 1
+        args = scroll_calls[0][1]
         assert (args["x"], args["y"]) == (793, 226)
 
 
@@ -3448,37 +3454,161 @@ def _make_cua_backend(session):
     return b
 
 
+def _scroll_calls(session):
+    return [c for c in session.calls if c["name"] == "scroll"]
+
+
 class TestCuaScrollTargeting:
-    def test_scroll_without_target_defaults_to_window_centre(self):
+    def test_scroll_without_target_pins_captured_window(self):
+        """The driver's scroll schema has no x/y — the wheel goes to the
+        target pid's focused region, so window_id is the only targeting that
+        holds. Untargeted scrolls must pin the window the model captured
+        (multi-window pids — every browser — are ambiguous without it, and
+        some driver builds refuse outright with "Provide window_id")."""
         session = _RecordingSession()
         b = _make_cua_backend(session)
         res = b.scroll(direction="down", amount=3)
         assert res.ok
-        call = session.calls[-1]
-        assert call["name"] == "scroll"
-        # (100 + 800/2, 200 + 600/2) = (500, 500) — over the window content.
-        assert call["args"]["x"] == 500
-        assert call["args"]["y"] == 500
+        call = _scroll_calls(session)[0]
+        assert call["args"]["window_id"] == 7
         assert call["args"]["direction"] == "down"
         assert "element_index" not in call["args"]
+        # The old window-centre hack is gone: the driver silently drops x/y.
+        assert "x" not in call["args"] and "y" not in call["args"]
 
-    def test_scroll_with_element_does_not_add_centre_coords(self):
+    def test_scroll_with_element_keeps_window_id_and_no_coords(self):
         session = _RecordingSession()
         b = _make_cua_backend(session)
         b.scroll(direction="down", element=3)
-        call = session.calls[-1]
+        call = _scroll_calls(session)[0]
         assert call["args"]["element_index"] == 3
+        assert call["args"]["window_id"] == 7
         assert "x" not in call["args"] and "y" not in call["args"]
 
-    def test_scroll_without_target_and_no_rect_omits_coords(self):
+    def test_scroll_without_target_and_no_rect_still_pins_window(self):
         session = _RecordingSession()
         b = _make_cua_backend(session)
         b._active_window_rect = None
         b.scroll(direction="up")
-        call = session.calls[-1]
-        # Degrades gracefully to the pre-existing target-less behaviour.
+        call = _scroll_calls(session)[0]
         assert "x" not in call["args"] and "y" not in call["args"]
         assert "element_index" not in call["args"]
+        assert call["args"]["window_id"] == 7
+
+    def test_scroll_explicit_xy_forwarded(self):
+        # Explicit coordinates keep riding along (screen-mapped) for driver
+        # builds that grow wheel-at-point support.
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b._active_image_size = (800, 600)  # identity scale vs 800x600 rect
+        b.scroll(direction="down", x=50, y=60)
+        call = _scroll_calls(session)[0]
+        assert call["args"]["x"] == 150 and call["args"]["y"] == 260
+
+    def test_scroll_by_page_passthrough(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.scroll(direction="down", amount=2, by="page")
+        call = _scroll_calls(session)[0]
+        assert call["args"]["by"] == "page"
+        assert call["args"]["amount"] == 2
+
+    def test_scroll_invalid_by_dropped(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.scroll(direction="down", by="banana")
+        call = _scroll_calls(session)[0]
+        assert "by" not in call["args"]
+
+
+class TestCuaScrollMovedVerification:
+    """Wheel scrolls fail silently (events land on a non-scrollable region,
+    driver still reports success). The wrapper fingerprints the window's AX
+    state around the scroll and reports moved=true/false so the model can
+    self-correct instead of discovering the failure two captures later."""
+
+    @staticmethod
+    def _elements_payload(labels_ys):
+        return {
+            "isError": False,
+            "data": "✅ App — elements",
+            "structuredContent": {"elements": [
+                {"element_index": i + 1, "role": "AXStaticText", "label": lbl,
+                 "frame": {"x": 10, "y": y, "w": 100, "h": 20}}
+                for i, (lbl, y) in enumerate(labels_ys)
+            ]},
+        }
+
+    def _backend_with_gws(self, payloads):
+        """payloads: successive get_window_state responses."""
+        state = {"i": 0}
+
+        def gws(name, args):
+            p = payloads[min(state["i"], len(payloads) - 1)]
+            state["i"] += 1
+            return p
+
+        session = _RecordingSession({"get_window_state": gws})
+        return _make_cua_backend(session), session
+
+    def test_moved_true_when_ax_state_changes(self):
+        before = self._elements_payload([("Post 1", 100), ("Post 2", 300)])
+        after = self._elements_payload([("Post 2", 80), ("Post 3", 280)])
+        b, session = self._backend_with_gws([before, after])
+        res = b.scroll(direction="down")
+        assert res.ok
+        assert res.meta.get("moved") is True
+        gws_calls = [c for c in session.calls if c["name"] == "get_window_state"]
+        assert len(gws_calls) == 2
+        # The fingerprint walk must be the cheap text-only AX path.
+        assert all(c["args"].get("capture_mode") == "ax" for c in gws_calls)
+
+    def test_moved_false_reports_hint(self):
+        same = self._elements_payload([("Post 1", 100), ("Post 2", 300)])
+        b, _ = self._backend_with_gws([same, same])
+        res = b.scroll(direction="down")
+        assert res.ok
+        assert res.meta.get("moved") is False
+        assert "did not change" in res.message
+
+    def test_no_moved_flag_when_fingerprint_unavailable(self):
+        # Default _RecordingSession get_window_state returns a dict payload
+        # with no elements/text → fingerprint is None → verdict withheld.
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        res = b.scroll(direction="down")
+        assert res.ok
+        assert "moved" not in res.meta
+
+    def test_element_scroll_skips_verification(self):
+        """Element-targeted scrolls must not fingerprint: get_window_state
+        takes a fresh driver-side snapshot, which can stale the
+        element_token the scroll itself carries."""
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.scroll(direction="down", element=4)
+        assert not any(c["name"] == "get_window_state" for c in session.calls)
+
+    def test_verify_false_skips_fingerprints(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.scroll(direction="down", verify=False)
+        assert not any(c["name"] == "get_window_state" for c in session.calls)
+
+    def test_failed_scroll_takes_no_after_fingerprint(self):
+        before = self._elements_payload([("A", 1)])
+
+        def failing_scroll(name, args):
+            return {"isError": True, "data": "boom"}
+
+        session = _RecordingSession({
+            "get_window_state": before, "scroll": failing_scroll,
+        })
+        b = _make_cua_backend(session)
+        res = b.scroll(direction="down")
+        assert not res.ok
+        gws_calls = [c for c in session.calls if c["name"] == "get_window_state"]
+        assert len(gws_calls) == 1  # only the before-fingerprint
 
 
 class TestCuaListWindowsRetry:
@@ -3518,3 +3648,518 @@ class TestCuaListWindowsRetry:
             b.list_windows()
         # Exactly two attempts (initial + single retry), never a loop.
         assert len(session.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Browser page access (action='page'): deterministic scrolling with metrics,
+# text extraction, DOM queries, CSS clicks, JS eval.
+# ---------------------------------------------------------------------------
+
+class TestPageActionDispatch:
+    def test_page_in_schema_enum(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "page" in props["action"]["enum"]
+        assert set(props["page_action"]["enum"]) == {
+            "scroll", "read", "query", "click", "js",
+        }
+
+    def test_page_read_routes_to_get_text(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "page", "page_action": "read"})
+        data = json.loads(out)
+        assert data["ok"] is True
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "get_text"
+
+    def test_page_query_routes_to_query_dom_with_selector(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "page", "page_action": "query",
+            "selector": "div[role=article]", "attributes": ["aria-label"],
+        })
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "query_dom"
+        assert call[1]["css_selector"] == "div[role=article]"
+        assert call[1]["attributes"] == ["aria-label"]
+
+    def test_page_query_requires_selector(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "page", "page_action": "query"})
+        assert "error" in json.loads(out)
+
+    def test_page_click_routes_to_click_element(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "page", "page_action": "click",
+            "selector": "button.like",
+        })
+        data = json.loads(out)
+        assert data["ok"] is True
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "click_element"
+        assert call[1]["selector"] == "button.like"
+
+    def test_page_click_requires_selector(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "page", "page_action": "click"})
+        assert "error" in json.loads(out)
+
+    def test_page_js_routes_to_execute_javascript(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "page", "page_action": "js",
+            "javascript": "document.title",
+        })
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "execute_javascript"
+        assert call[1]["javascript"] == "document.title"
+
+    def test_page_js_requires_javascript(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "page", "page_action": "js"})
+        assert "error" in json.loads(out)
+
+    def test_page_scroll_routes_to_page_scroll(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "page", "page_action": "scroll",
+            "direction": "down", "amount_px": 600, "selector": ".feed",
+        })
+        data = json.loads(out)
+        assert data["ok"] is True and data["action"] == "page_scroll"
+        call = next(c for c in noop_backend.calls if c[0] == "page_scroll")
+        assert call[1]["direction"] == "down"
+        assert call[1]["amount_px"] == 600
+        assert call[1]["selector"] == ".feed"
+
+    def test_page_scroll_to_bottom(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "page", "page_action": "scroll", "to": "bottom",
+        })
+        call = next(c for c in noop_backend.calls if c[0] == "page_scroll")
+        assert call[1]["to"] == "bottom"
+
+    def test_page_unknown_subaction_errors(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "page", "page_action": "teleport"})
+        data = json.loads(out)
+        assert "error" in data and "page_action" in data["error"]
+
+    def test_page_subaction_aliases(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "page", "page_action": "get_text"})
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "get_text"
+        noop_backend.calls.clear()
+        handle_computer_use({
+            "action": "page", "page_action": "execute_javascript",
+            "javascript": "1+1",
+        })
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["action"] == "execute_javascript"
+
+    def test_browser_action_alias(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "browser", "page_action": "read"})
+        assert any(c[0] == "page" for c in noop_backend.calls)
+
+    def test_page_pid_override_passthrough(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "page", "page_action": "read", "pid": 987,
+        })
+        call = next(c for c in noop_backend.calls if c[0] == "page")
+        assert call[1]["pid"] == 987
+
+
+class TestPageApprovalGating:
+    """page read/query only look at the page — they must bypass the approval
+    gate like capture/list_apps; scroll/click/js mutate and stay gated."""
+
+    def _with_denying_callback(self):
+        import tools.computer_use.tool as cu_tool
+        calls = []
+
+        def deny(action, args, summary):
+            calls.append(summary)
+            return "deny"
+
+        return cu_tool, deny, calls
+
+    def test_page_is_destructive_by_default(self):
+        from tools.computer_use.tool import _DESTRUCTIVE_ACTIONS
+        assert "page" in _DESTRUCTIVE_ACTIONS
+
+    @pytest.mark.parametrize("sub", ["read", "query"])
+    def test_readonly_subactions_bypass_approval(self, sub, noop_backend):
+        cu_tool, deny, calls = self._with_denying_callback()
+        cu_tool.set_approval_callback(deny)
+        try:
+            out = cu_tool.handle_computer_use({
+                "action": "page", "page_action": sub, "selector": "a",
+            })
+        finally:
+            cu_tool.set_approval_callback(None)
+        assert "denied" not in str(out)
+        assert calls == []
+
+    @pytest.mark.parametrize("sub,extra", [
+        ("scroll", {}),
+        ("click", {"selector": "button"}),
+        ("js", {"javascript": "1"}),
+    ])
+    def test_mutating_subactions_are_gated(self, sub, extra, noop_backend):
+        cu_tool, deny, calls = self._with_denying_callback()
+        cu_tool.set_approval_callback(deny)
+        try:
+            out = cu_tool.handle_computer_use({
+                "action": "page", "page_action": sub, **extra,
+            })
+        finally:
+            cu_tool.set_approval_callback(None)
+        data = json.loads(out)
+        assert data.get("error") == "denied by user"
+        assert len(calls) == 1
+
+
+class TestPageResponseShaping:
+    def test_result_truncated_to_max_chars(self):
+        import tools.computer_use.tool as cu_tool
+        out = cu_tool._page_response(
+            {"data": "x" * 50_000, "isError": False}, "read", 1000)
+        data = json.loads(out)
+        assert data["truncated"] is True
+        assert len(data["result"]) == 1000
+        assert data["total_chars"] == 50_000
+
+    def test_error_carries_bridge_hint(self):
+        import tools.computer_use.tool as cu_tool
+        out = cu_tool._page_response(
+            {"data": "CDP unavailable", "isError": True}, "js", 1000)
+        data = json.loads(out)
+        assert data["ok"] is False
+        assert "remote-debugging-port" in data["hint"]
+
+    def test_structured_content_preferred(self):
+        import tools.computer_use.tool as cu_tool
+        out = cu_tool._page_response(
+            {"data": "prose", "structuredContent": {"elements": [1, 2]},
+             "isError": False}, "query", 1000)
+        data = json.loads(out)
+        assert json.loads(data["result"]) == {"elements": [1, 2]}
+
+    def test_max_chars_coercion(self):
+        from tools.computer_use.tool import (
+            _coerce_page_max_chars,
+            _PAGE_DEFAULT_MAX_CHARS,
+            _PAGE_MAX_MAX_CHARS,
+        )
+        assert _coerce_page_max_chars(None) == _PAGE_DEFAULT_MAX_CHARS
+        assert _coerce_page_max_chars("junk") == _PAGE_DEFAULT_MAX_CHARS
+        assert _coerce_page_max_chars(-5) == _PAGE_DEFAULT_MAX_CHARS
+        assert _coerce_page_max_chars(500) == 500
+        assert _coerce_page_max_chars(10**9) == _PAGE_MAX_MAX_CHARS
+
+
+class TestCuaPageBackend:
+    def test_page_defaults_to_active_pid_and_window(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.page(action="get_text")
+        call = session.calls[-1]
+        assert call["name"] == "page"
+        assert call["args"]["pid"] == 4321
+        assert call["args"]["window_id"] == 7
+        assert call["args"]["session"] == "test-session"
+
+    def test_page_explicit_pid_skips_active_window_id(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b.page(pid=999, action="get_text")
+        call = session.calls[-1]
+        assert call["args"]["pid"] == 999
+        assert "window_id" not in call["args"]
+
+    def test_page_without_capture_errors(self):
+        session = _RecordingSession()
+        b = _make_cua_backend(session)
+        b._active_pid = None
+        out = b.page(action="get_text")
+        assert out["isError"] is True
+        assert "capture" in str(out["data"])
+
+
+class TestCuaPageScroll:
+    @staticmethod
+    def _js_result(payload):
+        return {"isError": False, "data": json.dumps(payload)}
+
+    def test_scroll_metrics_parsed_into_meta(self):
+        metrics = {
+            "scrolled_px": 600, "scroll_top": 600, "scroll_height": 5000,
+            "viewport_height": 800, "at_top": False, "at_bottom": False,
+            "content_below_px": 3600,
+        }
+        session = _RecordingSession({"page": self._js_result(metrics)})
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down", amount_px=600)
+        assert res.ok
+        assert res.meta["content_below_px"] == 3600
+        assert "3600px of content remains below" in res.message
+        call = session.calls[-1]
+        assert call["args"]["action"] == "execute_javascript"
+        assert "scrollTop" in call["args"]["javascript"]
+
+    def test_scroll_selector_is_json_escaped_into_js(self):
+        session = _RecordingSession({"page": self._js_result({"scrolled_px": 1})})
+        b = _make_cua_backend(session)
+        b.page_scroll(direction="down", selector='div[data-x="a\\"b"]')
+        js = session.calls[-1]["args"]["javascript"]
+        assert json.dumps('div[data-x="a\\"b"]') in js
+
+    def test_at_bottom_message_mentions_lazy_loading(self):
+        metrics = {"scrolled_px": 100, "scroll_top": 4200,
+                   "scroll_height": 5000, "viewport_height": 800,
+                   "at_top": False, "at_bottom": True, "content_below_px": 0}
+        session = _RecordingSession({"page": self._js_result(metrics)})
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down")
+        assert res.ok
+        assert "bottom" in res.message
+
+    def test_zero_movement_suggests_selector(self):
+        metrics = {"scrolled_px": 0, "scroll_top": 0, "scroll_height": 5000,
+                   "viewport_height": 800, "at_top": False,
+                   "at_bottom": False, "content_below_px": 4200}
+        session = _RecordingSession({"page": self._js_result(metrics)})
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down")
+        assert res.ok
+        assert "selector" in res.message
+
+    def test_js_error_object_fails(self):
+        session = _RecordingSession({
+            "page": self._js_result({"error": "no element matches selector: .x"}),
+        })
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down", selector=".x")
+        assert not res.ok
+        assert "no element matches" in res.message
+
+    def test_driver_error_fails(self):
+        session = _RecordingSession({
+            "page": {"isError": True, "data": "page tool needs CDP"},
+        })
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down")
+        assert not res.ok
+        assert "CDP" in res.message
+
+    def test_unparseable_result_still_ok(self):
+        session = _RecordingSession({
+            "page": {"isError": False, "data": "undefined"},
+        })
+        b = _make_cua_backend(session)
+        res = b.page_scroll(direction="down")
+        assert res.ok
+        assert "unparsed" in res.message
+
+
+class TestParsePageScrollMetrics:
+    def test_dict_passthrough(self):
+        from tools.computer_use.cua_backend import _parse_page_scroll_metrics
+        assert _parse_page_scroll_metrics({"a": 1}) == {"a": 1}
+
+    def test_json_string(self):
+        from tools.computer_use.cua_backend import _parse_page_scroll_metrics
+        assert _parse_page_scroll_metrics('{"a": 1}') == {"a": 1}
+
+    def test_doubly_encoded_string(self):
+        from tools.computer_use.cua_backend import _parse_page_scroll_metrics
+        assert _parse_page_scroll_metrics(json.dumps('{"a": 1}')) == {"a": 1}
+
+    def test_embedded_in_prose(self):
+        from tools.computer_use.cua_backend import _parse_page_scroll_metrics
+        assert _parse_page_scroll_metrics(
+            'Result: {"a": 1} (done)') == {"a": 1}
+
+    def test_garbage_returns_none(self):
+        from tools.computer_use.cua_backend import _parse_page_scroll_metrics
+        assert _parse_page_scroll_metrics("undefined") is None
+        assert _parse_page_scroll_metrics(None) is None
+        assert _parse_page_scroll_metrics("") is None
+        assert _parse_page_scroll_metrics("[1, 2]") is None
+
+
+# ---------------------------------------------------------------------------
+# scroll_state: off-viewport content detection on capture
+# ---------------------------------------------------------------------------
+
+class TestScrollStateHeuristic:
+    @staticmethod
+    def _el(index, x, y, w=100, h=20, role="AXTextField", label=""):
+        from tools.computer_use.backend import UIElement
+        return UIElement(index=index, role=role, label=label, bounds=(x, y, w, h))
+
+    def test_detects_content_below_screen_global_frames(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        rect = (100, 100, 800, 600)  # viewport bottom at y=700
+        elements = [
+            self._el(1, 150, 200, label="Field 1"),
+            self._el(2, 150, 400, label="Field 2"),
+            self._el(3, 150, 900, label="Field 4 below the fold"),
+            self._el(4, 150, 1400, role="AXButton", label="Submit"),
+        ]
+        state = _compute_scroll_state(elements, rect)
+        assert state["content_below"] == 2
+        assert any("Submit" in s for s in state["below_sample"])
+
+    def test_detects_content_below_window_local_frames(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        # Window sits at (500, 300) but frames are window-local: elements
+        # hug x∈[0, 800] which does NOT fit the global rect horizontally.
+        rect = (500, 300, 800, 600)
+        elements = [
+            self._el(1, 10, 50),
+            self._el(2, 10, 200),
+            self._el(3, 10, 650),   # below the 600px-tall local viewport
+        ]
+        state = _compute_scroll_state(elements, rect)
+        assert state["content_below"] == 1
+
+    def test_detects_content_above_after_scrolling(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        rect = (0, 0, 800, 600)
+        elements = [
+            self._el(1, 10, -300),  # scrolled past
+            self._el(2, 10, 200),
+        ]
+        state = _compute_scroll_state(elements, rect)
+        assert state["content_above"] == 1
+
+    def test_scrollbar_elements_surface(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        rect = (0, 0, 800, 600)
+        elements = [
+            self._el(1, 10, 100),
+            self._el(2, 780, 0, w=20, h=600, role="AXScrollBar"),
+        ]
+        state = _compute_scroll_state(elements, rect)
+        assert state["scrollbar_elements"] == [2]
+
+    def test_no_evidence_returns_none(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        rect = (0, 0, 800, 600)
+        elements = [self._el(1, 10, 100), self._el(2, 10, 400)]
+        assert _compute_scroll_state(elements, rect) is None
+
+    def test_no_rect_or_no_elements_returns_none(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        assert _compute_scroll_state([], (0, 0, 800, 600)) is None
+        assert _compute_scroll_state([self._el(1, 10, 900)], None) is None
+
+    def test_zero_sized_bounds_ignored(self):
+        from tools.computer_use.tool import _compute_scroll_state
+        # Markdown-parsed elements carry (0,0,0,0) bounds — they must not
+        # trigger (or crash) the heuristic.
+        from tools.computer_use.backend import UIElement
+        elements = [UIElement(index=1, role="AXButton", label="x",
+                              bounds=(0, 0, 0, 0))]
+        assert _compute_scroll_state(elements, (0, 0, 800, 600)) is None
+
+    def test_summary_line_warns_below(self):
+        from tools.computer_use.tool import (
+            _compute_scroll_state,
+            _scroll_state_summary,
+        )
+        rect = (0, 0, 800, 600)
+        elements = [
+            self._el(1, 10, 100),
+            self._el(2, 10, 900, role="AXButton", label="Submit"),
+        ]
+        line = _scroll_state_summary(_compute_scroll_state(elements, rect))
+        assert "BELOW" in line and "scroll down" in line
+
+
+class TestScrollStateInCaptureResponse:
+    def _fake_backend(self, elements, rect):
+        from tools.computer_use.backend import CaptureResult
+
+        class FakeBackend:
+            def start(self): pass
+            def is_available(self): return True
+
+            def capture(self, mode="som", app=None):
+                return CaptureResult(
+                    mode="ax", width=800, height=600, png_b64=None,
+                    elements=elements, app="Firefox",
+                    window_title="Long form", window_rect=rect,
+                )
+
+        return FakeBackend()
+
+    def test_capture_payload_carries_scroll_state_and_warning(self):
+        import tools.computer_use.tool as cu_tool
+        from tools.computer_use.backend import UIElement
+        elements = [
+            UIElement(index=1, role="AXTextField", label="Field 1",
+                      bounds=(150, 200, 100, 20)),
+            UIElement(index=2, role="AXButton", label="Submit",
+                      bounds=(150, 900, 100, 20)),
+        ]
+        backend = self._fake_backend(elements, (100, 100, 800, 600))
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+        data = json.loads(out)
+        assert data["scroll_state"]["content_below"] == 1
+        assert "BELOW" in data["summary"]
+
+    def test_capture_without_overflow_has_no_scroll_state(self):
+        import tools.computer_use.tool as cu_tool
+        from tools.computer_use.backend import UIElement
+        elements = [
+            UIElement(index=1, role="AXTextField", label="Field 1",
+                      bounds=(150, 200, 100, 20)),
+        ]
+        backend = self._fake_backend(elements, (100, 100, 800, 600))
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
+        data = json.loads(out)
+        assert "scroll_state" not in data
+
+    def test_scroll_state_computed_over_untruncated_elements(self):
+        """A long form's below-the-fold fields must register even when the
+        response is capped by max_elements."""
+        import tools.computer_use.tool as cu_tool
+        from tools.computer_use.backend import UIElement
+        elements = [
+            UIElement(index=i, role="AXTextField", label=f"F{i}",
+                      bounds=(10, 10 + i, 50, 10))
+            for i in range(1, 30)
+        ] + [
+            UIElement(index=30, role="AXButton", label="Submit",
+                      bounds=(10, 5000, 50, 10)),
+        ]
+        backend = self._fake_backend(elements, (0, 0, 800, 600))
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "capture", "mode": "ax", "max_elements": 5,
+            })
+        data = json.loads(out)
+        assert len(data["elements"]) == 5
+        assert data["scroll_state"]["content_below"] == 1
+
+
+class TestGuidanceMentionsNewSurfaces:
+    def test_guidance_covers_page_and_scroll_state(self):
+        from agent.prompt_builder import COMPUTER_USE_GUIDANCE
+        for needle in ("page_action", "scroll_state", "moved",
+                       "content_below", "by='page'"):
+            assert needle in COMPUTER_USE_GUIDANCE, f"guidance must mention {needle}"
+
+    def test_schema_scroll_by_documented(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert set(props["by"]["enum"]) == {"line", "page"}
