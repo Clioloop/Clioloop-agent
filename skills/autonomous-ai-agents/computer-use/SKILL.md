@@ -22,7 +22,9 @@ Use the `computer_use` tool when you need to interact with native desktop applic
 
 5. **Check for content below the fold**: Captures include a `scroll_state` field (and a ⚠ summary line) when elements extend past the visible viewport — scroll down before assuming a form or page ends at the screenshot's edge.
 
-6. **Prefer `page` in browsers**: For feeds and long pages, `action='page'` scrolls by exact pixels with metrics back (`at_bottom`, `content_below_px`), reads posts as text without screenshots, and clicks elements by CSS selector. Chromium on Windows/Linux needs `--remote-debugging-port` for scroll/click/js.
+6. **Prefer `page` in browsers**: For feeds and long pages, `action='page'` scrolls by exact pixels with metrics back (`at_bottom`, `content_below_px`), reads posts as text without screenshots, and clicks elements by CSS selector. Chromium on Windows/Linux needs `--remote-debugging-port` for scroll/click/js — `open_app` adds it for you.
+
+7. **Launch apps with `open_app`**: `action='open_app', app='Chrome', url='https://…'` launches (or reuses) the app, returns pid + windows, and makes it the active target — one call instead of icon-hunting on the desktop. Chromium-family browsers automatically get `--force-renderer-accessibility` + `--remote-debugging-port`; those flags need a fresh process, so if a capture warns "only N elements — likely just the browser frame", close the browser and `open_app` it again (or pass `new_instance=true`).
 
 ## Available Actions
 
@@ -39,6 +41,7 @@ Use the `computer_use` tool when you need to interact with native desktop applic
 | `type` | Type text into the focused element |
 | `key` | Send key combinations (e.g., `cmd+s`, `ctrl+alt+t`) |
 | `set_value` | Set a native value on an element |
+| `open_app` | Launch an app (optionally with a URL); browsers get automation flags; becomes the active target |
 | `focus_app` | Target an app for subsequent actions (no raise) |
 | `list_apps` | List running GUI applications |
 | `list_windows` | List ALL top-level windows incl. minimized (app, pid, window_id, title, on_screen) |

@@ -180,6 +180,20 @@ class ComputerUseBackend(ABC):
         """Activate/restore a window (e.g. un-minimize). Default: no-op."""
         return ActionResult(ok=True, action="bring_to_front")
 
+    def open_app(
+        self,
+        *,
+        app: str,
+        url: Optional[str] = None,
+        args: Optional[List[str]] = None,
+        new_instance: bool = False,
+    ) -> ActionResult:
+        """Launch an application (optionally opening `url`, with extra
+        command-line `args`) and target it for subsequent actions.
+        Default: unsupported."""
+        return ActionResult(ok=False, action="open_app",
+                            message="app launching not supported by this backend")
+
     # ── Browser page access — concrete defaults so non-browser backends
     # still instantiate; cua-driver overrides both. ──────────────────
     def page(self, *, pid: Optional[int] = None, action: str,

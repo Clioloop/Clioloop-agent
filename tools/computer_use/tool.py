@@ -111,6 +111,10 @@ _ACTION_ALIASES: Dict[str, str] = {
     "activate": "focus_app",
     "browser": "page",
     "browser_page": "page",
+    "launch_app": "open_app",
+    "launch": "open_app",
+    "open": "open_app",
+    "start_app": "open_app",
 }
 
 # Synonyms for the `page` sub-action (page_action). Models trained on other
@@ -139,13 +143,47 @@ _PAGE_READONLY = frozenset({"read", "query"})
 # Actions that read, not mutate. Always allowed.
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps", "list_windows"})
 
+# Chromium-family browser process names. When open_app launches one of
+# these, the automation flags below are appended so the UIA/AT-SPI page
+# tree is populated (captures otherwise see only window chrome — 16
+# elements on a Facebook page) and the CDP-backed `page` action works.
+_CHROMIUM_BROWSERS = (
+    "chrome", "chromium", "msedge", "edge", "brave", "vivaldi", "opera",
+)
+_BROWSER_AUTO_FLAGS = [
+    "--force-renderer-accessibility",
+    "--remote-debugging-port=9222",
+    "--remote-allow-origins=*",
+]
+
+
+def _browser_auto_flags(app: str) -> List[str]:
+    """Return the automation flags to append for `app`, or [] when it isn't
+    a Chromium-family browser. Overridable via
+    ``computer_use.browser_launch_args`` in config.yaml."""
+    name = app.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if not any(b in name for b in _CHROMIUM_BROWSERS):
+        return []
+    try:
+        from clio_cli.config import load_config
+
+        cu = (load_config() or {}).get("computer_use") or {}
+        override = cu.get("browser_launch_args")
+        if isinstance(override, list):
+            return [str(a) for a in override]
+    except Exception:
+        pass
+    return list(_BROWSER_AUTO_FLAGS)
+
 # Actions that mutate user-visible state. Go through approval.
 # `page` is here because scroll/click/js mutate the page; the read-only
 # sub-actions (see _PAGE_READONLY) are exempted at the approval gate.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "page", "type", "key", "set_value", "focus_app",
-    "focus_window", "minimize",
+    "focus_window", "minimize", "open_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -329,6 +367,15 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("page_scroll", kw))
         return ActionResult(ok=True, action="page_scroll")
 
+    def open_app(self, *, app, url=None, args=None,
+                 new_instance=False) -> ActionResult:
+        self.calls.append(("open_app", {
+            "app": app, "url": url, "args": args,
+            "new_instance": new_instance,
+        }))
+        return ActionResult(ok=True, action="open_app",
+                            message=f"Launched {app}")
+
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -391,7 +438,23 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
+        return json.dumps({"error": f"{action} failed: {_describe_error(e)}"})
+
+
+def _describe_error(e: BaseException) -> str:
+    """Human-readable exception text that is never empty.
+
+    Bare ``TimeoutError``s stringify to "" — the model used to see
+    ``"capture failed: "`` and retry blind. Name the type and, for
+    timeouts, say what to do next.
+    """
+    text = str(e).strip()
+    label = f"{type(e).__name__}: {text}" if text else type(e).__name__
+    if isinstance(e, TimeoutError):  # concurrent.futures.TimeoutError is an alias
+        label += (" — cua-driver did not respond in time (it may be busy or "
+                  "restarting). Retry once; if it persists, run "
+                  "`clio computer-use doctor`.")
+    return label
 
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
@@ -464,6 +527,9 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"key {args.get('keys', '')!r}"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
+    if action == "open_app":
+        url = args.get("url")
+        return f"open {args.get('app', '')!r}" + (f" → {url}" if url else "")
     return action
 
 
@@ -605,6 +671,31 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             pid=int(pid) if pid is not None else None,
             window_id=int(wid) if wid is not None else None,
         )
+        return _maybe_follow_capture(backend, res, capture_after, follow_mode)
+
+    if action == "open_app":
+        app = args.get("app") or args.get("name")
+        if not app:
+            return json.dumps({
+                "error": "open_app requires `app` (name, executable, or path)",
+            })
+        extra = args.get("browser_args") or args.get("args")
+        extra = [str(a) for a in extra] if isinstance(extra, list) else []
+        auto_flags = _browser_auto_flags(str(app))
+        launch_args = extra + [f for f in auto_flags if f not in extra]
+        res = backend.open_app(
+            app=str(app),
+            url=args.get("url"),
+            args=launch_args or None,
+            new_instance=bool(args.get("new_instance")),
+        )
+        if res.ok and auto_flags:
+            res.message += (
+                " Browser automation flags added (page tree + action='page' "
+                "enabled). NOTE: flags only apply to a fresh process — if the "
+                "browser was already running without them, close it and "
+                "open_app again (or pass new_instance=true)."
+            )
         return _maybe_follow_capture(backend, res, capture_after, follow_mode)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
@@ -1006,6 +1097,28 @@ def _scroll_state_summary(state: Dict[str, Any]) -> Optional[str]:
     return "  " + "; ".join(parts)
 
 
+# Below this element count, a browser capture almost certainly contains only
+# the window chrome (tab strip, toolbar, Minimize/Close): production Facebook
+# captures came back with 16-31 elements and zero page content because the
+# renderer's accessibility tree was off.
+_THIN_BROWSER_TREE_MAX = 35
+
+
+def _thin_browser_tree_hint(app: str, total_elements: int) -> Optional[str]:
+    """Warn when a browser capture is missing the page's element tree."""
+    if total_elements > _THIN_BROWSER_TREE_MAX:
+        return None
+    name = (app or "").lower()
+    if not any(b in name for b in _CHROMIUM_BROWSERS + ("firefox", "safari")):
+        return None
+    return (
+        f"⚠ only {total_elements} element(s) — likely just the browser frame; "
+        "the page's own tree is missing. If the page should have content: "
+        "relaunch the browser via open_app (adds --force-renderer-"
+        "accessibility) or read/drive the page with action='page'."
+    )
+
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
@@ -1041,6 +1154,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     scroll_state_line = _scroll_state_summary(scroll_state) if scroll_state else None
     if scroll_state_line:
         summary_lines.append(scroll_state_line)
+    thin_tree_line = _thin_browser_tree_hint(cap.app, total_elements)
+    if thin_tree_line:
+        summary_lines.append(thin_tree_line)
     # Multimodal and AX paths both reference `summary`; build it once up-front
     # so the aux-vision routing branch (which fires before either path is
     # selected) has a valid value to hand to _route_capture_through_aux_vision.

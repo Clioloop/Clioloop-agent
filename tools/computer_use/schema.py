@@ -49,6 +49,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "wait",
                     "list_apps",
                     "list_windows",
+                    "open_app",
                     "focus_app",
                     "focus_window",
                     "minimize",
@@ -59,7 +60,12 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "actions require approval unless auto-approved. "
                     "`list_windows` enumerates ALL top-level windows (incl. "
                     "minimized) — call it first when multiple windows are "
-                    "open or a window may be minimized. `focus_window` "
+                    "open or a window may be minimized. `open_app` launches "
+                    "an application (optionally with a `url`) and returns its "
+                    "pid + windows — ALWAYS prefer it over double-clicking "
+                    "desktop icons or shelling out; for browsers it adds the "
+                    "flags that enable the page tree and action='page'. "
+                    "`focus_window` "
                     "restores/activates a window (by pid+window_id from "
                     "list_windows, or app=) so it can be captured and "
                     "controlled; `minimize` minimizes the target window. "
@@ -286,6 +292,36 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "seconds": {
                 "type": "number",
                 "description": "Seconds to wait. Max 30.",
+            },
+            # ── open_app ───────────────────────────────────────────
+            "url": {
+                "type": "string",
+                "description": (
+                    "For action='open_app': URL(s) to open in the launched "
+                    "app (e.g. a page for a browser)."
+                ),
+            },
+            "browser_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For action='open_app': extra command-line arguments. "
+                    "Chromium-family browsers automatically get "
+                    "--remote-debugging-port / --force-renderer-accessibility "
+                    "(so captures see the page tree and action='page' works); "
+                    "pass e.g. ['--profile-directory=Profile 1'] to pick a "
+                    "browser profile."
+                ),
+            },
+            "new_instance": {
+                "type": "boolean",
+                "description": (
+                    "For action='open_app': force a NEW app instance even if "
+                    "one is already running. Launch flags (e.g. the browser "
+                    "automation flags) only apply to a fresh process — if the "
+                    "app is already running without them, close it or set "
+                    "this."
+                ),
             },
             # ── focus_app ──────────────────────────────────────────
             "raise_window": {

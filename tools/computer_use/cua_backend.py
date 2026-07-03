@@ -315,16 +315,19 @@ _update_checked = False
 def _auto_upgrade_driver_enabled() -> bool:
     """Whether to auto-upgrade cua-driver on a detected version mismatch.
 
-    Off by default — an upgrade shells out to the installer (network +
-    binary replace), so we only do it when the user opts in via
-    ``computer_use.auto_upgrade_driver: true`` in config.yaml.
+    ON by default: a stale driver is the usual cause of platform-specific
+    input regressions, and production machines sat on old builds for days
+    while the nudge went unread. Opt out with
+    ``computer_use.auto_upgrade_driver: false`` in config.yaml. The upgrade
+    runs off-thread between actions and replaces our own installed binary,
+    so the blast radius is the driver itself.
     """
     try:
         from clio_cli.config import load_config
 
         cfg = load_config() or {}
         cu = cfg.get("computer_use") or {}
-        return bool(cu.get("auto_upgrade_driver", False))
+        return bool(cu.get("auto_upgrade_driver", True))
     except Exception:
         return False
 
@@ -567,7 +570,10 @@ def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
     Returns (key, modifiers) where key is the non-modifier key and modifiers
     is a list of modifier names (cmd, shift, option, ctrl).
     """
-    MODIFIER_NAMES = {"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"}
+    # win/super/meta are modifiers too — without them "win+down" parses to a
+    # bare "down" press and OS shortcuts (minimize, show desktop) never fire.
+    MODIFIER_NAMES = {"cmd", "command", "shift", "option", "alt", "ctrl",
+                      "control", "fn", "win", "super", "meta"}
     KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
 
     parts = [p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()]
@@ -1842,11 +1848,19 @@ class CuaDriverBackend(ComputerUseBackend):
         for w in raw:
             if w.get("pid") is None or w.get("window_id") is None:
                 continue
+            app_name = w.get("app_name") or ""
+            title = w.get("title") or ""
+            # Hide the driver's own surfaces (cua-driver.exe, the
+            # Cua.AgentCursorOverlay window): they show up on every
+            # enumeration, aren't controllable, and models kept trying to
+            # target them.
+            if "cua-driver" in app_name.lower() or title.startswith("Cua."):
+                continue
             result.append({
-                "app": w.get("app_name") or "",
+                "app": app_name,
                 "pid": int(w["pid"]),
                 "window_id": int(w["window_id"]),
-                "title": w.get("title") or "",
+                "title": title,
                 "on_screen": bool(w.get("is_on_screen", True)),
             })
         return result
@@ -1866,12 +1880,16 @@ class CuaDriverBackend(ComputerUseBackend):
         # Activate the target so the shell minimize shortcut lands on it.
         self.bring_to_front(pid=pid, window_id=window_id)
         if sys.platform == "darwin":
-            keys = "cmd+m"
+            combo = "cmd+m"
         elif sys.platform == "win32":
-            keys = "win+down"
+            combo = "win+down"
         else:
-            keys = "super+h"
-        args: Dict[str, Any] = {"keys": keys, "pid": pid}
+            combo = "super+h"
+        # hotkey requires `keys` as an array (["win", "down"]), same as key().
+        # A bare combo string used to fail with "Missing required array field
+        # keys." on every platform.
+        key_name, modifiers = _parse_key_combo(combo)
+        args: Dict[str, Any] = {"keys": modifiers + [key_name], "pid": pid}
         if window_id is not None:
             args["window_id"] = window_id
         res = self._action("hotkey", args)
@@ -1945,7 +1963,13 @@ class CuaDriverBackend(ComputerUseBackend):
         ``creates_new_application_instance=True`` forces a new instance
         even if the app is already running — use it when concurrent
         runs may touch the same app so each session gets its own
-        isolated window."""
+        isolated window.
+
+        ⚠ ``additional_arguments`` / ``creates_new_application_instance``
+        are NOT in the driver's launch_app schema as of 0.7.0 and are
+        silently dropped (the driver ignores unknown args). They're kept
+        for forward-compat only — code that needs command-line flags must
+        use ``open_app`` (which spawns directly when flags are given)."""
         if not bundle_id and not name:
             raise ValueError("launch_app requires either bundle_id or name")
         args: Dict[str, Any] = {"session": self._session_id}
@@ -1962,6 +1986,187 @@ class CuaDriverBackend(ComputerUseBackend):
         out = self._session.call_tool("launch_app", args)
         return out["structuredContent"] or {"data": out["data"]}
 
+    # Common executable names per browser family, for resolving a friendly
+    # name ("chrome") to a spawnable command on PATH (Linux) — the driver's
+    # launch_app resolves names itself but cannot carry command-line flags
+    # (its schema has no additional_arguments; unknown args are silently
+    # dropped, verified against 0.6.5 and 0.7.0).
+    _APP_COMMAND_ALIASES: Dict[str, List[str]] = {
+        "chrome": ["google-chrome", "google-chrome-stable", "chrome"],
+        "chromium": ["chromium", "chromium-browser"],
+        "edge": ["microsoft-edge", "microsoft-edge-stable", "msedge"],
+        "msedge": ["microsoft-edge", "microsoft-edge-stable", "msedge"],
+        "brave": ["brave-browser", "brave"],
+        "firefox": ["firefox"],
+        "opera": ["opera"],
+        "vivaldi": ["vivaldi"],
+    }
+
+    def open_app(
+        self,
+        *,
+        app: str,
+        url: Optional[str] = None,
+        args: Optional[List[str]] = None,
+        new_instance: bool = False,
+    ) -> ActionResult:
+        """Model-facing launch. `app` may be a display name, executable
+        name, or path. When command-line `args` (or `new_instance`) are
+        requested, the process is spawned directly on this host — the
+        driver's `launch_app` tool cannot carry flags — otherwise the
+        driver resolves and launches the app itself. Either way the new
+        app becomes the active target for subsequent actions."""
+        flags_note = ""
+        if args or new_instance:
+            res = self._spawn_app(app, url, list(args or []), new_instance)
+            if res is not None:
+                return res
+            # Spawn path couldn't resolve an executable — fall through to
+            # the driver launch, which cannot apply the flags.
+            flags_note = (
+                " WARNING: could not resolve an executable to apply the "
+                "launch flags; the app was launched WITHOUT them."
+            )
+        try:
+            out = self.launch_app(name=app, urls=[url] if url else None)
+        except Exception as e:
+            return ActionResult(
+                ok=False, action="open_app",
+                message=f"launch failed for {app!r}: "
+                        f"{type(e).__name__}: {e}".rstrip(": "),
+            )
+        pid = out.get("pid") if isinstance(out, dict) else None
+        windows = (out.get("windows") if isinstance(out, dict) else None) or []
+        meta: Dict[str, Any] = {"pid": pid, "windows": []}
+        for w in windows:
+            if not isinstance(w, dict):
+                continue
+            meta["windows"].append({
+                "window_id": w.get("window_id") or w.get("id"),
+                "title": w.get("title") or "",
+            })
+        if pid is not None:
+            self._active_pid = int(pid)
+            self._retarget_window_state(int(pid), None)
+        titles = ", ".join(repr(w["title"]) for w in meta["windows"]
+                           if w.get("title")) or "(no windows yet)"
+        return ActionResult(
+            ok=True, action="open_app",
+            message=(f"Launched {app} (pid {pid}); windows: {titles}. "
+                     f"It is now the active target.{flags_note}"),
+            meta=meta,
+        )
+
+    def _resolve_app_command(self, app: str) -> Optional[str]:
+        """Resolve `app` to something spawnable, or None."""
+        # Explicit path (or something on PATH) wins.
+        if os.path.sep in app or (os.path.altsep and os.path.altsep in app):
+            return app if os.path.exists(app) else None
+        if shutil.which(app):
+            return app
+        key = app.lower().removesuffix(".exe").replace(" ", "-")
+        for candidate in self._APP_COMMAND_ALIASES.get(key, []):
+            if shutil.which(candidate):
+                return candidate
+        return None
+
+    def _spawn_app(self, app: str, url: Optional[str],
+                   args: List[str], new_instance: bool) -> Optional[ActionResult]:
+        """Launch `app` directly with command-line args (driver launch_app
+        can't carry them). Returns None when no executable could be
+        resolved, so the caller can fall back to the driver. cua-driver
+        always runs on this same host, so a local spawn lands on the same
+        desktop the driver controls."""
+        tail = args + ([url] if url else [])
+        try:
+            if sys.platform == "win32":
+                # `start` resolves App Paths names (chrome, msedge, …) and
+                # detaches. The empty "" is the window title slot.
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", app, *tail],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif sys.platform == "darwin":
+                cmd = ["open", "-a", app]
+                if new_instance:
+                    cmd.append("-n")
+                if url:
+                    cmd.append(url)
+                if args:
+                    cmd += ["--args", *args]
+                subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                command = self._resolve_app_command(app)
+                if command is None:
+                    return None
+                subprocess.Popen(
+                    [command, *tail], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except OSError as e:
+            return ActionResult(
+                ok=False, action="open_app",
+                message=f"launch failed for {app!r}: {type(e).__name__}: {e}",
+            )
+        target = self._wait_for_app_window(app)
+        if target is not None:
+            self._active_pid = target["pid"]
+            self._active_window_id = target["window_id"]
+            if target.get("app_name"):
+                self._last_app = target["app_name"]
+            self._retarget_window_state(target["pid"], target["window_id"])
+            return ActionResult(
+                ok=True, action="open_app",
+                message=(f"Launched {app} with args (pid {target['pid']}, "
+                         f"window {target['title']!r}). It is now the "
+                         f"active target."),
+                meta={"pid": target["pid"], "windows": [
+                    {"window_id": target["window_id"],
+                     "title": target["title"]},
+                ]},
+            )
+        return ActionResult(
+            ok=True, action="open_app",
+            message=(f"Launched {app} with args; no window observed yet — "
+                     f"wait a moment and call list_windows."),
+            meta={"pid": None, "windows": []},
+        )
+
+    def _wait_for_app_window(self, app: str,
+                             timeout: float = 6.0) -> Optional[Dict[str, Any]]:
+        """Poll window enumeration until a window matching `app` appears.
+        Returns {pid, window_id, app_name, title} or None."""
+        import time as _time
+
+        base = app.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        base = base.lower().removesuffix(".exe").replace(" ", "")
+        deadline = _time.monotonic() + timeout
+        while True:
+            try:
+                raw = self._list_windows_raw(on_screen_only=False)
+            except Exception:
+                raw = []
+            for w in raw:
+                if w.get("pid") is None or w.get("window_id") is None:
+                    continue
+                name = (w.get("app_name") or "").lower()
+                name_flat = name.removesuffix(".exe").replace(" ", "")
+                if base and (base in name_flat or name_flat in base):
+                    return {
+                        "pid": int(w["pid"]),
+                        "window_id": int(w["window_id"]),
+                        "app_name": w.get("app_name") or "",
+                        "title": w.get("title") or "",
+                    }
+            if _time.monotonic() >= deadline:
+                return None
+            _time.sleep(0.25)
+
     def kill_app(self, *, pid: int) -> ActionResult:
         """Terminate by pid. Equivalent to ``kill -9`` on POSIX,
         ``taskkill /F`` on Windows."""
@@ -1975,7 +2180,56 @@ class CuaDriverBackend(ComputerUseBackend):
         args: Dict[str, Any] = {"pid": int(pid)}
         if window_id is not None:
             args["window_id"] = int(window_id)
-        return self._action("bring_to_front", args)
+        res = self._action("bring_to_front", args)
+        if res.ok:
+            # The just-raised window is now the action target: retarget the
+            # active-window state so capture_after= follow-ups and subsequent
+            # type/key/scroll land on it instead of whatever was captured
+            # last. Pre-fix, focus_window(chrome)+capture_after returned the
+            # previous capture's app (the desktop) and typed into the old pid.
+            self._active_pid = int(pid)
+            if window_id is not None:
+                self._active_window_id = int(window_id)
+            self._retarget_window_state(int(pid), window_id)
+        return res
+
+    def _retarget_window_state(self, pid: int,
+                               window_id: Optional[int]) -> None:
+        """Best-effort refresh of `_last_app`/`_active_window_id`/
+        `_active_window_rect` from window enumeration after the action
+        target changed (bring_to_front / launch_app). Never raises: when
+        enumeration fails the pid is still set and the stale rect is
+        cleared so coordinate mapping can't use the wrong window's frame."""
+        self._active_window_rect = None
+        self._active_image_size = None
+        try:
+            raw_windows = self._list_windows_raw(on_screen_only=False)
+        except Exception:
+            return
+        match = None
+        for w in raw_windows:
+            if w.get("pid") is None or int(w["pid"]) != pid:
+                continue
+            if window_id is not None and w.get("window_id") is not None \
+                    and int(w["window_id"]) != window_id:
+                continue
+            match = w
+            if window_id is not None:
+                break
+            if w.get("is_on_screen", True):
+                break
+        if match is None:
+            return
+        if match.get("window_id") is not None:
+            self._active_window_id = int(match["window_id"])
+        if match.get("app_name"):
+            self._last_app = match["app_name"]
+        if all(match.get(k) is not None
+               for k in ("x", "y", "width", "height")):
+            self._active_window_rect = (
+                int(match["x"]), int(match["y"]),
+                int(match["width"]), int(match["height"]),
+            )
 
     # ── Pointer + display introspection ─────────────────────────────
 

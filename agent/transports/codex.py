@@ -41,10 +41,11 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.screenshot_eviction import evict_openai_screenshots
         issuer = self._resolve_issuer_kind(kwargs)
         self._last_issuer_kind = issuer
         return _chat_messages_to_responses_input(
-            messages,
+            evict_openai_screenshots(messages),
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
@@ -136,6 +137,14 @@ class ResponsesApiTransport(ProviderTransport):
         # request is issued (openai==2.24.0).  Reported for the
         # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
         # (#32892) when the agent runs without external tools registered.
+        # Drop all but the newest few tool-result screenshots before the
+        # Responses conversion — same policy as the Chat Completions
+        # transport. Without this, every computer_use SOM capture (~750KB of
+        # base64 apiece) rode along verbatim in `function_call_output` items
+        # on each request.
+        from agent.screenshot_eviction import evict_openai_screenshots
+
+        payload_messages = evict_openai_screenshots(payload_messages)
         kwargs = {
             "model": model,
             "instructions": instructions,

@@ -2829,7 +2829,12 @@ class TestCuaToolCoverageExpansion:
     def test_bring_to_front_without_window_id(self):
         backend = self._backend()
         backend.bring_to_front(pid=42)
-        name, args = backend._session.call_tool.call_args.args
+        # bring_to_front now re-enumerates windows to retarget the active
+        # state, so filter for the bring_to_front call specifically.
+        name, args = next(
+            c.args for c in backend._session.call_tool.call_args_list
+            if c.args[0] == "bring_to_front"
+        )
         assert name == "bring_to_front"
         assert args["pid"] == 42
         assert "window_id" not in args
@@ -2837,7 +2842,10 @@ class TestCuaToolCoverageExpansion:
     def test_bring_to_front_with_window_id(self):
         backend = self._backend()
         backend.bring_to_front(pid=42, window_id=7)
-        name, args = backend._session.call_tool.call_args.args
+        name, args = next(
+            c.args for c in backend._session.call_tool.call_args_list
+            if c.args[0] == "bring_to_front"
+        )
         assert args["window_id"] == 7
 
     # ── Pointer + display introspection ─────────────────────────
@@ -4163,3 +4171,443 @@ class TestGuidanceMentionsNewSurfaces:
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
         assert set(props["by"]["enum"]) == {"line", "page"}
+
+
+# ---------------------------------------------------------------------------
+# Windows-log hardening (July 2026): bring_to_front retargeting, minimize
+# hotkey shape, open_app + browser auto-flags, thin-browser-tree hint,
+# driver-window filtering, and non-empty error text.
+# ---------------------------------------------------------------------------
+
+class TestBringToFrontRetargeting:
+    """focus_window(chrome)+capture_after used to re-capture the PREVIOUS
+    app (the desktop) and route subsequent type/key at the stale pid,
+    because bring_to_front never updated the active-window state."""
+
+    def _backend(self, windows=None):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        def call_tool(name, args, timeout=None):
+            structured = None
+            if name == "list_windows":
+                structured = {"windows": windows or []}
+            return {"data": "ok", "images": [], "image_mime_types": [],
+                    "structuredContent": structured, "isError": False}
+
+        backend._session.call_tool.side_effect = call_tool
+        backend._session.supports_capability = lambda cap, tool=None: False
+        return backend
+
+    def test_updates_active_pid_and_window(self):
+        backend = self._backend(windows=[{
+            "app_name": "chrome.exe", "pid": 6612, "window_id": 137,
+            "is_on_screen": True, "title": "Facebook - Google Chrome",
+            "x": 10, "y": 20, "width": 800, "height": 600,
+        }])
+        backend._active_pid = 111            # stale: explorer
+        backend._last_app = "explorer.exe"
+        res = backend.bring_to_front(pid=6612, window_id=137)
+        assert res.ok
+        assert backend._active_pid == 6612
+        assert backend._active_window_id == 137
+        assert backend._last_app == "chrome.exe"
+        assert backend._active_window_rect == (10, 20, 800, 600)
+
+    def test_enumeration_failure_still_sets_pid(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        def call_tool(name, args, timeout=None):
+            if name == "list_windows":
+                raise TimeoutError()
+            return {"data": "ok", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = call_tool
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._last_app = "explorer.exe"
+        backend._active_window_rect = (0, 0, 5, 5)
+        res = backend.bring_to_front(pid=6612, window_id=137)
+        assert res.ok
+        assert backend._active_pid == 6612
+        assert backend._active_window_id == 137
+        # Stale rect cleared so coordinate mapping can't use the old frame.
+        assert backend._active_window_rect is None
+        # App name stays (better stale than wrong-empty) — pid drives actions.
+        assert backend._last_app == "explorer.exe"
+
+    def test_failed_bring_to_front_keeps_state(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "no such window", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": True,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._active_pid = 111
+        res = backend.bring_to_front(pid=6612)
+        assert not res.ok
+        assert backend._active_pid == 111
+
+    def test_pid_match_prefers_on_screen_window(self):
+        backend = self._backend(windows=[
+            {"app_name": "chrome.exe", "pid": 6612, "window_id": 1,
+             "is_on_screen": False, "title": "bg",
+             "x": 0, "y": 0, "width": 10, "height": 10},
+            {"app_name": "chrome.exe", "pid": 6612, "window_id": 2,
+             "is_on_screen": True, "title": "fg",
+             "x": 1, "y": 1, "width": 20, "height": 20},
+        ])
+        backend.bring_to_front(pid=6612)  # no window_id given
+        assert backend._active_window_id == 2
+
+
+class TestMinimizeHotkeyShape:
+    def test_minimize_sends_keys_as_array(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend.minimize(pid=7, window_id=8)
+        hotkey = next(
+            c.args for c in backend._session.call_tool.call_args_list
+            if c.args[0] == "hotkey"
+        )
+        keys = hotkey[1]["keys"]
+        # Driver rejects a combo string with "Missing required array field
+        # keys." — must be a list with the modifier split out.
+        assert isinstance(keys, list) and len(keys) == 2
+
+    def test_parse_key_combo_treats_win_super_as_modifiers(self):
+        from tools.computer_use.cua_backend import _parse_key_combo
+        assert _parse_key_combo("win+down") == ("down", ["win"])
+        assert _parse_key_combo("super+h") == ("h", ["super"])
+        assert _parse_key_combo("meta+left") == ("left", ["meta"])
+
+
+class TestDescribeError:
+    def test_bare_timeout_has_type_and_hint(self):
+        from tools.computer_use.tool import _describe_error
+        text = _describe_error(TimeoutError())
+        assert "TimeoutError" in text
+        assert "doctor" in text
+
+    def test_futures_timeout_alias_covered(self):
+        import concurrent.futures
+        from tools.computer_use.tool import _describe_error
+        text = _describe_error(concurrent.futures.TimeoutError())
+        assert "TimeoutError" in text
+
+    def test_normal_exception_keeps_message(self):
+        from tools.computer_use.tool import _describe_error
+        text = _describe_error(ValueError("bad window id"))
+        assert "ValueError" in text and "bad window id" in text
+
+    def test_dispatch_error_is_never_empty(self, monkeypatch):
+        import tools.computer_use.tool as cu_tool
+        backend = cu_tool._get_backend()
+        monkeypatch.setattr(
+            type(backend), "list_windows",
+            lambda self, on_screen_only=False: (_ for _ in ()).throw(TimeoutError()),
+            raising=False,
+        )
+        out = cu_tool.handle_computer_use({"action": "list_windows"})
+        err = json.loads(out)["error"]
+        assert err.strip().endswith(":") is False
+        assert "TimeoutError" in err
+
+
+class TestOpenAppDispatch:
+    def test_open_app_basic(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "open_app", "app": "Notepad"})
+        assert json.loads(out)["ok"] is True
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert kw["app"] == "Notepad"
+        assert kw["args"] is None  # not a browser: no auto-flags
+
+    def test_open_app_requires_app(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "open_app"})
+        assert "error" in json.loads(out)
+
+    def test_browser_gets_auto_flags(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "open_app", "app": "Chrome",
+            "url": "https://facebook.com",
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert kw["url"] == "https://facebook.com"
+        joined = " ".join(kw["args"])
+        assert "--force-renderer-accessibility" in joined
+        assert "--remote-debugging-port" in joined
+
+    def test_browser_exe_path_detected(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "open_app",
+            "app": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert any("--force-renderer-accessibility" in a for a in kw["args"])
+
+    def test_browser_args_merge_without_duplicates(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "open_app", "app": "msedge",
+            "browser_args": ["--profile-directory=Profile 1",
+                              "--force-renderer-accessibility"],
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert kw["args"].count("--force-renderer-accessibility") == 1
+        assert "--profile-directory=Profile 1" in kw["args"]
+
+    def test_non_browser_keeps_custom_args_only(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "open_app", "app": "gimp", "browser_args": ["-n"],
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert kw["args"] == ["-n"]
+
+    def test_new_instance_passthrough(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "open_app", "app": "chrome", "new_instance": True,
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "open_app")
+        assert kw["new_instance"] is True
+
+    def test_aliases_route_to_open_app(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        for alias in ("launch_app", "launch", "open", "start_app"):
+            handle_computer_use({"action": alias, "app": "Calculator"})
+        opens = [c for c in noop_backend.calls if c[0] == "open_app"]
+        assert len(opens) == 4
+
+    def test_open_app_in_schema_enum(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        enum = COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        assert "open_app" in enum
+
+    def test_open_app_is_gated(self):
+        from tools.computer_use.tool import _DESTRUCTIVE_ACTIONS
+        assert "open_app" in _DESTRUCTIVE_ACTIONS
+
+    def test_browser_message_mentions_fresh_process(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "open_app", "app": "chrome"})
+        assert "fresh process" in out
+
+
+class TestCuaOpenAppBackend:
+    def _backend(self, structured):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        def call_tool(name, args, timeout=None):
+            s = structured if name == "launch_app" else {"windows": []}
+            return {"data": "ok", "images": [], "image_mime_types": [],
+                    "structuredContent": s, "isError": False}
+
+        backend._session.call_tool.side_effect = call_tool
+        backend._session.supports_capability = lambda cap, tool=None: False
+        return backend
+
+    def test_open_app_driver_path_without_flags(self):
+        backend = self._backend({"pid": 4242, "windows": [
+            {"window_id": 9, "title": "New Tab"},
+        ]})
+        res = backend.open_app(app="chrome", url="https://example.com")
+        assert res.ok
+        assert backend._active_pid == 4242
+        launch = next(
+            c.args for c in backend._session.call_tool.call_args_list
+            if c.args[0] == "launch_app"
+        )
+        assert launch[1]["name"] == "chrome"
+        assert launch[1]["urls"] == ["https://example.com"]
+        # Driver launch_app schema (0.6.5-0.7.0) has no additional_arguments:
+        # the flags-free path must not send placebo args.
+        assert "additional_arguments" not in launch[1]
+        assert res.meta["pid"] == 4242
+        assert res.meta["windows"][0]["title"] == "New Tab"
+
+    def test_open_app_with_flags_spawns_directly(self, monkeypatch):
+        import subprocess as sp
+        backend = self._backend({"pid": 1, "windows": []})
+        spawned = {}
+
+        def fake_popen(argv, **kw):
+            spawned["argv"] = argv
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+        monkeypatch.setattr(backend, "_resolve_app_command",
+                            lambda app: "google-chrome")
+        monkeypatch.setattr(backend, "_wait_for_app_window", lambda app, timeout=6.0: {
+            "pid": 777, "window_id": 42, "app_name": "chrome",
+            "title": "Facebook",
+        })
+        res = backend.open_app(app="chrome", url="https://facebook.com",
+                               args=["--force-renderer-accessibility"])
+        assert res.ok
+        # Spawned with the flags + url — NOT routed through driver launch_app
+        # (whose schema would silently drop the flags).
+        assert "--force-renderer-accessibility" in spawned["argv"]
+        assert "https://facebook.com" in spawned["argv"]
+        assert not any(
+            c.args[0] == "launch_app"
+            for c in backend._session.call_tool.call_args_list
+        )
+        assert backend._active_pid == 777
+        assert backend._active_window_id == 42
+        assert backend._last_app == "chrome"
+
+    def test_open_app_flags_fallback_warns_when_unresolvable(self, monkeypatch):
+        import sys as _sys
+        if _sys.platform != "linux":
+            import pytest as _pytest
+            _pytest.skip("fallback path resolves executables on linux only")
+        backend = self._backend({"pid": 5, "windows": []})
+        monkeypatch.setattr(backend, "_resolve_app_command", lambda app: None)
+        res = backend.open_app(app="not-a-real-browser", args=["--x"])
+        assert res.ok
+        assert "WITHOUT" in res.message  # flags could not be applied
+        assert any(
+            c.args[0] == "launch_app"
+            for c in backend._session.call_tool.call_args_list
+        )
+
+    def test_wait_for_app_window_matches_exe_suffix(self, monkeypatch):
+        backend = self._backend(None)
+        monkeypatch.setattr(backend, "_list_windows_raw", lambda **kw: [
+            {"app_name": "chrome.exe", "pid": 10, "window_id": 3,
+             "is_on_screen": True, "title": "New Tab"},
+        ])
+        target = backend._wait_for_app_window("Google Chrome", timeout=0.1)
+        assert target and target["pid"] == 10
+        target2 = backend._wait_for_app_window("chrome", timeout=0.1)
+        assert target2 and target2["pid"] == 10
+
+    def test_open_app_failure_is_actionresult(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.side_effect = RuntimeError("no such app")
+        backend._session.supports_capability = lambda cap, tool=None: False
+        res = backend.open_app(app="nonexistent")
+        assert not res.ok
+        assert "no such app" in res.message
+
+
+class TestThinBrowserTreeHint:
+    def _cap(self, app, n):
+        from tools.computer_use.backend import CaptureResult, UIElement
+        return CaptureResult(
+            mode="ax", width=800, height=600,
+            elements=[UIElement(index=i, role="Button", label=f"B{i}",
+                                bounds=(0, i * 10, 10, 10))
+                      for i in range(1, n + 1)],
+            app=app,
+        )
+
+    def test_hint_for_thin_chrome_tree(self):
+        from tools.computer_use.tool import _capture_response
+        out = _capture_response(self._cap("chrome.exe", 16))
+        assert "likely just the browser frame" in out
+
+    def test_no_hint_for_rich_chrome_tree(self):
+        from tools.computer_use.tool import _capture_response
+        out = _capture_response(self._cap("chrome.exe", 120))
+        assert "browser frame" not in out
+
+    def test_no_hint_for_non_browser(self):
+        from tools.computer_use.tool import _capture_response
+        out = _capture_response(self._cap("explorer.exe", 16))
+        assert "browser frame" not in out
+
+    def test_hint_for_firefox_too(self):
+        from tools.computer_use.tool import _capture_response
+        out = _capture_response(self._cap("firefox.exe", 10))
+        assert "likely just the browser frame" in out
+
+
+class TestListWindowsDriverFilter:
+    def _backend(self, windows):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": {"windows": windows}, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        return backend
+
+    def test_driver_windows_hidden(self):
+        backend = self._backend([
+            {"app_name": "cua-driver.exe", "pid": 20544, "window_id": 722620,
+             "is_on_screen": True, "title": "Cua.AgentCursorOverlay.default"},
+            {"app_name": "chrome.exe", "pid": 6612, "window_id": 1,
+             "is_on_screen": True, "title": "Suno"},
+        ])
+        wins = backend.list_windows()
+        assert len(wins) == 1
+        assert wins[0]["app"] == "chrome.exe"
+
+    def test_cua_titled_window_hidden_even_without_app_name(self):
+        backend = self._backend([
+            {"app_name": "", "pid": 1, "window_id": 2,
+             "is_on_screen": True, "title": "Cua.AgentCursorOverlay.default"},
+        ])
+        assert backend.list_windows() == []
+
+
+class TestAutoUpgradeDefault:
+    def test_auto_upgrade_defaults_true(self, monkeypatch):
+        import tools.computer_use.cua_backend as cb
+        import clio_cli.config as cfg
+        monkeypatch.setattr(cfg, "load_config", lambda: {})
+        assert cb._auto_upgrade_driver_enabled() is True
+
+    def test_auto_upgrade_optout_respected(self, monkeypatch):
+        import tools.computer_use.cua_backend as cb
+        import clio_cli.config as cfg
+        monkeypatch.setattr(
+            cfg, "load_config",
+            lambda: {"computer_use": {"auto_upgrade_driver": False}},
+        )
+        assert cb._auto_upgrade_driver_enabled() is False
+
+
+class TestGuidanceMentionsOpenApp:
+    def test_guidance_covers_open_app_and_flags(self):
+        from agent.prompt_builder import COMPUTER_USE_GUIDANCE
+        for needle in ("open_app", "--force-renderer-accessibility",
+                       "new_instance"):
+            assert needle in COMPUTER_USE_GUIDANCE, f"guidance must mention {needle}"
+
+    def test_skill_md_covers_open_app(self):
+        from pathlib import Path
+        skill = Path(__file__).resolve().parents[2] / (
+            "skills/autonomous-ai-agents/computer-use/SKILL.md")
+        text = skill.read_text(encoding="utf-8")
+        assert "open_app" in text

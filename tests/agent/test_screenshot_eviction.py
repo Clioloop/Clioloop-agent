@@ -87,3 +87,58 @@ def test_ignores_non_tool_image_messages():
     assert _has_image(out[0])
     assert not _has_image(out[1])
     assert _has_image(out[2])
+
+
+# ---------------------------------------------------------------------------
+# Codex / Responses transport wiring — the July 2026 request dumps showed
+# 745KB SOM screenshots riding along verbatim in `function_call_output`
+# items because only the Chat Completions transport evicted.
+# ---------------------------------------------------------------------------
+
+def test_codex_convert_messages_evicts_old_screenshots():
+    from agent.transports.codex import ResponsesApiTransport
+
+    msgs = [{"role": "user", "content": "go"}]
+    for i in range(6):
+        msgs.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{
+                "id": f"call_{i}", "type": "function",
+                "function": {"name": "computer_use", "arguments": "{}"},
+            }],
+        })
+        msgs.append(_img_tool_msg(f"call_{i}"))
+
+    transport = ResponsesApiTransport()
+    items = transport.convert_messages(msgs, is_codex_backend=True)
+
+    blob = str(items)
+    # Newest 3 screenshots survive the conversion; older ones are gone.
+    for tag in ("IMG_call_5", "IMG_call_4", "IMG_call_3"):
+        assert tag in blob
+    for tag in ("IMG_call_0", "IMG_call_1", "IMG_call_2"):
+        assert tag not in blob
+    assert "[screenshot removed to save context]" in blob
+
+
+def test_codex_build_kwargs_evicts_old_screenshots():
+    from agent.transports.codex import ResponsesApiTransport
+
+    msgs = [{"role": "system", "content": "sys"},
+            {"role": "user", "content": "go"}]
+    for i in range(5):
+        msgs.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{
+                "id": f"call_{i}", "type": "function",
+                "function": {"name": "computer_use", "arguments": "{}"},
+            }],
+        })
+        msgs.append(_img_tool_msg(f"call_{i}"))
+
+    transport = ResponsesApiTransport()
+    kwargs = transport.build_kwargs("gpt-5.5", msgs, is_codex_backend=True)
+
+    blob = str(kwargs["input"])
+    assert "IMG_call_4" in blob
+    assert "IMG_call_0" not in blob and "IMG_call_1" not in blob
