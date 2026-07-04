@@ -22,7 +22,13 @@ const CLOSE_MS = 1600;
 
 type Phase = "full" | "dimming" | "docked" | "closing" | "skipped";
 
-export default function IntroOverlay() {
+export default function IntroOverlay({
+  webmSrc = "/brand/introclio.webm",
+  mp4Src = "/brand/introclio.mp4",
+}: {
+  webmSrc?: string;
+  mp4Src?: string;
+}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [show, setShow] = useState(false);
   const [phase, setPhase] = useState<Phase>("full");
@@ -121,12 +127,8 @@ export default function IntroOverlay() {
           onError={() => setPhase("skipped")}
         >
           {/* WebM first: Linux browsers often lack the H.264 codec. */}
-          <source src="/brand/introclio.webm" type="video/webm" />
-          <source
-            src="/brand/introclio.mp4"
-            type="video/mp4"
-            onError={() => setPhase("skipped")}
-          />
+          <source src={webmSrc} type="video/webm" />
+          <source src={mp4Src} type="video/mp4" onError={() => setPhase("skipped")} />
         </video>
         {/* The site's dark wash, faded in over the video during "dimming" so
             the dock handoff to the real backdrop layers is seamless. */}

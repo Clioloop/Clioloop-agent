@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { getDb, now, UserRow, getUserById } from "./db";
+import { getDb, now, stmt, UserRow } from "./db";
+import { sessionSecret } from "./secret";
 
 // Token prefixes make leaked credentials identifiable in logs/scanners.
 export const ACCESS_PREFIX = "olp_at_";
@@ -29,9 +30,8 @@ function signAccessJwt(userId: string, scope: string, ttlSeconds: number): strin
     jti: crypto.randomUUID(),
     iss: "omni-loop-portal",
   });
-  const secret = process.env.SESSION_SECRET?.trim() || "olp-access-token";
   const sig = crypto
-    .createHmac("sha256", secret)
+    .createHmac("sha256", sessionSecret())
     .update(`${header}.${payload}`)
     .digest("base64url");
   return `${header}.${payload}.${sig}`;
@@ -128,16 +128,14 @@ export function resolveBearer(authorization: string | null): BearerIdentity | nu
   const token = (authorization ?? "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
   if (!token.startsWith("eyJ") && !token.startsWith(ACCESS_PREFIX)) return null;
-  const db = getDb();
   const hash = hashToken(token);
 
-  const row = db
-    .prepare(
-      "SELECT user_id FROM oauth_tokens WHERE token_hash = ? AND kind = 'access' AND revoked = 0 AND expires_at > ?",
-    )
-    .get(hash, now()) as { user_id: string } | undefined;
-  if (!row) return null;
-  const user = getUserById(row.user_id);
+  const user = stmt(
+    `SELECT users.* FROM oauth_tokens
+      JOIN users ON users.id = oauth_tokens.user_id
+     WHERE oauth_tokens.token_hash = ? AND oauth_tokens.kind = 'access'
+       AND oauth_tokens.revoked = 0 AND oauth_tokens.expires_at > ?`,
+  ).get(hash, now()) as UserRow | undefined;
   // Suspended accounts lose API access immediately, tokens or not.
   if (!user || user.banned) return null;
   return { user, via: "oauth" };

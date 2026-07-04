@@ -1,17 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionUser } from "@/lib/session";
+import { withUser } from "@/lib/handlers";
 import { startCheckout } from "@/lib/billing";
 import { PLANS, PlanId } from "@/lib/plans";
-import { rateLimitResponse } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
-  const limited = rateLimitResponse("checkout", req);
-  if (limited) return limited;
-
-  const user = await getSessionUser();
-  if (!user) return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
+export const POST = withUser(async (req: NextRequest, user) => {
   if (!user.email_verified) {
     return NextResponse.json(
       { error: "Verify your email before changing plans — check your inbox or resend from the dashboard." },
@@ -35,4 +29,4 @@ export async function POST(req: NextRequest) {
       { status: 500 },
     );
   }
-}
+}, { rateLimit: "checkout" });

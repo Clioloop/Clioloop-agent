@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveBearer } from "@/lib/tokens";
+import { withBearer } from "@/lib/handlers";
 import { getSubscription } from "@/lib/db";
 import { getPlan } from "@/lib/plans";
 import { fetchModels } from "@/lib/openrouter";
@@ -13,14 +13,7 @@ export const runtime = "nodejs";
  *   paid → the full OpenRouter catalog
  * Each entry carries OpenRouter `pricing` so the CLI shows price + free/paid.
  */
-export async function GET(req: NextRequest) {
-  const identity = resolveBearer(req.headers.get("authorization"));
-  if (!identity) {
-    return NextResponse.json(
-      { error: "invalid_token", error_description: "Provide a valid Omni Loop Portal token" },
-      { status: 401 },
-    );
-  }
+export const GET = withBearer(async (_req: NextRequest, identity) => {
   const plan = getPlan(getSubscription(identity.user.id)?.plan);
 
   try {
@@ -35,4 +28,10 @@ export async function GET(req: NextRequest) {
       { status: 502 },
     );
   }
-}
+}, {
+  unauthorized: () =>
+    NextResponse.json(
+      { error: "invalid_token", error_description: "Provide a valid Omni Loop Portal token" },
+      { status: 401 },
+    ),
+});

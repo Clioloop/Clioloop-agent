@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
-
-const SITE_URL = "https://portal.clioloop.com";
+import { SITE_URL } from "@/lib/site";
+import { LOCALES, langAlternates } from "@/i18n/locales";
 
 // Public, indexable routes. Auth/app/api routes are intentionally excluded.
 const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.Sitemap[number]["changeFrequency"] }[] = [
@@ -22,12 +22,39 @@ const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.S
   { path: "/privacy", priority: 0.3, changeFrequency: "yearly" },
 ];
 
+/** hreflang alternates, absolute, for the two localized pages. */
+function abs(path: "/" | "/pricing") {
+  return Object.fromEntries(
+    Object.entries(langAlternates(path)).map(([lang, p]) => [lang, `${SITE_URL}${p}`]),
+  );
+}
+
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
-  return ROUTES.map((r) => ({
+  const entries: MetadataRoute.Sitemap = ROUTES.map((r) => ({
     url: `${SITE_URL}${r.path}`,
     lastModified: now,
     changeFrequency: r.changeFrequency,
     priority: r.priority,
+    ...(r.path === "/" || r.path === "/pricing"
+      ? { alternates: { languages: abs(r.path as "/" | "/pricing") } }
+      : {}),
   }));
+  for (const locale of LOCALES) {
+    entries.push({
+      url: `${SITE_URL}/${locale}`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.8,
+      alternates: { languages: abs("/") },
+    });
+    entries.push({
+      url: `${SITE_URL}/${locale}/pricing`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.7,
+      alternates: { languages: abs("/pricing") },
+    });
+  }
+  return entries;
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb, getSubscription, monthUsageMicros, currentMonth } from "@/lib/db";
-import { getSessionUser } from "@/lib/session";
+import { withUser } from "@/lib/handlers";
 import { getPlan } from "@/lib/plans";
 import { isMockBilling } from "@/lib/billing";
 import { serviceAvailability } from "@/lib/gateway";
@@ -8,10 +8,7 @@ import { serviceAvailability } from "@/lib/gateway";
 export const runtime = "nodejs";
 
 /** Session-based account snapshot for the web dashboard. */
-export async function GET() {
-  const user = await getSessionUser();
-  if (!user) return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
-
+export const GET = withUser(async (_req, user) => {
   const sub = getSubscription(user.id);
   const plan = getPlan(sub?.plan);
   const devices = getDb()
@@ -46,4 +43,4 @@ export async function GET() {
     connected_devices: devices.n,
     mock_billing: isMockBilling(),
   });
-}
+});

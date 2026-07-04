@@ -1,28 +1,14 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
-import crypto from "node:crypto";
 import { getUserById, UserRow } from "./db";
+import { sessionSecretBytes } from "./secret";
 
 const COOKIE = "olp_session";
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
-// In production set SESSION_SECRET; the dev fallback is random per process,
-// so sessions reset on restart (harmless locally, loud in prod logs).
-declare global {
-  var __olpSessionSecret: Uint8Array | undefined;
-}
-
-function secret(): Uint8Array {
-  const env = process.env.SESSION_SECRET?.trim();
-  if (env) return new TextEncoder().encode(env);
-  if (!globalThis.__olpSessionSecret) {
-    if (process.env.NODE_ENV === "production") {
-      console.warn("[portal] SESSION_SECRET is not set — sessions will not survive restarts");
-    }
-    globalThis.__olpSessionSecret = crypto.randomBytes(32);
-  }
-  return globalThis.__olpSessionSecret;
-}
+// SESSION_SECRET is required in production (secret.ts throws otherwise);
+// the dev fallback is random per process, so sessions reset on restart.
+const secret = sessionSecretBytes;
 
 export async function createSession(userId: string): Promise<void> {
   const jwt = await new SignJWT({ sub: userId })

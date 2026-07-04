@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 
-export const metadata: Metadata = { title: "Privacy Policy — Omni Loop Portal" };
+export const metadata: Metadata = {
+  title: "Privacy Policy — Omni Loop Portal",
+  alternates: { canonical: "/privacy" },
+};
 
 export default function PrivacyPage() {
   return (

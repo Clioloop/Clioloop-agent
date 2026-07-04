@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveBearer } from "@/lib/tokens";
+import { withBearer } from "@/lib/handlers";
 import { rateLimit } from "@/lib/ratelimit";
 import { freeModelDayCount, incrFreeModelDay } from "@/lib/db";
 import { selectInferenceUpstream } from "@/lib/inference-upstream";
@@ -37,15 +37,7 @@ interface UpstreamUsage {
  * access (free → the one free model; paid → any), the shared free-model daily
  * allotment, and per-user cost metering (streaming included).
  */
-export async function POST(req: NextRequest) {
-  const identity = resolveBearer(req.headers.get("authorization"));
-  if (!identity) {
-    return apiError(
-      401,
-      "invalid_token",
-      "Provide a valid Omni Loop Portal token.",
-    );
-  }
+export const POST = withBearer(async (req: NextRequest, identity) => {
   const userId = identity.user.id;
 
   const retry = rateLimit("inference", userId);
@@ -225,4 +217,7 @@ export async function POST(req: NextRequest) {
         upstream.headers.get("content-type") ?? "application/json",
     },
   });
-}
+}, {
+  unauthorized: () =>
+    apiError(401, "invalid_token", "Provide a valid Omni Loop Portal token."),
+});

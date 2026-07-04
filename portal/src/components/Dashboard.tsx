@@ -105,6 +105,9 @@ export default function Dashboard() {
             {me.plan.status !== "active" && (
               <span className="badge badge-amber">{me.plan.status}</span>
             )}
+            {/* Plain <a>: /api/auth/logout is an API route — <Link> would
+                prefetch it and log the user out on hover. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
             <a href="/api/auth/logout" className="btn btn-ghost btn-sm">
               Log out
             </a>

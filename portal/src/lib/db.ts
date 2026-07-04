@@ -3,9 +3,30 @@ import fs from "node:fs";
 import path from "node:path";
 
 // Single SQLite connection, cached on globalThis so Next.js dev-mode HMR
-// doesn't open a new handle per reload.
+// doesn't open a new handle per reload. Prepared statements are memoized
+// alongside it so hot paths don't recompile SQL per request; the map lives on
+// globalThis too, keeping it paired with the handle across HMR reloads.
 declare global {
   var __olpDb: Database.Database | undefined;
+  var __olpStmts: WeakMap<Database.Database, Map<string, Database.Statement>> | undefined;
+}
+
+/** Memoized `db.prepare()` — better-sqlite3 statements are compile-once, reusable.
+ *  Keyed per db handle so a replaced handle can never serve stale statements. */
+export function stmt(sql: string): Database.Statement {
+  const db = getDb();
+  const byDb = (globalThis.__olpStmts ??= new WeakMap());
+  let cache = byDb.get(db);
+  if (!cache) {
+    cache = new Map();
+    byDb.set(db, cache);
+  }
+  let prepared = cache.get(sql);
+  if (!prepared) {
+    prepared = db.prepare(sql);
+    cache.set(sql, prepared);
+  }
+  return prepared;
 }
 
 const SCHEMA = `
@@ -175,21 +196,27 @@ export function utcDay(): string {
 
 /** How many free-model requests this user has made today (UTC). */
 export function freeModelDayCount(userId: string, day = utcDay()): number {
-  const row = getDb()
-    .prepare("SELECT count FROM free_model_requests WHERE user_id = ? AND day = ?")
-    .get(userId, day) as { count: number } | undefined;
+  const row = stmt("SELECT count FROM free_model_requests WHERE user_id = ? AND day = ?").get(
+    userId,
+    day,
+  ) as { count: number } | undefined;
   return row?.count ?? 0;
 }
 
-/** Increment today's free-model counter for a user; prunes old rows opportunistically. */
+let lastPrunedFreeModelDay = "";
+
+/** Increment today's free-model counter for a user; prunes old rows once per day. */
 export function incrFreeModelDay(userId: string, day = utcDay()): void {
-  const db = getDb();
-  db.prepare(
+  stmt(
     `INSERT INTO free_model_requests (user_id, day, count) VALUES (?, ?, 1)
      ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1`,
   ).run(userId, day);
-  // Best-effort cleanup of stale days so the table stays tiny.
-  db.prepare("DELETE FROM free_model_requests WHERE day < ?").run(day);
+  // Best-effort cleanup of stale days so the table stays tiny — once per UTC
+  // day rather than on every request.
+  if (day !== lastPrunedFreeModelDay) {
+    stmt("DELETE FROM free_model_requests WHERE day < ?").run(day);
+    lastPrunedFreeModelDay = day;
+  }
 }
 
 export interface UserRow {
@@ -214,21 +241,17 @@ export interface SubscriptionRow {
 }
 
 export function getUserById(id: string): UserRow | undefined {
-  return getDb().prepare("SELECT * FROM users WHERE id = ?").get(id) as
-    | UserRow
-    | undefined;
+  return stmt("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
 }
 
 export function getUserByEmail(email: string): UserRow | undefined {
-  return getDb()
-    .prepare("SELECT * FROM users WHERE email = ?")
-    .get(email.trim()) as UserRow | undefined;
+  return stmt("SELECT * FROM users WHERE email = ?").get(email.trim()) as UserRow | undefined;
 }
 
 export function getSubscription(userId: string): SubscriptionRow | undefined {
-  return getDb()
-    .prepare("SELECT * FROM subscriptions WHERE user_id = ?")
-    .get(userId) as SubscriptionRow | undefined;
+  return stmt("SELECT * FROM subscriptions WHERE user_id = ?").get(userId) as
+    | SubscriptionRow
+    | undefined;
 }
 
 export function setSubscription(
@@ -256,11 +279,9 @@ export function setSubscription(
 }
 
 export function monthUsageMicros(userId: string, month = currentMonth()): number {
-  const row = getDb()
-    .prepare(
-      "SELECT COALESCE(SUM(cost_micros), 0) AS total FROM usage_events WHERE user_id = ? AND month = ?",
-    )
-    .get(userId, month) as { total: number };
+  const row = stmt(
+    "SELECT COALESCE(SUM(cost_micros), 0) AS total FROM usage_events WHERE user_id = ? AND month = ?",
+  ).get(userId, month) as { total: number };
   return row.total;
 }
 
@@ -271,12 +292,10 @@ export function recordUsage(
   completionTokens: number,
   costMicros: number,
 ): void {
-  getDb()
-    .prepare(
-      `INSERT INTO usage_events (user_id, month, model, prompt_tokens, completion_tokens, cost_micros, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(userId, currentMonth(), model, promptTokens, completionTokens, costMicros, now());
+  stmt(
+    `INSERT INTO usage_events (user_id, month, model, prompt_tokens, completion_tokens, cost_micros, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(userId, currentMonth(), model, promptTokens, completionTokens, costMicros, now());
 }
 
 export function recordMeteringAlert(

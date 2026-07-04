@@ -1,6 +1,5 @@
 import Link from "next/link";
-
-const SITE_URL = "https://portal.clioloop.com";
+import { SITE_URL } from "@/lib/site";
 
 // Single source of truth for the docs section: order drives the sidebar, the
 // prev/next pager and the sitemap intent. Keep slugs in sync with the route

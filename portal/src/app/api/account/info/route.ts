@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSubscription, monthUsageMicros, currentMonth } from "@/lib/db";
-import { resolveBearer } from "@/lib/tokens";
+import { withBearer } from "@/lib/handlers";
 import { getPlan, planAllowsFusion } from "@/lib/plans";
 import { portalBaseUrl } from "@/lib/billing";
 import { GATEWAY_VENDORS, serviceAvailability, vendorConfigured } from "@/lib/gateway";
@@ -12,14 +12,7 @@ export const runtime = "nodejs";
  * (clio_cli/portal_account.py and clio_cli/portal_subscription.py)
  * to show plan / entitlement / tool-gateway status.
  */
-export async function GET(req: NextRequest) {
-  const identity = resolveBearer(req.headers.get("authorization"));
-  if (!identity) {
-    return NextResponse.json(
-      { logged_in: false, error: "invalid_token" },
-      { status: 401 },
-    );
-  }
+export const GET = withBearer(async (req: NextRequest, identity) => {
   const { user } = identity;
   const sub = getSubscription(user.id);
   const plan = getPlan(sub?.plan);
@@ -64,4 +57,7 @@ export async function GET(req: NextRequest) {
       limit_micros: plan.monthlyCreditsMicros,
     },
   });
-}
+}, {
+  unauthorized: () =>
+    NextResponse.json({ logged_in: false, error: "invalid_token" }, { status: 401 }),
+});

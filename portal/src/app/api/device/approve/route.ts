@@ -1,19 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, now } from "@/lib/db";
-import { getSessionUser } from "@/lib/session";
-import { rateLimitResponse } from "@/lib/ratelimit";
+import { withUser } from "@/lib/handlers";
 
 export const runtime = "nodejs";
 
 /** Browser-side approval of a pending device code (the /activate page). */
-export async function POST(req: NextRequest) {
-  const limited = rateLimitResponse("device_approve", req);
-  if (limited) return limited;
-
-  const user = await getSessionUser();
-  if (!user) {
-    return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
-  }
+export const POST = withUser(async (req: NextRequest, user) => {
   if (!user.email_verified) {
     return NextResponse.json(
       {
@@ -60,4 +52,4 @@ export async function POST(req: NextRequest) {
     .run(action, user.id, userCode);
 
   return NextResponse.json({ ok: true, status: action });
-}
+}, { rateLimit: "device_approve" });

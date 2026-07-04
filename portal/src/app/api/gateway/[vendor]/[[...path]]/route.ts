@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveBearer } from "@/lib/tokens";
+import { withBearer } from "@/lib/handlers";
 import { rateLimit } from "@/lib/ratelimit";
 import {
   GATEWAY_VENDORS,
@@ -39,23 +39,13 @@ type Ctx = { params: Promise<{ vendor: string; path?: string[] }> };
  * gates on plan entitlement, swaps in the house upstream key, forwards the
  * request verbatim, and meters the call against the monthly allowance.
  */
-async function proxy(req: NextRequest, ctx: Ctx) {
+const proxy = withBearer(async (req: NextRequest, identity, ctx: Ctx) => {
   const { vendor: vendorId, path = [] } = await ctx.params;
   const vendor = GATEWAY_VENDORS[vendorId];
   if (!vendor) {
     return NextResponse.json(
       { error: "unknown_vendor", message: `No such gateway vendor: ${vendorId}` },
       { status: 404 },
-    );
-  }
-
-  const identity = resolveBearer(
-    req.headers.get("authorization") ?? req.headers.get("x-browser-use-api-key"),
-  );
-  if (!identity) {
-    return NextResponse.json(
-      { error: "invalid_token", message: "Connect the Clioloop agent to the Omni Loop Portal first." },
-      { status: 401 },
     );
   }
 
@@ -133,7 +123,15 @@ async function proxy(req: NextRequest, ctx: Ctx) {
     status: upstream.status,
     headers: responseHeaders,
   });
-}
+}, {
+  credential: (req) =>
+    req.headers.get("authorization") ?? req.headers.get("x-browser-use-api-key"),
+  unauthorized: () =>
+    NextResponse.json(
+      { error: "invalid_token", message: "Connect the Clioloop agent to the Omni Loop Portal first." },
+      { status: 401 },
+    ),
+});
 
 export {
   proxy as GET,
