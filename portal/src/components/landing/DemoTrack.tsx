@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DemoTrackInfo } from "./demoTracks";
 
 // Custom audio player for the music showcase: brass play button, a score
@@ -29,11 +29,24 @@ export default function DemoTrack({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const staffRef = useRef<HTMLDivElement | null>(null);
   const everPlayedRef = useRef(false);
+  const pendingPlayRef = useRef(false);
   const [selected, setSelected] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [failed, setFailed] = useState(false);
+
+  // Play a newly selected track AFTER React has swapped the <audio> src —
+  // playing before the re-render gets the play() promise aborted by the new
+  // load, and an aborted play() must not be mistaken for a broken file.
+  useEffect(() => {
+    if (!pendingPlayRef.current) return;
+    pendingPlayRef.current = false;
+    audioRef.current?.load();
+    audioRef.current?.play().catch(() => {
+      /* aborted/blocked playback is not a load failure; onError decides */
+    });
+  }, [selected]);
 
   if (failed || tracks.length === 0) return null;
   const track = tracks[selected];
@@ -41,8 +54,15 @@ export default function DemoTrack({
   const toggle = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (audio.paused) audio.play().catch(() => setFailed(true));
-    else audio.pause();
+    if (audio.paused) {
+      audio.play().catch(() => {
+        // Hide the player only if nothing has ever played (missing files);
+        // an interrupted or blocked play() otherwise just stays paused.
+        if (!everPlayedRef.current) setFailed(true);
+      });
+    } else {
+      audio.pause();
+    }
   };
 
   const select = (i: number) => {
@@ -50,13 +70,10 @@ export default function DemoTrack({
       toggle();
       return;
     }
-    setSelected(i);
     setTime(0);
     setDuration(0);
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.src = tracks[i].src;
-    audio.play().catch(() => setFailed(true));
+    pendingPlayRef.current = true;
+    setSelected(i);
   };
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
