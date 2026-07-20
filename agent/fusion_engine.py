@@ -285,7 +285,7 @@ FUSION_NEEDS_MANAGED_NOTICE = (
 # portal/src/lib/model-policy.ts::FREE_OPENROUTER_MODEL). It is a paid model
 # whose cost Clioloop absorbs, NOT an OpenRouter ":free" variant — so the
 # ``:free`` suffix check does NOT catch it; the explicit constant match does.
-FREE_MANAGED_MODEL = "z-ai/glm-5.2"
+FREE_MANAGED_MODEL = "deepseek/deepseek-v4-pro"
 
 
 def _model_is_free(model_id: str, pricing: dict | None) -> bool:

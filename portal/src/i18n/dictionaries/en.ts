@@ -378,7 +378,7 @@ export const en = {
     startFree: "Start free",
     choose: "Choose",
     taglines: {
-      free: "Try Clioloop with GLM 5.2 — free",
+      free: "Try Clioloop with DeepSeek V4 Pro — free",
       pro: "300+ OpenRouter models, one subscription",
       max: "Music & video generation — 5× Pro usage",
       max20x: "10× Pro usage for heavy fleets and swarms",

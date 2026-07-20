@@ -152,21 +152,22 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     # Offline fallback only — the live portal /api/v1/models is authoritative and
-    # tier-filtered (free → the one free model; paid → the full OpenRouter
-    # catalog). All ids are OpenRouter `vendor/model`. The free promo model is
-    # FIRST so the recommended-default and silent-default both land on it —
-    # paid users get it pre-selected at setup instead of the most expensive
-    # frontier model (Opus). They can switch up in `clio model` if they want.
+    # tier-filtered (free → the one promotional model; paid → the full OpenRouter
+    # catalog). All ids are OpenRouter `vendor/model`. DeepSeek V4 Pro is FIRST
+    # so both free and paid users get it pre-selected at setup instead of the
+    # most expensive frontier model (Opus). They can switch in `clio model`.
     "managed": [
         # Free promo model (every tier) — Clioloop absorbs the cost.
         # This MUST be first so get_recommended_default_model picks it.
-        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-pro",
         # Frontier — OpenRouter `vendor/model` ids (available to paid plans).
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.5",
         "google/gemini-3-pro-preview",
         "x-ai/grok-4.3",
+        # GLM 5.2 remains selectable for paid plans, but is no longer free.
+        "z-ai/glm-5.2",
         "tencent/hy3-preview",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
@@ -575,8 +576,9 @@ def union_with_portal_free_recommendations(
       appended after the curated list (so the in-repo curated models
       show first and Portal-only picks follow).
     * ``pricing`` gets a synthetic ``{"prompt": "0", "completion": "0"}``
-      entry for any free recommendation missing from the live pricing
-      map, so :func:`partition_managed_models_by_tier` keeps it.
+      entry for every promotional recommendation, overriding its upstream
+      OpenRouter price. The Portal entitlement is the source of truth for what
+      Clioloop absorbs, so :func:`partition_managed_models_by_tier` must keep it.
 
     Failures (network, parse, missing field) are silent and degrade to
     returning the inputs unchanged.
@@ -603,8 +605,10 @@ def union_with_portal_free_recommendations(
     augmented_pricing = dict(pricing)
     free_synthetic = {"prompt": "0", "completion": "0"}
     for mid in portal_free_ids:
-        if mid not in augmented_pricing:
-            augmented_pricing[mid] = dict(free_synthetic)
+        # Promotional models can have a non-zero upstream OpenRouter price even
+        # though Clioloop absorbs their cost. Always override that live price so
+        # free-tier clients keep the Portal-approved model selectable.
+        augmented_pricing[mid] = dict(free_synthetic)
 
     augmented_ids = list(curated_ids)
     seen = set(augmented_ids)
@@ -1153,16 +1157,15 @@ _PROVIDER_ALIASES = {
 # in clio_cli/web_server.py and ``partition_managed_models_by_tier`` — which can
 # hit the Portal; this fallback must stay cheap and network-free.
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    # The portal's free model: works for every tier and is cost-safe (€0) as a
-    # silent default.
-    "managed": "z-ai/glm-5.2",
+    # The Portal's promotional model works for every tier and is the explicit
+    # product default for Omni Loop Subscription accounts.
+    "managed": "deepseek/deepseek-v4-pro",
 }
 
-# Silent default for FREE-tier managed accounts. A paid model would 403
-# (`model_not_in_plan`) for free accounts, so a missing model must fall back to
-# the portal's free model. The interactive picker uses the live tier-filtered
-# catalog from the portal.
-_MANAGED_FREE_SILENT_DEFAULT = "z-ai/glm-5.2"
+# Silent default for FREE-tier managed accounts. The Portal permits a limited
+# promotional allowance on the same DeepSeek V4 Pro product default used by
+# paid accounts. The interactive picker uses the live tier-filtered catalog.
+_MANAGED_FREE_SILENT_DEFAULT = "deepseek/deepseek-v4-pro"
 
 
 def get_default_model_for_provider(provider: str, *, free_tier: bool = False) -> str:
@@ -1180,10 +1183,9 @@ def get_default_model_for_provider(provider: str, *, free_tier: bool = False) ->
     ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
     auto-escalate to the flagship.
 
-    *free_tier* (managed provider only): when True, returns a free community
-    model — the paid cost-safe override would 403 for a free account. The
-    caller decides tier (this function stays pure / network-free); pass the
-    cached ``check_managed_free_tier()`` result.
+    *free_tier* (managed provider only): when True, returns the Portal's
+    promotional model. The caller decides tier (this function stays pure /
+    network-free); pass the cached ``check_managed_free_tier()`` result.
     """
     if free_tier and provider == "managed":
         return _MANAGED_FREE_SILENT_DEFAULT

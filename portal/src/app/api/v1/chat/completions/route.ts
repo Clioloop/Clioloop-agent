@@ -141,7 +141,7 @@ export const POST = withBearer(async (req: NextRequest, identity) => {
   const meter = (usage: UpstreamUsage | undefined, usedModel: string) => {
     // For the free promo model within the daily allotment, cost is absorbed
     // (requirePositiveCost = false). Past the allotment, paid users are charged.
-    // Note: OpenRouter may return a dated alias (e.g. z-ai/glm-5.2-20260616)
+    // Note: OpenRouter may return a dated alias (e.g. deepseek/deepseek-v4-pro-20260616)
     // so we strip the -YYYYMMDD suffix when comparing to FREE_OPENROUTER_MODEL.
     const normalizeModel = (m: string) => m.replace(/-\d{8}$/, "");
     const isFreeModelUsed = normalizeModel(usedModel) === FREE_OPENROUTER_MODEL;

@@ -2199,13 +2199,12 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            # Always prefer the free promo model as the recommended default,
-            # regardless of tier. This prevents a paid user from landing on
-            # Opus (most expensive) at setup and burning their allowance in
-            # a couple of turns. They can switch up in `clio model` later.
+            # Always prefer the promotional DeepSeek V4 Pro model as the
+            # recommended default, regardless of tier. This is the product
+            # default and also prevents setup from landing on Opus.
             from clio_cli.models import _MANAGED_FREE_SILENT_DEFAULT
 
-            free_model = _MANAGED_FREE_SILENT_DEFAULT  # "z-ai/glm-5.2"
+            free_model = _MANAGED_FREE_SILENT_DEFAULT
             if free_model in model_ids:
                 model = free_model
             else:

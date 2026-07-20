@@ -52,10 +52,8 @@ class TestGetDefaultModelForProvider:
         assert result == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
         assert result in _PROVIDER_MODELS["managed"]
 
-    def test_managed_free_tier_silent_default_is_the_free_model(self):
-        """A free-tier (or unset-model) managed account must default to the
-        portal's free promo model — a paid default would 403 for free accounts.
-        """
+    def test_managed_defaults_to_deepseek_v4_pro_for_every_tier(self):
+        """Free and paid managed accounts share the DeepSeek V4 Pro default."""
         from clio_cli.models import (
             _MANAGED_FREE_SILENT_DEFAULT,
             _PROVIDER_MODELS,
@@ -63,18 +61,19 @@ class TestGetDefaultModelForProvider:
             get_default_model_for_provider,
         )
 
-        assert _MANAGED_FREE_SILENT_DEFAULT == "z-ai/glm-5.2"
+        assert _MANAGED_FREE_SILENT_DEFAULT == "deepseek/deepseek-v4-pro"
         free_default = get_default_model_for_provider("managed", free_tier=True)
         assert free_default == _MANAGED_FREE_SILENT_DEFAULT
-        # It is the portal's free promo model (a paid model whose cost we absorb,
-        # NOT an OpenRouter ``:free`` variant).
-        assert free_default == "z-ai/glm-5.2"
-        # The default (free_tier omitted) managed override is also the free model.
+        # The Portal absorbs DeepSeek's upstream cost for the free allowance.
+        assert free_default == "deepseek/deepseek-v4-pro"
+        # Paid and free accounts intentionally share the same product default.
         assert (
             get_default_model_for_provider("managed", free_tier=False)
             == _PROVIDER_SILENT_DEFAULT_OVERRIDES["managed"]
-            == "z-ai/glm-5.2"
+            == "deepseek/deepseek-v4-pro"
         )
+        assert _PROVIDER_MODELS["managed"][0] == "deepseek/deepseek-v4-pro"
+        # GLM 5.2 remains in the paid catalog, but is no longer the default.
         assert "z-ai/glm-5.2" in _PROVIDER_MODELS["managed"]
         # free_tier only changes the managed provider…
         assert get_default_model_for_provider("openai-codex", free_tier=True)

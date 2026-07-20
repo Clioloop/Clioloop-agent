@@ -24,6 +24,25 @@ def test_prompt_model_selection_falls_back_on_menu_runtime_error(monkeypatch):
     assert selected == "model-b"
 
 
+def test_prompt_model_selection_fallback_enter_accepts_setup_default(monkeypatch):
+    from clio_cli.auth import _prompt_model_selection
+
+    deepseek = "deepseek/deepseek-v4-pro"
+    monkeypatch.setattr("clio_cli.curses_ui.curses_radiolist", _raise_menu)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    selected = _prompt_model_selection(
+        ["openai/gpt-oss-120b:free", deepseek],
+        pricing={
+            "openai/gpt-oss-120b:free": {"prompt": "0", "completion": "0"},
+            deepseek: {"prompt": "0.000001", "completion": "0.000003"},
+        },
+        preferred_model=deepseek,
+    )
+
+    assert selected == deepseek
+
+
 def test_prompt_reasoning_effort_falls_back_on_menu_runtime_error(monkeypatch):
     from clio_cli.main import _prompt_reasoning_effort_selection
 

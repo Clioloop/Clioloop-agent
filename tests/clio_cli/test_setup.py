@@ -105,7 +105,12 @@ def test_setup_syncs_managed_from_disk(tmp_path, monkeypatch):
     config = load_config()
 
     def fake_select():
-        _write_model_config(tmp_path, "managed", "https://inference.example.com/v1", "gemini-3-flash")
+        _write_model_config(
+            tmp_path,
+            "managed",
+            "https://inference.example.com/v1",
+            "deepseek/deepseek-v4-pro",
+        )
 
     monkeypatch.setattr("clio_cli.main.select_provider_and_model", fake_select)
 
@@ -116,6 +121,7 @@ def test_setup_syncs_managed_from_disk(tmp_path, monkeypatch):
     assert isinstance(reloaded["model"], dict)
     assert reloaded["model"]["provider"] == "managed"
     assert reloaded["model"]["base_url"] == "https://inference.example.com/v1"
+    assert reloaded["model"]["default"] == "deepseek/deepseek-v4-pro"
 
 
 def test_setup_custom_providers_synced(tmp_path, monkeypatch):

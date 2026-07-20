@@ -8,9 +8,13 @@ def test_free_managed_model():
 
 
 def test_free_managed_promo_model():
-    # GLM 5.2 is the portal's free promo model — a paid model whose cost we
+    # DeepSeek V4 Pro is the portal's promo model — a paid model whose cost we
     # absorb, NOT an OpenRouter ":free" variant. The constant match catches it.
-    assert model_open_tag("z-ai/glm-5.2") == "(free)"
+    assert model_open_tag("deepseek/deepseek-v4-pro") == "(free)"
+
+
+def test_glm_5_2_is_no_longer_free():
+    assert model_open_tag("z-ai/glm-5.2") == "(openrouter)"
 
 
 def test_free_openrouter_suffix():

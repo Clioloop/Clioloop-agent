@@ -43,7 +43,22 @@ class TestModelIds:
         assert len(ids) == len(set(ids)), "Duplicate model IDs found"
 
 
+class TestPortalFreeRecommendations:
+    def test_promo_model_overrides_nonzero_upstream_pricing(self):
+        """Portal policy, not OpenRouter's price, decides the free allowance."""
+        promo = "deepseek/deepseek-v4-pro"
+        pricing = {promo: {"prompt": "0.000001", "completion": "0.000003"}}
+        payload = {"freeRecommendedModels": [{"modelName": promo}]}
 
+        with patch(
+            "clio_cli.models.fetch_managed_recommended_models",
+            return_value=payload,
+        ):
+            ids, updated = union_with_portal_free_recommendations([promo], pricing)
+
+        assert ids == [promo]
+        assert updated[promo] == {"prompt": "0", "completion": "0"}
+        assert pricing[promo]["prompt"] != "0", "input pricing must not be mutated"
 
 
 class TestOpenRouterModels:

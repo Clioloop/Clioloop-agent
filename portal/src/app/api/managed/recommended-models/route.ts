@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 // by priority; ids missing from the live OpenRouter catalog are dropped
 // automatically. Available to every paid tier (the full catalog is selectable).
 const PAID_PICKS = [
+  "deepseek/deepseek-v4-pro",
   "anthropic/claude-opus-4.8",
   "anthropic/claude-sonnet-4.6",
   "openai/gpt-5.5",

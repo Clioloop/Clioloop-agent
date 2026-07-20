@@ -351,7 +351,7 @@ export const ja: Dictionary = {
     startFree: "無料で始める",
     choose: "選択:",
     taglines: {
-      free: "GLM 5.2でClioloopを試す — 無料",
+      free: "DeepSeek V4 ProでClioloopを試す — 無料",
       pro: "300+のOpenRouterモデル、ひとつのサブスク",
       max: "音楽・動画生成 — Proの5倍の利用枠",
       max20x: "フリートとスウォーム向け、Proの10倍",

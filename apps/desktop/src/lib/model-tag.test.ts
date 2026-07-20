@@ -7,8 +7,12 @@ describe('managedModelTag', () => {
     expect(managedModelTag('openai/gpt-oss-120b:free')).toBe('(free)')
   })
 
-  it('tags the GLM 5.2 promo model as (free)', () => {
-    expect(managedModelTag('z-ai/glm-5.2')).toBe('(free)')
+  it('tags the DeepSeek V4 Pro promo model as (free)', () => {
+    expect(managedModelTag('deepseek/deepseek-v4-pro')).toBe('(free)')
+  })
+
+  it('no longer tags GLM 5.2 as (free)', () => {
+    expect(managedModelTag('z-ai/glm-5.2')).toBe('(openrouter)')
   })
 
   it('tags :free OpenRouter variants as (free)', () => {

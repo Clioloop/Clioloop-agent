@@ -6085,8 +6085,14 @@ def _prompt_model_selection(
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
     unavailable_message: str = "",
+    preferred_model: str = "",
 ) -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+    """Interactive model selection.
+
+    The current model floats to the front of its price group. When
+    *preferred_model* is supplied (for example during first-time managed
+    setup), that model is placed first and preselected. Returns the chosen
+    model ID or ``None``.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
@@ -6115,6 +6121,11 @@ def _prompt_model_selection(
     for mid in _front(free_ids) + _front(paid_ids):
         if mid not in ordered:
             ordered.append(mid)
+
+    # First-time setup has a product default independent of price grouping.
+    # Put it at index 0 so both the curses cursor and numbered fallback agree.
+    if preferred_model and preferred_model in ordered:
+        ordered = [preferred_model] + [m for m in ordered if m != preferred_model]
 
     # All models for column-width computation (selectable + unavailable)
     all_models = list(ordered) + list(_unavailable)
@@ -6258,9 +6269,12 @@ def _prompt_model_selection(
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
+            default_choice = "1" if preferred_model and ordered else "skip"
+            choice = input(
+                f"Choice [1-{n + 2}] (default: {default_choice}): "
+            ).strip()
             if not choice:
-                return None
+                return ordered[0] if preferred_model and ordered else None
             idx = int(choice)
             if 1 <= idx <= n:
                 return ordered[idx - 1]
@@ -7603,7 +7617,8 @@ def _login_managed(args, pconfig: ProviderConfig) -> None:
 
             from clio_cli.models import (
                 get_curated_managed_model_ids, get_pricing_for_provider,
-                check_managed_free_tier, partition_managed_models_by_tier,
+                check_managed_free_tier, get_default_model_for_provider,
+                partition_managed_models_by_tier,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -7623,11 +7638,15 @@ def _login_managed(args, pconfig: ProviderConfig) -> None:
             print()
             unavailable_models: list = []
             unavailable_message = ""
+            preferred_model = ""
             if model_ids:
                 pricing = get_pricing_for_provider("managed")
                 # Force fresh account data for model selection so recent credit
                 # purchases are reflected immediately.
                 free_tier = check_managed_free_tier(force_fresh=True)
+                preferred_model = get_default_model_for_provider(
+                    "managed", free_tier=free_tier
+                )
                 _portal_for_recs = auth_state.get("portal_base_url", "")
                 if free_tier:
                     try:
@@ -7673,6 +7692,7 @@ def _login_managed(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                     unavailable_message=unavailable_message,
+                    preferred_model=preferred_model,
                 )
             elif unavailable_models:
                 _url = (_portal or DEFAULT_MANAGED_PORTAL_URL).rstrip("/")

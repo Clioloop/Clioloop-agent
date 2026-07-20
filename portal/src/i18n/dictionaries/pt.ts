@@ -361,7 +361,7 @@ export const pt: Dictionary = {
     startFree: "Começar grátis",
     choose: "Escolher",
     taglines: {
-      free: "Experimente o Clioloop com o GLM 5.2 — grátis",
+      free: "Experimente o Clioloop com o DeepSeek V4 Pro — grátis",
       pro: "300+ modelos OpenRouter, uma assinatura",
       max: "Geração de música e vídeo — uso Pro 5×",
       max20x: "Uso Pro 10× para frotas e enxames",

@@ -6,7 +6,7 @@
 //   (openrouter) — paid OpenRouter models (vendor/model ids)
 // `free` wins ties (a ":free" OpenRouter model is (free), not (openrouter)).
 
-const FREE_MANAGED_MODEL = 'z-ai/glm-5.2'
+const FREE_MANAGED_MODEL = 'deepseek/deepseek-v4-pro'
 
 export function managedModelTag(model: string, price?: { free?: boolean }): string {
   if (price?.free || model.endsWith(':free') || model === FREE_MANAGED_MODEL) {

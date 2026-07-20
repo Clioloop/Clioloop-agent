@@ -343,7 +343,7 @@ export const zh: Dictionary = {
     startFree: "免费开始",
     choose: "选择",
     taglines: {
-      free: "用 GLM 5.2 体验 Clioloop — 免费",
+      free: "用 DeepSeek V4 Pro 体验 Clioloop — 免费",
       pro: "300+ OpenRouter 模型，一份订阅",
       max: "音乐与视频生成 — 5 倍 Pro 用量",
       max20x: "10 倍 Pro 用量，适合集群与蜂群",

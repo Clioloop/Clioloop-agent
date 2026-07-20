@@ -29,6 +29,43 @@ def test_prompt_model_selection_uses_curses_radiolist():
     assert "Skip (keep current)" in seen["items"]
 
 
+def test_prompt_model_selection_preselects_explicit_setup_default():
+    """Managed setup must select DeepSeek even when another model is $0-priced."""
+    from clio_cli.auth import _prompt_model_selection
+
+    seen = {}
+    deepseek = "deepseek/deepseek-v4-pro"
+
+    def _fake(
+        title,
+        items,
+        *,
+        selected=0,
+        cancel_returns=None,
+        description=None,
+        searchable=False,
+    ):
+        seen["items"] = items
+        seen["selected"] = selected
+        return selected
+
+    pricing = {
+        "openai/gpt-oss-120b:free": {"prompt": "0", "completion": "0"},
+        deepseek: {"prompt": "0.000001", "completion": "0.000003"},
+    }
+    with patch("clio_cli.curses_ui.curses_radiolist", side_effect=_fake), \
+         patch("builtins.print"):
+        result = _prompt_model_selection(
+            ["openai/gpt-oss-120b:free", deepseek],
+            pricing=pricing,
+            preferred_model=deepseek,
+        )
+
+    assert seen["selected"] == 0
+    assert seen["items"][0].startswith(deepseek)
+    assert result == deepseek
+
+
 def test_prompt_model_selection_esc_cancels():
     from clio_cli.auth import _prompt_model_selection
 
