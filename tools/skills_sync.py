@@ -49,6 +49,23 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 # avoid importing the CLI layer into this low-level sync module).
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
+# Canonical bundled-skill renames. Entries map the old frontmatter name to
+# (new frontmatter name, old relative directory, new relative directory).
+# sync_skills() migrates seeded copies before normal manifest processing so an
+# upgrade does not leave both the obsolete and canonical skill installed.
+_BUNDLED_SKILL_RENAMES: Dict[str, Tuple[str, PurePosixPath, PurePosixPath]] = {
+    "Clio Loop Agent": (
+        "Clio Agent",
+        PurePosixPath("autonomous-ai-agents/clio-loop-agent"),
+        PurePosixPath("autonomous-ai-agents/clio-agent"),
+    ),
+}
+
+
+def _canonical_bundled_skill_name(name: str) -> str:
+    rename = _BUNDLED_SKILL_RENAMES.get(name)
+    return rename[0] if rename else name
+
 
 def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
@@ -212,6 +229,99 @@ def _dir_hash(directory: Path) -> str:
     except (OSError, IOError):
         pass
     return hasher.hexdigest()
+
+
+def _rewrite_skill_frontmatter_name(skill_md: Path, old_name: str, new_name: str) -> bool:
+    """Rewrite one exact frontmatter ``name`` value without touching the body."""
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        in_frontmatter = False
+        changed = False
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == "---":
+                if in_frontmatter:
+                    break
+                in_frontmatter = True
+                continue
+            if not in_frontmatter or not stripped.startswith("name:"):
+                continue
+            value = stripped.split(":", 1)[1].strip().strip("\"'")
+            if value != old_name:
+                break
+            indent = line[: len(line) - len(line.lstrip())]
+            ending = "\n" if line.endswith("\n") else ""
+            lines[index] = f"{indent}name: {new_name}{ending}"
+            changed = True
+            break
+        if not changed:
+            return False
+        tmp_path = skill_md.with_name(f".{skill_md.name}.rename.tmp")
+        tmp_path.write_text("".join(lines), encoding="utf-8")
+        atomic_replace(tmp_path, skill_md)
+        return True
+    except (OSError, IOError):
+        return False
+
+
+def _migrate_bundled_skill_renames(
+    manifest: Dict[str, str], bundled_dir: Path, quiet: bool
+) -> None:
+    """Move manifest-tracked seeded skills to their current canonical identity."""
+    for old_name, (new_name, old_rel, new_rel) in _BUNDLED_SKILL_RENAMES.items():
+        if old_name not in manifest:
+            continue
+
+        origin_hash = manifest.pop(old_name)
+        old_dest = SKILLS_DIR / old_rel
+        new_dest = SKILLS_DIR / new_rel
+        old_user_hash = _dir_hash(old_dest) if old_dest.exists() else ""
+        moved = False
+
+        try:
+            if old_dest.exists() and not new_dest.exists():
+                new_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old_dest), str(new_dest))
+                moved = True
+                _rewrite_skill_frontmatter_name(
+                    new_dest / "SKILL.md", old_name, new_name
+                )
+            elif old_dest.exists() and new_dest.exists():
+                # A prior partial migration may have copied the canonical skill
+                # while leaving the old seeded copy. Remove the old copy only
+                # when its hash proves the user never modified it.
+                if origin_hash and old_user_hash == origin_hash:
+                    _rmtree_writable(old_dest)
+
+            if new_name not in manifest:
+                if moved and new_dest.exists() and (
+                    not origin_hash or old_user_hash == origin_hash
+                ):
+                    # The only local change was the canonical rename; make that
+                    # the new baseline so normal sync can apply later updates.
+                    manifest[new_name] = _dir_hash(new_dest)
+                elif not old_dest.exists() and new_dest.exists():
+                    # Handle a prior partial/manual rename. Trust it as the new
+                    # baseline only when it matches the bundled canonical copy;
+                    # otherwise retain the old origin hash to preserve user edits.
+                    bundled_new = bundled_dir / new_rel
+                    new_hash = _dir_hash(new_dest)
+                    manifest[new_name] = (
+                        new_hash
+                        if bundled_new.exists() and new_hash == _dir_hash(bundled_new)
+                        else origin_hash
+                    )
+                else:
+                    # Preserve user-modified/deleted semantics under the new key.
+                    manifest[new_name] = origin_hash
+
+            if not quiet:
+                print(f"  ↻ {old_name} → {new_name} (canonical rename)")
+        except (OSError, IOError) as exc:
+            manifest[old_name] = origin_hash
+            if not quiet:
+                print(f"  ! Failed to rename {old_name}: {exc}")
 
 
 def _safe_rel_install_path(path: Path, base: Path) -> str:
@@ -483,9 +593,12 @@ def sync_skills(quiet: bool = False) -> dict:
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
+    _migrate_bundled_skill_renames(manifest, bundled_dir, quiet=quiet)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
-    suppressed = _read_suppressed_names()
+    suppressed = {
+        _canonical_bundled_skill_name(name) for name in _read_suppressed_names()
+    }
 
     copied = []
     updated = []

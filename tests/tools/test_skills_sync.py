@@ -221,6 +221,62 @@ class TestSyncSkills:
         assert "new-skill" in result["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
+    def test_canonical_rename_migrates_unmodified_seeded_skill(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        new_src = bundled / "autonomous-ai-agents" / "clio-agent"
+        new_src.mkdir(parents=True)
+        new_src.joinpath("SKILL.md").write_text(
+            "---\nname: Clio Agent\ndescription: Configure Clio.\n---\n\n# Guide\n"
+        )
+
+        skills_dir = tmp_path / "user_skills"
+        old_dest = skills_dir / "autonomous-ai-agents" / "clio-loop-agent"
+        old_dest.mkdir(parents=True)
+        old_dest.joinpath("SKILL.md").write_text(
+            "---\nname: Clio Loop Agent\ndescription: Configure Clio.\n---\n\n# Guide\n"
+        )
+        manifest_file = skills_dir / ".bundled_manifest"
+        manifest_file.write_text(f"Clio Loop Agent:{_dir_hash(old_dest)}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        new_dest = skills_dir / "autonomous-ai-agents" / "clio-agent"
+        assert not old_dest.exists()
+        assert "name: Clio Agent" in new_dest.joinpath("SKILL.md").read_text()
+        assert "Clio Agent" in manifest
+        assert "Clio Loop Agent" not in manifest
+
+    def test_canonical_rename_preserves_user_modified_skill(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        new_src = bundled / "autonomous-ai-agents" / "clio-agent"
+        new_src.mkdir(parents=True)
+        new_src.joinpath("SKILL.md").write_text(
+            "---\nname: Clio Agent\ndescription: Configure Clio.\n---\n\n# New guide\n"
+        )
+
+        skills_dir = tmp_path / "user_skills"
+        old_dest = skills_dir / "autonomous-ai-agents" / "clio-loop-agent"
+        old_dest.mkdir(parents=True)
+        skill_md = old_dest / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: Clio Loop Agent\ndescription: Configure Clio.\n---\n\n# Old guide\n"
+        )
+        origin_hash = _dir_hash(old_dest)
+        skill_md.write_text(skill_md.read_text() + "\nUser customization.\n")
+        manifest_file = skills_dir / ".bundled_manifest"
+        manifest_file.write_text(f"Clio Loop Agent:{origin_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        new_md = skills_dir / "autonomous-ai-agents" / "clio-agent" / "SKILL.md"
+        assert not old_dest.exists()
+        assert "name: Clio Agent" in new_md.read_text()
+        assert "User customization." in new_md.read_text()
+        assert "Clio Agent" in result["user_modified"]
+
     def test_fresh_install_copies_all(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"

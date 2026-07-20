@@ -1,5 +1,5 @@
 ---
-name: Clio Loop Agent
+name: Clio Agent
 description: "Configure, extend, or contribute to Clio Agent."
 version: 2.1.0
 author: Clio Agent + Omni Loop Labs
@@ -12,7 +12,7 @@ metadata:
     related_skills: [claude-code, codex, opencode]
 ---
 
-# Clio Loop Agent
+# Clio Agent
 
 Clio Agent is an open-source AI agent framework by Omni Loop Labs that runs in your terminal, messaging platforms, and IDEs. It belongs to the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Clio works with any LLM provider (OpenRouter, Anthropic, OpenAI, DeepSeek, local models, and 15+ others) and runs on Linux, macOS, and WSL.
 
