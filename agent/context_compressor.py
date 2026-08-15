@@ -111,6 +111,56 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
 _FALLBACK_TURN_MAX_CHARS = 700
 
+# Metadata carried by both batch and safe rolling compaction summaries.  The
+# leading underscore keeps these client-only keys out of provider payloads.
+COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
+
+
+def _micro_tool_call_ids(message: Dict[str, Any]) -> set[str]:
+    """Return non-empty call ids from one assistant message."""
+    if message.get("role") != "assistant":
+        return set()
+    return {
+        _extract_tool_call_id(call)
+        for call in (message.get("tool_calls") or [])
+        if _extract_tool_call_id(call)
+    }
+
+
+def _find_safe_micro_span(
+    messages: List[Dict[str, Any]],
+    *,
+    start: int,
+    stop: int,
+) -> Optional[tuple[int, int]]:
+    """Find the oldest complete assistant/tool turn inside ``[start, stop)``.
+
+    User text is never selected.  A span extends to the next user message, so
+    multi-step assistant/tool chains move atomically.  Tool-bearing spans are
+    eligible only when every call has a matching result, preventing a compact
+    pass from manufacturing orphan calls or results.
+    """
+    i = max(0, start)
+    while i < min(stop, len(messages)):
+        if messages[i].get("role") != "assistant":
+            i += 1
+            continue
+        end = i + 1
+        while end < stop and messages[end].get("role") != "user":
+            end += 1
+        span = messages[i:end]
+        calls: set[str] = set()
+        results: set[str] = set()
+        for message in span:
+            calls.update(_micro_tool_call_ids(message))
+            if message.get("role") == "tool" and message.get("tool_call_id"):
+                results.add(str(message["tool_call_id"]))
+        if calls == results:
+            return i, end
+        i = end
+    return None
+
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 
@@ -680,6 +730,11 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        # Safe micro-compaction is additive and off by default.  Keeping the
+        # gate local preserves Clio's existing compressor, Fusion and Codex
+        # behavior unless a caller explicitly opts in.
+        self._micro_compact_enabled: bool = False
+        self._micro_compact_cursor: int = 0
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1823,6 +1878,73 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
+
+    def _micro_summarize_one(self, span: List[Dict[str, Any]]) -> Optional[str]:
+        """Summarize one bounded assistant/tool span using the existing path."""
+        return self._generate_summary(span)
+
+    def micro_compact(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        dry_run: bool = False,
+        protect_last_n: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Safely compact at most one old assistant/tool span.
+
+        The input list and its dictionaries are never mutated.  Dry-run returns
+        the prospective list but does not advance compressor state.  Any
+        summarizer exception/empty response rolls back to an unchanged copy.
+        """
+        original = [dict(message) for message in messages]
+        head = min(len(messages), self._protect_head_size(messages))
+        tail = self.protect_last_n if protect_last_n is None else protect_last_n
+        stop = max(head, len(messages) - max(0, int(tail)))
+        span = _find_safe_micro_span(
+            messages,
+            start=max(head, self._micro_compact_cursor),
+            stop=stop,
+        )
+        if span is None:
+            return original
+        span_start, span_end = span
+        try:
+            summary = self._micro_summarize_one(
+                [dict(message) for message in messages[span_start:span_end]]
+            )
+        except Exception:
+            logger.debug("Micro-compaction summarizer failed; rolling back", exc_info=True)
+            return original
+        if not isinstance(summary, str) or not summary.strip():
+            return original
+
+        marker = {
+            "role": "assistant",
+            "content": summary.strip(),
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MICRO_COMPACT_MARKER_KEY: True,
+        }
+        result = [
+            *[dict(message) for message in messages[:span_start]],
+            marker,
+            *[dict(message) for message in messages[span_end:]],
+        ]
+        if not dry_run:
+            # Derive the cursor from the spliced list, never from stale source
+            # indexes (tool groups can collapse many messages to one marker).
+            self._micro_compact_cursor = span_start + 1
+        return result
+
+    def _micro_compact(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Feature-gated per-turn entry point; disabled is byte-for-byte no-op."""
+        if not self._micro_compact_enabled:
+            return messages
+        return self.micro_compact(messages, dry_run=dry_run)
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.

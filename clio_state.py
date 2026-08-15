@@ -1583,6 +1583,53 @@ class SessionDB:
             row = cursor.fetchone()
         return _prompts.hydrate_row(row) if row else None
 
+    @staticmethod
+    def _is_explicit_fork_child_row(session: Dict[str, Any]) -> bool:
+        """Distinguish branch/delegate/tool forks from compression children."""
+        if session.get("source") == "tool":
+            return True
+        raw = session.get("model_config")
+        if not raw:
+            return False
+        try:
+            config = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(config, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        return bool(
+            parent_id
+            and (
+                config.get("_branched_from") == parent_id
+                or config.get("_delegate_from") == parent_id
+            )
+        )
+
+    def get_compression_lineage(self, session_id: str) -> List[str]:
+        """Return the fork-safe compression ancestry through ``session_id``."""
+        current = self.get_session(session_id)
+        if not current:
+            return []
+        if self._is_explicit_fork_child_row(current):
+            return [session_id]
+
+        lineage = [session_id]
+        seen = {session_id}
+        while current.get("parent_session_id"):
+            parent = self.get_session(str(current["parent_session_id"]))
+            if (
+                not parent
+                or parent.get("id") in seen
+                or parent.get("end_reason") != "compression"
+                or self._is_explicit_fork_child_row(current)
+            ):
+                break
+            lineage.insert(0, str(parent["id"]))
+            seen.add(str(parent["id"]))
+            current = parent
+        return lineage
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

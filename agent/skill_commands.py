@@ -257,7 +257,22 @@ def _build_skill_message(
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
-    return "\n".join(parts)
+    message = "\n".join(parts)
+    if user_instruction:
+        # Declare the boundary while the builder still knows it exactly.  Use
+        # rfind so a skill body quoting the marker cannot move volatile user
+        # bytes into the stable prefix.
+        marker = "The user has provided the following instruction alongside the skill invocation: "
+        boundary = message.rfind(marker + user_instruction)
+        if boundary >= 0:
+            try:
+                from agent.prompt_cache_boundary import register_stable_prefix
+
+                register_stable_prefix(message[: boundary + len(marker)])
+            except Exception:
+                # Cache optimization must never block skill invocation.
+                pass
+    return message
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:

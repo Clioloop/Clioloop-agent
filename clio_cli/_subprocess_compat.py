@@ -28,6 +28,7 @@ guarantee.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from typing import Sequence
 
@@ -37,10 +38,33 @@ __all__ = [
     "windows_detach_flags",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "bounded_git_probe",
 ]
 
 
 IS_WINDOWS = sys.platform == "win32"
+
+
+def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
+    """Run a short fail-open git metadata probe.
+
+    Coding-context detection is advisory: timeout, spawn, decode and non-zero
+    exits all degrade to an empty value rather than blocking prompt assembly.
+    """
+    try:
+        result = subprocess.run(
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=max(0.1, float(timeout)),
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 # -----------------------------------------------------------------------------

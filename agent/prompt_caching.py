@@ -11,6 +11,8 @@ Pure functions -- no class state, no AIAgent dependency.
 import copy
 from typing import Any, Dict, List
 
+from agent.prompt_cache_boundary import find_stable_prefix
+
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
     """Add cache_control to a single message, handling all format variations."""
@@ -27,6 +29,20 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         return
 
     if isinstance(content, str):
+        # Builders may declare the exact stable/volatile byte boundary of a
+        # user message.  Split only request-local copies; canonical history
+        # remains a string and therefore cache-layout changes cannot mutate it.
+        stable_prefix = find_stable_prefix(content) if role == "user" else None
+        if stable_prefix is not None:
+            msg["content"] = [
+                {
+                    "type": "text",
+                    "text": stable_prefix,
+                    "cache_control": cache_marker,
+                },
+                {"type": "text", "text": content[len(stable_prefix):]},
+            ]
+            return
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]

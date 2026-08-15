@@ -162,10 +162,11 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
+        cache_scope_id = params.get("cache_scope_id") or session_id
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+        if not is_github_responses and not is_xai_responses and cache_scope_id:
+            kwargs["prompt_cache_key"] = cache_scope_id
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -228,8 +229,8 @@ class ResponsesApiTransport(ProviderTransport):
 
         if is_codex_backend:
             prompt_cache_key = kwargs.get("prompt_cache_key")
-            cache_scope_id = str(prompt_cache_key or session_id or "").strip()
-            if cache_scope_id:
+            logical_scope = str(prompt_cache_key or cache_scope_id or "").strip()
+            if logical_scope:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
                 if isinstance(existing_extra_headers, dict):
@@ -240,8 +241,9 @@ class ResponsesApiTransport(ProviderTransport):
                             if key and value is not None
                         }
                     )
-                merged_extra_headers["session_id"] = cache_scope_id
-                merged_extra_headers["x-client-request-id"] = cache_scope_id
+                if session_id:
+                    merged_extra_headers["session_id"] = str(session_id)
+                merged_extra_headers["x-client-request-id"] = logical_scope
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
@@ -259,7 +261,7 @@ class ResponsesApiTransport(ProviderTransport):
                         if key and value is not None
                     }
                 )
-            merged_extra_headers["x-grok-conv-id"] = session_id
+            merged_extra_headers["x-grok-conv-id"] = str(cache_scope_id or session_id)
             kwargs["extra_headers"] = merged_extra_headers
 
             # xAI Responses cache-routing — body-level field per
@@ -270,7 +272,7 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            merged_extra_body.setdefault("prompt_cache_key", cache_scope_id or session_id)
             kwargs["extra_body"] = merged_extra_body
 
         return kwargs

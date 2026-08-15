@@ -527,6 +527,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
+    # Compression rotation changes the physical transcript id, but not the
+    # logical cache bucket. Resolution is memoized per segment and safely
+    # degrades to the physical id before a DB row exists.
+    from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
+    cache_scope_id = resolve_prompt_cache_scope_safe(agent)
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -619,6 +625,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
             session_id=getattr(agent, "session_id", None),
+            cache_scope_id=cache_scope_id,
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
