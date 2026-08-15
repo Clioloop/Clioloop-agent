@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Dict, List, Optional
 
@@ -48,8 +49,31 @@ def delete_gateway_routing_entry(
     return cursor.rowcount > 0
 
 
+def repair_gateway_routing(conn, *, scope: str = "default") -> Dict[str, int]:
+    """Remove only provably malformed route JSON; never guess ownership."""
+    rows = conn.execute(
+        "SELECT session_key, source_json FROM gateway_routing WHERE scope = ?",
+        (scope or "default",),
+    ).fetchall()
+    invalid = []
+    for row in rows:
+        try:
+            value = json.loads(row["source_json"])
+            if not isinstance(value, dict):
+                raise ValueError("route must be an object")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            invalid.append(row["session_key"])
+    for key in invalid:
+        conn.execute(
+            "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+            (scope or "default", key),
+        )
+    return {"checked": len(rows), "removed": len(invalid), "kept": len(rows) - len(invalid)}
+
+
 __all__ = [
     "save_gateway_routing_entry",
     "load_gateway_routing_entries",
     "delete_gateway_routing_entry",
+    "repair_gateway_routing",
 ]

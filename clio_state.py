@@ -37,6 +37,7 @@ import clio_state_leases as _leases
 import clio_state_prompts as _prompts
 import clio_state_routing as _routing
 import clio_state_usage as _usage
+import clio_session_portability as _portability
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    last_read_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1060,6 +1064,12 @@ class SessionDB:
             )
         )
 
+    def repair_gateway_routing(self, *, scope: str = "default") -> Dict[str, int]:
+        """Drop only malformed routing rows; valid ownership is never guessed."""
+        return self._execute_write(
+            lambda conn: _routing.repair_gateway_routing(conn, scope=scope)
+        )
+
     def try_acquire_turn_lease(
         self, session_key: str, holder: str, *, ttl_seconds: float = 120.0
     ) -> bool:
@@ -1743,20 +1753,8 @@ class SessionDB:
         return row["title"] if row else None
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Archive or unarchive a session.
-
-        Archived sessions are hidden from the default session list but keep all
-        their messages — this is a soft hide, not a delete. Returns True when a
-        row was updated.
-        """
-        def _do(conn):
-            cursor = conn.execute(
-                "UPDATE sessions SET archived = ? WHERE id = ?",
-                (1 if archived else 0, session_id),
-            )
-            return cursor.rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+        """Archive/unarchive the whole lineage without deleting history."""
+        return self.set_session_metadata(session_id, archived=archived)
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
@@ -3534,6 +3532,62 @@ class SessionDB:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
+
+    def set_session_metadata(
+        self, session_id: str, *, pinned=None, hidden=None, archived=None, read=None
+    ) -> bool:
+        """Atomically patch safe metadata across a session lineage."""
+        assignments, params = [], []
+        for column, value in (("pinned", pinned), ("hidden", hidden), ("archived", archived)):
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                params.append(1 if value else 0)
+        if read is not None:
+            assignments.append("last_read_at = ?")
+            params.append(time.time() if read else 0.0)
+        if not assignments or not session_id:
+            return False
+
+        def _do(conn):
+            conn.execute(
+                f"""WITH RECURSIVE lineage(id) AS (
+                     SELECT ? UNION SELECT s.parent_session_id FROM sessions s
+                     JOIN lineage l ON s.id=l.id WHERE s.parent_session_id IS NOT NULL
+                     UNION SELECT s.id FROM sessions s JOIN lineage l ON s.parent_session_id=l.id
+                   ) UPDATE sessions SET {', '.join(assignments)}
+                   WHERE id IN (SELECT id FROM lineage)""",
+                [session_id, *params],
+            )
+            return int(conn.execute("SELECT changes()").fetchone()[0])
+        return bool(self._execute_write(_do))
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
+        return self.set_session_metadata(session_id, pinned=pinned)
+
+    def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
+        return self.set_session_metadata(session_id, hidden=hidden)
+
+    def set_session_read(self, session_id: str, read: bool = True) -> bool:
+        return self.set_session_metadata(session_id, read=read)
+
+    @staticmethod
+    def session_unread(session: Dict[str, Any]) -> bool:
+        watermark = session.get("last_read_at")
+        if watermark is None:
+            return False
+        active = max(float(session.get("started_at") or 0), float(session.get("ended_at") or 0))
+        return active > float(watermark)
+
+    def export_session_text(self, session_id: str, format: str = "jsonl") -> str:
+        payload = self.export_session(session_id)
+        if payload is None:
+            raise KeyError(session_id)
+        return _portability.serialize_session(payload, format=format)
+
+    def import_session_text(self, text: str, format: str = "jsonl") -> Dict[str, Any]:
+        return _portability.import_sessions(
+            self, _portability.deserialize_sessions(text, format=format)
+        )
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""

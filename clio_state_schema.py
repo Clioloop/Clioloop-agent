@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Tuple
 
 LEGACY_SCHEMA_VERSION = 14
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 PHASE1_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS gateway_routing (
@@ -134,6 +134,18 @@ def _ensure_prompt_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN system_prompt_hash TEXT")
 
 
+def _ensure_session_portability(conn: sqlite3.Connection) -> None:
+    """Add durable metadata columns without rebuilding conversation rows."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    for name, declaration in (
+        ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("hidden", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_read_at", "REAL"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {declaration}")
+
+
 # Every callback is safe after the full current schema has already been ensured.
 # This is intentional: new databases run CREATE IF NOT EXISTS once, while old
 # databases advance one durable version at a time.
@@ -143,6 +155,7 @@ MIGRATIONS: Tuple[StateMigration, ...] = (
     StateMigration(17, "per-session-model-usage", _ensure_all_phase1),
     StateMigration(18, "content-addressed-system-prompts", _ensure_prompt_column),
     StateMigration(19, "durable-async-delegations", _ensure_all_phase1),
+    StateMigration(20, "session-portability-metadata", _ensure_session_portability),
 )
 
 
