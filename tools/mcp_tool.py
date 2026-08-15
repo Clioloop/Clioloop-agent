@@ -90,7 +90,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -1973,6 +1973,8 @@ class MCPServerTask:
             registry.deregister(tool_name)
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
+        _tool_read_only_hints.pop(self.name, None)
+        _server_trust_levels.pop(self.name, None)
         self.session = None
 
 
@@ -1981,6 +1983,46 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+
+# Operator-side trust tier plus server-supplied readOnlyHint metadata. Missing
+# trust preserves v1 full-trust behavior; unknown configured tiers fail closed.
+_server_trust_levels: Dict[str, str] = {}
+_tool_read_only_hints: Dict[str, Dict[str, bool]] = {}
+_mcp_trust_approval_callback: Optional[Callable[[str, str], bool]] = None
+
+
+def _normalize_server_trust(value: Any) -> str:
+    if value is None:
+        return "full"
+    normalized = str(value).strip().lower()
+    return normalized if normalized in {"full", "read-only", "untrusted"} else "untrusted"
+
+
+def _annotation_read_only_hint(tool: Any) -> bool:
+    annotations = getattr(tool, "annotations", None)
+    if isinstance(annotations, dict):
+        return annotations.get("readOnlyHint") is True
+    return getattr(annotations, "readOnlyHint", None) is True
+
+
+def set_mcp_trust_approval_callback(callback: Optional[Callable[[str, str], bool]]) -> None:
+    global _mcp_trust_approval_callback
+    _mcp_trust_approval_callback = callback
+
+
+def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
+    trust = _server_trust_levels.get(server_name, "full")
+    read_only = _tool_read_only_hints.get(server_name, {}).get(tool_name) is True
+    if trust == "full" or read_only:
+        return None
+    try:
+        approved = bool(_mcp_trust_approval_callback and _mcp_trust_approval_callback(server_name, tool_name))
+    except Exception:
+        approved = False
+    return None if approved else (
+        f"MCP write-capable tool '{server_name}/{tool_name}' requires operator approval "
+        f"at trust tier '{trust}'"
+    )
 
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
@@ -2595,6 +2637,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        trust_error = _trust_gate_check(server_name, tool_name)
+        if trust_error:
+            return json.dumps({
+                "error": trust_error,
+                "approval_required": True,
+            }, ensure_ascii=False)
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -2735,6 +2784,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        # Resource and prompt utility handlers are intrinsically read-only.
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -2853,6 +2903,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        # Resource and prompt utility handlers are intrinsically read-only.
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -3390,6 +3441,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
 
         schema = _convert_mcp_schema(name, mcp_tool)
+        _tool_read_only_hints.setdefault(name, {})[mcp_tool.name] = (
+            _annotation_read_only_hint(mcp_tool)
+        )
         tool_name_prefixed = schema["name"]
 
         # Guard against collisions with built-in (non-MCP) tools.
@@ -3505,6 +3559,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []
+
+    # Capture operator trust before discovery. Missing trust preserves legacy
+    # full access; unknown values fail closed to the untrusted tier.
+    for server_name, server_config in servers.items():
+        if isinstance(server_config, dict):
+            _server_trust_levels[server_name] = _normalize_server_trust(
+                server_config.get("trust")
+            )
 
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)

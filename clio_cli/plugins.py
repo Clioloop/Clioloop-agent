@@ -44,11 +44,18 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from clio_constants import get_clio_home
 from utils import env_var_enabled
 from clio_cli.config import cfg_get
+from clio_cli.plugin_capabilities import (
+    declared_set_changed,
+    parse_declared_capabilities,
+    pending_capabilities,
+    plugin_capability_granted,
+)
+from clio_cli.plugin_runtime import EventBus, NamespacedConfig, NamespacedState, OwnershipLedger, RegistrationHandle
 OBSERVER_SCHEMA_VERSION = "clio.observer.v1"
 
 
@@ -230,6 +237,44 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+SUPPORTED_MANIFEST_VERSION = 2
+
+
+def _string_list(value: Any) -> List[str]:
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
+
+
+def _plugin_dependencies(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append({"id": item.strip(), "version_range": None})
+        elif isinstance(item, Mapping) and isinstance(item.get("id"), str):
+            result.append({"id": item["id"].strip(), "version_range": item.get("version_range")})
+    return result
+
+
+def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> List[str]:
+    """Stable dependency-first order; cycles fall back alphabetically."""
+    by_name = {manifest.name: key for key, manifest in manifests.items()}
+    dependencies = {
+        key: {by_name.get(d["id"], d["id"]) for d in manifest.requires_plugins
+              if by_name.get(d["id"], d["id"]) in manifests}
+        for key, manifest in manifests.items()
+    }
+    ordered: List[str] = []
+    pending = set(manifests)
+    while pending:
+        ready = sorted(k for k in pending if not (dependencies[k] & pending))
+        if not ready:
+            logger.warning("Plugin dependency cycle detected; loading cycle alphabetically")
+            ready = sorted(pending)
+        for key in ready:
+            pending.remove(key)
+            ordered.append(key)
+    return ordered
 
 
 @dataclass
@@ -267,6 +312,23 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Manifest v2 additions; v1 manifests keep these inert defaults.
+    manifest_version: int = 1
+    api_version: Optional[int] = None
+    requires_plugins: List[Dict[str, Any]] = field(default_factory=list)
+    python_dependencies: List[str] = field(default_factory=list)
+    config_schema: Dict[str, Any] = field(default_factory=dict)
+    license: str = ""
+    homepage: str = ""
+    tags: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    emits: List[str] = field(default_factory=list)
+    listens: List[str] = field(default_factory=list)
+
+    @property
+    def trust(self) -> str:
+        """Origin-derived trust metadata; discovery never executes code to compute it."""
+        return "bundled" if self.source == "bundled" else "third-party"
 
 
 @dataclass
@@ -292,8 +354,56 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        self._owner = manifest.key or manifest.name
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
+        self.state = NamespacedState(manager._state_root, self._owner)
+        self.config = NamespacedConfig(self._owner)
+
+    def has_capability(self, capability: str) -> bool:
+        if self.manifest.source == "bundled":
+            return True
+        # v2 grants are declaration-bound. v1 preserves legacy allow_* gates.
+        if self.manifest.manifest_version >= 2 and capability not in self.manifest.capabilities:
+            return False
+        return plugin_capability_granted(self._owner, capability)
+
+    def _own(self, kind: str, key: str, disposer: Callable[[], None]) -> RegistrationHandle:
+        return self._manager._ownership.own(self._owner, kind, key, disposer)
+
+    def on_unload(self, callback: Callable[[], None]) -> RegistrationHandle:
+        if not callable(callback):
+            raise TypeError("on_unload callback must be callable")
+        return self._own("on_unload", getattr(callback, "__name__", "callback"), callback)
+
+    def subscribe(self, event: str, callback: Callable[..., Any]) -> RegistrationHandle:
+        handle = self._manager._events.subscribe(self._owner, event, callback)
+        return self._manager._ownership.adopt(self._owner, handle)
+
+    def emit(self, event: str, payload: Optional[Mapping[str, Any]] = None) -> int:
+        return self._manager._events.emit(self._owner, event, payload)
+
+    def register_redaction_patterns(self, patterns: List[str]) -> int:
+        if not self.has_capability("redaction.register"):
+            return 0
+        from agent.redact import register_redaction_patterns, _remove_redaction_patterns
+        source = f"plugin:{self._owner}"
+        accepted = register_redaction_patterns(patterns, source=source)
+        if accepted:
+            self._own("redaction", source, lambda: _remove_redaction_patterns(source))
+        return accepted
+
+    def register_secret_provider(self, provider: Any) -> Optional[RegistrationHandle]:
+        if not self.has_capability("secrets.register"):
+            return None
+        from agent.secret_sources.registry import register_provider, unregister_provider
+        if not register_provider(self._owner, provider):
+            return None
+        return self._own("secret_provider", provider.name,
+                         lambda: unregister_provider(self._owner, provider.name, provider))
+
+    # Alias used by the upstream plugin contract.
+    register_secret_source = register_secret_provider
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -328,8 +438,8 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
-    ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided.
+    ) -> Optional[RegistrationHandle]:
+        """Register a tool and return its host-owned disposal handle.
 
         Pass ``override=True`` to replace an existing built-in tool with the
         same name (e.g. swap the default ``browser_navigate`` for a custom
@@ -338,6 +448,14 @@ class PluginContext:
         """
         from tools.registry import registry
 
+        if (
+            override
+            and self.manifest.manifest_version >= 2
+            and not self.has_capability("tools.override")
+        ):
+            logger.warning("Plugin %s denied tools.override capability", self._owner)
+            return None
+        previous_entry = registry.get_entry(name)
         registry.register(
             name=name,
             toolset=toolset,
@@ -350,11 +468,37 @@ class PluginContext:
             emoji=emoji,
             override=override,
         )
+        entry = registry.get_entry(name)
+        if entry is None or entry.handler is not handler:
+            return None
         self._manager._plugin_tool_names.add(name)
         logger.debug(
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+
+        def dispose() -> None:
+            current = registry.get_entry(name)
+            if current is not entry:
+                return
+            registry.deregister(name)
+            self._manager._plugin_tool_names.discard(name)
+            if previous_entry is not None:
+                registry.register(
+                    name=previous_entry.name,
+                    toolset=previous_entry.toolset,
+                    schema=previous_entry.schema,
+                    handler=previous_entry.handler,
+                    check_fn=previous_entry.check_fn,
+                    requires_env=previous_entry.requires_env,
+                    is_async=previous_entry.is_async,
+                    description=previous_entry.description,
+                    emoji=previous_entry.emoji,
+                    max_result_size_chars=previous_entry.max_result_size_chars,
+                    dynamic_schema_overrides=previous_entry.dynamic_schema_overrides,
+                    override=True,
+                )
+        return self._own("tool", name, dispose)
 
     # -- message injection --------------------------------------------------
 
@@ -803,7 +947,7 @@ class PluginContext:
         required_env: list | None = None,
         install_hint: str = "",
         **entry_kwargs: Any,
-    ) -> None:
+    ) -> RegistrationHandle:
         """Register a gateway platform adapter.
 
         The adapter_factory receives a ``PlatformConfig`` and returns a
@@ -846,6 +990,12 @@ class PluginContext:
             self.manifest.name,
             name,
         )
+
+        def dispose() -> None:
+            if platform_registry.get(name) is entry:
+                platform_registry.unregister(name)
+                self._manager._plugin_platform_names.discard(name)
+        return self._own("platform", name, dispose)
 
     # -- hook registration --------------------------------------------------
 
@@ -962,7 +1112,7 @@ class PluginContext:
             display_name,
         )
 
-    def register_hook(self, hook_name: str, callback: Callable) -> None:
+    def register_hook(self, hook_name: str, callback: Callable) -> RegistrationHandle:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
@@ -978,6 +1128,13 @@ class PluginContext:
             )
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+
+        def dispose() -> None:
+            callbacks = self._manager._hooks.get(hook_name, [])
+            self._manager._hooks[hook_name] = [cb for cb in callbacks if cb is not callback]
+            if not self._manager._hooks[hook_name]:
+                self._manager._hooks.pop(hook_name, None)
+        return self._own("hook", hook_name, dispose)
 
     # -- skill registration -------------------------------------------------
 
@@ -1049,10 +1206,21 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        self._ownership = OwnershipLedger()
+        self._events = EventBus()
+        self._state_root = get_clio_home() / "plugin-state"
 
     # -----------------------------------------------------------------------
     # Public
     # -----------------------------------------------------------------------
+
+    def unload(self, plugin_id: str) -> bool:
+        """Dispose all host registrations for one plugin in reverse order."""
+        loaded = self._plugins.pop(plugin_id, None)
+        count = self._ownership.dispose_owner(plugin_id)
+        if loaded and loaded.module:
+            sys.modules.pop(loaded.module.__name__, None)
+        return loaded is not None or count > 0
 
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found.
@@ -1064,6 +1232,8 @@ class PluginManager:
         if self._discovered and not force:
             return
         if force:
+            for plugin_id in list(self._plugins):
+                self.unload(plugin_id)
             self._plugins.clear()
             self._hooks.clear()
             self._plugin_tool_names.clear()
@@ -1140,8 +1310,8 @@ class PluginManager:
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
-        for manifest in winners.values():
-            lookup_key = manifest.key or manifest.name
+        for lookup_key in resolve_plugin_load_order(winners):
+            manifest = winners[lookup_key]
 
             # Explicit disable always wins (matches on key or on legacy
             # bare name for back-compat with existing user configs).
@@ -1150,6 +1320,28 @@ class PluginManager:
                 loaded.error = "disabled via config"
                 self._plugins[lookup_key] = loaded
                 logger.debug("Skipping disabled plugin '%s'", lookup_key)
+                continue
+
+            # Third-party v2 plugins requesting host capabilities must be
+            # reviewed whenever their declared set changes. Discovery records
+            # metadata without importing unapproved Python code.
+            if (
+                manifest.source != "bundled"
+                and manifest.manifest_version >= 2
+                and manifest.capabilities
+                and declared_set_changed(lookup_key, manifest.capabilities)
+            ):
+                pending = pending_capabilities(lookup_key, manifest.capabilities)
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "capability approval required"
+                if pending:
+                    loaded.error += ": " + ", ".join(pending)
+                self._plugins[lookup_key] = loaded
+                logger.warning(
+                    "Plugin '%s' requires capability approval: %s",
+                    lookup_key,
+                    ", ".join(manifest.capabilities),
+                )
                 continue
 
             # Exclusive plugins (memory providers) have their own
@@ -1326,6 +1518,27 @@ class PluginManager:
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
+            raw_manifest_version = data.get("manifest_version", 1)
+            manifest_version = raw_manifest_version if isinstance(raw_manifest_version, int) else 1
+            if manifest_version > SUPPORTED_MANIFEST_VERSION:
+                logger.warning(
+                    "Plugin %s manifest v%s is newer than this Clio (v%s); loading known fields",
+                    key, manifest_version, SUPPORTED_MANIFEST_VERSION,
+                )
+            api_version = data.get("api_version")
+            if not isinstance(api_version, int):
+                api_version = None
+            if manifest_version >= 2:
+                known = {
+                    "name", "version", "description", "author", "requires_env",
+                    "provides_tools", "provides_hooks", "kind", "manifest_version",
+                    "api_version", "requires_plugins", "python_dependencies",
+                    "config_schema", "license", "homepage", "tags", "capabilities",
+                    "emits", "listens",
+                }
+                unknown = sorted(set(data) - known)
+                if unknown:
+                    logger.warning("Plugin %s has unknown manifest v2 fields: %s", key, ", ".join(unknown))
 
             raw_kind = data.get("kind", "standalone")
             if not isinstance(raw_kind, str):
@@ -1391,6 +1604,17 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                manifest_version=manifest_version,
+                api_version=api_version,
+                requires_plugins=_plugin_dependencies(data.get("requires_plugins")),
+                python_dependencies=_string_list(data.get("python_dependencies")),
+                config_schema=dict(data.get("config_schema")) if isinstance(data.get("config_schema"), Mapping) else {},
+                license=data.get("license", "") if isinstance(data.get("license", ""), str) else "",
+                homepage=data.get("homepage", "") if isinstance(data.get("homepage", ""), str) else "",
+                tags=_string_list(data.get("tags")),
+                capabilities=parse_declared_capabilities(data.get("capabilities"), str(name)),
+                emits=_string_list(data.get("emits")),
+                listens=_string_list(data.get("listens")),
             )
         except Exception as exc:
             logger.warning(
@@ -1493,6 +1717,7 @@ class PluginManager:
                 )
 
         except Exception as exc:
+            self._ownership.dispose_owner(manifest.key or manifest.name)
             loaded.error = str(exc)
             logger.warning(
                 "Failed to load plugin '%s': %s",
@@ -1618,6 +1843,9 @@ class PluginManager:
                     "version": loaded.manifest.version,
                     "description": loaded.manifest.description,
                     "source": loaded.manifest.source,
+                    "trust": loaded.manifest.trust,
+                    "manifest_version": loaded.manifest.manifest_version,
+                    "capabilities": list(loaded.manifest.capabilities),
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),

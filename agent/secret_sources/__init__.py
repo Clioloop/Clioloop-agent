@@ -1,13 +1,17 @@
-"""External secret source integrations.
+"""External and plugin-provided scoped secret integrations.
 
-A secret source is anything that can supply environment-variable-shaped
-credentials at process startup, _after_ ~/.clio/.env has loaded.  By
-default sources are non-destructive: they only set values for env vars
-that aren't already present, so .env and shell exports continue to win.
-
-Currently shipped:
-
-  - ``bitwarden`` — Bitwarden Secrets Manager (`bws` CLI).  See
-    ``agent.secret_sources.bitwarden`` for the integration and
-    ``clio_cli.secrets_cli`` for the user-facing setup wizard.
+Legacy Bitwarden functions remain available from ``.bitwarden``. New providers
+implement the read-only, non-interactive :class:`SecretProvider` contract.
 """
+
+from .base import ErrorKind, FetchResult, SecretProvider
+from .command import CommandSecretProvider
+from .environment import EnvironmentSecretProvider
+from .onepassword import OnePasswordSecretProvider
+from .registry import get_provider, register_provider, unregister_provider
+
+__all__ = [
+    "CommandSecretProvider", "EnvironmentSecretProvider", "ErrorKind",
+    "FetchResult", "OnePasswordSecretProvider", "SecretProvider",
+    "get_provider", "register_provider", "unregister_provider",
+]

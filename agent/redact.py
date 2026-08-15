@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +465,63 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+# Plugin extensions are additive-only and host-owned. Deliberately accept a
+# conservative regex subset: a literal prefix and no alternation/nested repeat.
+_PLUGIN_PREFIX_PATTERNS: dict[str, list[str]] = {}
+_PLUGIN_PATTERN_LOCK = threading.RLock()
+_SAFE_PLUGIN_PATTERN_RE = re.compile(
+    r"^[A-Za-z0-9_.:/-]{2,64}\[[A-Za-z0-9_=\\-]{1,64}\]"
+    r"\{(?:[4-9]|[1-9][0-9]{1,2}),(?:[1-9][0-9]{0,2})?\}$"
+)
+
+
+def _rebuild_plugin_prefix_matcher() -> None:
+    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    plugin_patterns = [p for values in _PLUGIN_PREFIX_PATTERNS.values() for p in values]
+    combined = _PREFIX_PATTERNS + plugin_patterns
+    _PREFIX_RE = re.compile(
+        r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
+    )
+    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+
+
+def register_redaction_patterns(patterns, source: str = "plugin") -> int:
+    """Add safe token regexes; invalid/over-broad patterns are ignored."""
+    accepted: list[str] = []
+    existing = set(_PREFIX_PATTERNS)
+    existing.update(p for values in _PLUGIN_PREFIX_PATTERNS.values() for p in values)
+    for pattern in patterns or ():
+        if not isinstance(pattern, str):
+            continue
+        pattern = pattern.strip()
+        prefix = _extract_literal_prefix(pattern)
+        # Only literal-prefix[character-class]{min,max} token shapes are safe.
+        # Wildcards, lookarounds, backreferences, stars/pluses and nested
+        # repetition could cause over-redaction or regex denial of service.
+        if len(prefix) < 2 or _SAFE_PLUGIN_PATTERN_RE.fullmatch(pattern) is None:
+            logger.warning("%s: rejected unsafe redaction pattern %r", source, pattern)
+            continue
+        try:
+            re.compile(pattern)
+        except re.error:
+            logger.warning("%s: rejected invalid redaction pattern %r", source, pattern)
+            continue
+        if pattern not in existing and pattern not in accepted:
+            accepted.append(pattern)
+    if accepted:
+        with _PLUGIN_PATTERN_LOCK:
+            _PLUGIN_PREFIX_PATTERNS.setdefault(source, []).extend(accepted)
+            _rebuild_plugin_prefix_matcher()
+    return len(accepted)
+
+
+def _remove_redaction_patterns(source: str) -> None:
+    """Host lifecycle hook; intentionally absent from the plugin facade."""
+    with _PLUGIN_PATTERN_LOCK:
+        _PLUGIN_PREFIX_PATTERNS.pop(source, None)
+        _rebuild_plugin_prefix_matcher()
 
 
 _HTTP_METHOD_SUBSTRINGS = (
