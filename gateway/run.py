@@ -1879,6 +1879,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
+    _reliability_lifecycle = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
 
@@ -1910,6 +1911,17 @@ class GatewayRunner:
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
+        # Optional reliability lifecycle mirror.  Existing gateway state remains
+        # authoritative; this exposes a composable readiness/drain primitive to
+        # health endpoints and future workers without changing default execution.
+        self._reliability_lifecycle = None
+        try:
+            from gateway.reliability import DrainController, feature_enabled
+
+            if feature_enabled("CLIO_GATEWAY_RELIABILITY_ENABLED"):
+                self._reliability_lifecycle = DrainController()
+        except Exception:
+            logger.debug("Reliability lifecycle initialization failed", exc_info=True)
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
@@ -4748,6 +4760,8 @@ class GatewayRunner:
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        if self._reliability_lifecycle is not None:
+            self._reliability_lifecycle.set_ready(True, "adapters connected")
         self._update_runtime_status("running")
         
         # Emit gateway:startup hook
@@ -6533,6 +6547,8 @@ class GatewayRunner:
 
             self._running = False
             self._draining = True
+            if self._reliability_lifecycle is not None:
+                self._reliability_lifecycle.start_drain("gateway stopping")
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -7469,6 +7485,18 @@ class GatewayRunner:
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+
+        # Operator-controlled global pause. Internal completion/recovery events
+        # continue so in-flight work can settle. This is default-safe because
+        # the probe returns false unless CLIO_RELIABILITY_CONTROL_ENABLED is set.
+        if not is_internal:
+            try:
+                from gateway.reliability import global_automation_paused
+
+                if global_automation_paused():
+                    return "⏸ Automation is globally paused by the operator."
+            except Exception:
+                logger.debug("Global automation pause probe failed", exc_info=True)
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -19865,6 +19893,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # Optional persisted restart-loop circuit breaker.  Place this before the
+    # duplicate-instance/--replace path so a tripped guard never kills a healthy
+    # incumbent.  A tripped guard exits cleanly, avoiding Restart=on-failure loops.
+    try:
+        from gateway.reliability import ReliabilityStore, RestartLoopGuard, feature_enabled
+
+        if feature_enabled("CLIO_GATEWAY_RESTART_GUARD_ENABLED"):
+            _restart_guard = RestartLoopGuard(ReliabilityStore())
+            _restart_limit = int(os.getenv("CLIO_GATEWAY_RESTART_MAX", "5"))
+            _restart_window = float(os.getenv("CLIO_GATEWAY_RESTART_WINDOW", "300"))
+            if not _restart_guard.record_and_allow(
+                max_restarts=_restart_limit, window_seconds=_restart_window
+            ):
+                logger.critical(
+                    "Gateway startup blocked by restart-loop guard (%d starts in %.0fs)",
+                    _restart_limit,
+                    _restart_window,
+                )
+                return True
+    except (TypeError, ValueError):
+        logger.warning("Invalid gateway restart-loop guard configuration; continuing startup")
+    except Exception:
+        logger.debug("Gateway restart-loop guard probe failed", exc_info=True)
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same CLIO_HOME.
     # The PID file is scoped to CLIO_HOME, so future multi-profile

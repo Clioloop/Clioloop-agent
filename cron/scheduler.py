@@ -1988,6 +1988,16 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
+    # Opt-in durable global pause; helper is a no-op while the feature flag is off.
+    try:
+        from gateway.reliability import global_automation_paused
+
+        if global_automation_paused():
+            logger.info("Cron tick skipped — global automation is paused")
+            return 0
+    except Exception:
+        logger.debug("Global automation pause probe failed", exc_info=True)
+
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2052,6 +2062,23 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            _history = None
+            _execution_id = None
+            try:
+                from cron.contracts import integration_backend
+
+                _history = integration_backend()
+                if _history is not None:
+                    _execution_id, _ = _history.begin_execution(
+                        job["id"],
+                        idempotency_key=f"cron:{job['id']}:{job.get('next_run_at') or 'manual'}",
+                        scheduled_at=job.get("next_run_at"),
+                        metadata={"name": job.get("name"), "profile": job.get("profile")},
+                    )
+            except Exception:
+                logger.debug("Cron execution-history begin failed", exc_info=True)
+                _history = None
+                _execution_id = None
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -2087,11 +2114,27 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                if _history is not None and _execution_id is not None:
+                    try:
+                        _history.finish_execution(
+                            _execution_id,
+                            success=success,
+                            output_path=str(output_file),
+                            error=error,
+                            delivery_error=delivery_error,
+                        )
+                    except Exception:
+                        logger.debug("Cron execution-history finish failed", exc_info=True)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                if _history is not None and _execution_id is not None:
+                    try:
+                        _history.finish_execution(_execution_id, success=False, error=str(e))
+                    except Exception:
+                        logger.debug("Cron execution-history finish failed", exc_info=True)
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
