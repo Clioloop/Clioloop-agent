@@ -1,0 +1,9 @@
+name: openrouter-image
+version: 0.1.0
+kind: standalone
+description: Optional generic OpenRouter image-output provider; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - OPENROUTER_API_KEY
+python_dependencies: [requests]
+tags: [image-generation, optional, openrouter]

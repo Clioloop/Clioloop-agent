@@ -1,0 +1,10 @@
+name: photon-platform
+version: 0.1.0
+kind: standalone
+description: Optional Photon iMessage sidecar platform foundation; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - PHOTON_PROJECT_ID
+  - PHOTON_PROJECT_SECRET
+python_dependencies: []
+tags: [platform, optional, photon]

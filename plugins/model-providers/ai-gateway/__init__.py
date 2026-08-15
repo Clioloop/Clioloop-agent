@@ -4,7 +4,10 @@ from providers.base import ProviderProfile
 
 ai_gateway = ProviderProfile(
     name="ai-gateway",
-    aliases=("vercel", "vercel-ai-gateway", "ai_gateway", "aigateway"),
+    aliases=(
+        "vercel", "vercel-ai-gateway", "ai_gateway", "aigateway",
+        "openai-ai-gateway", "generic-ai-gateway",
+    ),
     display_name="Vercel AI Gateway",
     env_vars=("AI_GATEWAY_API_KEY",),
     base_url="https://ai-gateway.vercel.sh/v1",

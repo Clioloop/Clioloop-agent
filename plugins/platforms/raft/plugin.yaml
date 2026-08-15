@@ -1,0 +1,9 @@
+name: raft-platform
+version: 0.1.0
+kind: standalone
+description: Optional Raft content-free wake bridge foundation; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - RAFT_PROFILE
+python_dependencies: []
+tags: [platform, optional, raft]

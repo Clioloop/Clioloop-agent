@@ -1,0 +1,11 @@
+name: chronos-cron
+version: 0.1.0
+kind: standalone
+description: Optional generic external one-shot cron provider; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - CHRONOS_ENDPOINT
+  - CHRONOS_CALLBACK_URL
+  - CHRONOS_TOKEN
+python_dependencies: [httpx]
+tags: [cron, optional, chronos]

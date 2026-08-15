@@ -1,0 +1,10 @@
+name: buzz-platform
+version: 0.1.0
+kind: standalone
+description: Optional Buzz Nostr workspace platform foundation; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - BUZZ_RELAY_URL
+  - BUZZ_PRIVATE_KEY
+python_dependencies: []
+tags: [platform, optional, buzz]

@@ -1,0 +1,10 @@
+name: deepinfra-video
+version: 0.1.0
+kind: standalone
+description: Optional DeepInfra OpenAI-compatible video provider; disabled by default.
+author: Omni Loop Labs
+requires_env:
+  - DEEPINFRA_API_KEY
+  - DEEPINFRA_VIDEO_MODEL
+python_dependencies: [openai]
+tags: [video-generation, optional, deepinfra]

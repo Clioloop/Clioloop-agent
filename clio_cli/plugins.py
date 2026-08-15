@@ -699,6 +699,34 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- cron provider registration -----------------------------------------
+
+    def register_cron_provider(self, provider) -> RegistrationHandle:
+        """Register an external cron provider; unavailable providers fail safe."""
+        from cron.providers import register_cron_provider, unregister_cron_provider
+
+        register_cron_provider(provider)
+        logger.info("Plugin '%s' registered cron provider: %s", self.manifest.name, provider.name)
+        return self._own(
+            "cron_provider",
+            provider.name,
+            lambda: unregister_cron_provider(provider.name, provider),
+        )
+
+    def register_org_skill_sync_provider(self, provider) -> RegistrationHandle:
+        """Register a transport-neutral organization skill sync backend."""
+        from agent.org_skill_sync import (
+            register_org_skill_sync_provider,
+            unregister_org_skill_sync_provider,
+        )
+
+        register_org_skill_sync_provider(provider)
+        return self._own(
+            "org_skill_sync_provider",
+            provider.name,
+            lambda: unregister_org_skill_sync_provider(provider.name, provider),
+        )
+
     # -- dashboard auth provider registration --------------------------------
 
     def register_dashboard_auth_provider(self, provider) -> None:

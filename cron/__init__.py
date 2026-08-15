@@ -27,6 +27,13 @@ from cron.jobs import (
     JOBS_FILE,
 )
 from cron.scheduler import tick
+from cron.providers import (
+    CronProvider,
+    get_cron_provider,
+    register_cron_provider,
+    resolve_cron_provider,
+    unregister_cron_provider,
+)
 
 __all__ = [
     "create_job",
@@ -39,4 +46,9 @@ __all__ = [
     "trigger_job",
     "tick",
     "JOBS_FILE",
+    "CronProvider",
+    "get_cron_provider",
+    "register_cron_provider",
+    "resolve_cron_provider",
+    "unregister_cron_provider",
 ]
