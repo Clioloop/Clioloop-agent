@@ -8368,6 +8368,30 @@ class GatewayRunner:
         if canonical == "bundles":
             return await self._handle_bundles_command(event)
 
+        if canonical in {
+            "approvals", "blueprint", "egress", "heartbeat", "loop", "memory",
+            "moa", "refine", "subscription", "suggestions", "topup", "version",
+        }:
+            from clio_cli.parity_commands import execute
+            try:
+                _entry = self.session_store.get_or_create_session(event.source)
+                _sid = getattr(_entry, "session_id", "") or ""
+                _result = execute(
+                    canonical,
+                    (event.get_command_args() or "").strip(),
+                    session_id=_sid,
+                    fusion_config=self._session_fusion_configs.get(
+                        self._session_key_for_source(event.source)
+                    ),
+                )
+            except Exception as exc:
+                return f"/{canonical} failed: {exc}"
+            if _result.agent_seed:
+                event.text = _result.agent_seed
+                event.message_type = MessageType.TEXT
+            else:
+                return _result.text
+
         if canonical == "pause":
             return await self._handle_pause_command(event)
 

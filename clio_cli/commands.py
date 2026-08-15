@@ -247,6 +247,42 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Clioloop to the latest version", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
+    # Hermes-compatible command surfaces backed by Clio services.
+    CommandDef("approvals", "Show or set persistent dangerous-command approval mode", "Configuration",
+               args_hint="[manual|smart|off]", subcommands=("manual", "smart", "off")),
+    CommandDef("battery", "Toggle the status-bar battery indicator", "Configuration", cli_only=True,
+               args_hint="[on|off|status]", subcommands=("on", "off", "status")),
+    CommandDef("blueprint", "Create an automation from a blueprint", "Tools & Skills",
+               aliases=("bp",), args_hint="[name] [slot=value ...]"),
+    CommandDef("egress", "Show configured container egress controls", "Info", args_hint="[status]"),
+    CommandDef("export", "Export a profile to a shareable archive", "Configuration", cli_only=True,
+               args_hint="[profile] [-o output.tar.gz]"),
+    CommandDef("hatch", "Generate a terminal mascot", "Tools & Skills", cli_only=True,
+               aliases=("generate-pet",), args_hint="[description]"),
+    CommandDef("heartbeat", "Set a recurring prompt in this session", "Session", aliases=("hb",),
+               args_hint="[every <interval> <prompt>|status|pause|resume|clear]",
+               subcommands=("status", "pause", "resume", "clear")),
+    CommandDef("import", "Import a shared profile archive", "Configuration", cli_only=True,
+               args_hint="<archive.tar.gz> [--name <name>]"),
+    CommandDef("loop", "Re-run a prompt on a recurring interval", "Session", aliases=("proactive",),
+               args_hint="[[interval] <prompt>|status|pause|resume|stop]",
+               subcommands=("status", "pause", "resume", "stop", "clear")),
+    CommandDef("memory", "Show memory store state", "Tools & Skills", args_hint="[status]"),
+    CommandDef("moa", "Run a prompt with Model Fusion advisors", "Session", args_hint="<prompt>"),
+    CommandDef("pet", "Manage the optional terminal mascot", "Tools & Skills", cli_only=True,
+               args_hint="[toggle|list|off]"),
+    CommandDef("refine", "Review this conversation and persist reusable lessons", "Session",
+               args_hint="[focus instructions]"),
+    CommandDef("subscription", "View your Omni Loop Portal plan", "Info", aliases=("upgrade",)),
+    CommandDef("suggestions", "Review automation suggestions", "Tools & Skills", aliases=("suggest",),
+               args_hint="[catalog]"),
+    CommandDef("timestamps", "Toggle timestamps on messages", "Configuration", cli_only=True,
+               args_hint="[on|off|status]", subcommands=("on", "off", "status")),
+    CommandDef("topup", "Show Omni Loop Portal billing information", "Info"),
+    CommandDef("version", "Show Clio Agent version", "Info", aliases=("v",)),
+    CommandDef("wake", "Toggle the Clio wake-word listener", "Configuration", cli_only=True,
+               args_hint="[on|off|status]", subcommands=("on", "off", "status")),
+
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
@@ -521,6 +557,15 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     because plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
+    # Slack has a hard 50-command manifest limit while Telegram's BotCommand
+    # picker is larger. Keep the built-in native pickers in parity: commands
+    # outside Slack's curated native set remain fully dispatchable on both
+    # platforms through typed slashes (and through /clio on Slack), but do not
+    # misleadingly appear only in Telegram's picker.
+    slack_native = {
+        _sanitize_telegram_name(name)
+        for name, _description, _usage in slack_native_slashes()
+    }
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
@@ -529,7 +574,10 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # usage text when invoked without arguments, and hiding them from
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
-        if tg_name:
+        slack_name = _sanitize_slack_name(cmd.name)
+        if tg_name and (
+            tg_name in slack_native or slack_name in _SLACK_RESERVED_COMMANDS
+        ):
             result.append((tg_name, cmd.description))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
@@ -549,6 +597,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "resume",
     "sessions",
     "model",
+    "codex-runtime",
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
     "restart",
@@ -1106,6 +1155,16 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             if alias in cmd.aliases and _is_gateway_available(cmd, overrides):
                 _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
                 break
+
+    # Keep cross-surface compatibility controls inside Slack's hard 50-command
+    # manifest cap; every other command remains reachable through /clio.
+    _parity_priority = set(_TELEGRAM_MENU_PRIORITY) | {
+        "approvals", "blueprint", "egress", "heartbeat", "loop", "memory",
+        "moa", "refine", "subscription", "suggestions", "topup", "version",
+    }
+    for cmd in COMMAND_REGISTRY:
+        if cmd.name in _parity_priority and _is_gateway_available(cmd, overrides):
+            _add(cmd.name, cmd.description, cmd.args_hint or "")
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:

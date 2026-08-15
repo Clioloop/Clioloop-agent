@@ -9442,6 +9442,35 @@ class ClioCLI:
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical in {
+            "approvals", "battery", "blueprint", "egress", "export", "hatch",
+            "heartbeat", "import", "loop", "memory", "moa", "pet", "refine",
+            "subscription", "suggestions", "timestamps", "topup", "version", "wake",
+        }:
+            from clio_cli.parity_commands import execute
+            _parts = cmd_original.split(None, 1)
+            try:
+                _result = execute(
+                    canonical,
+                    _parts[1] if len(_parts) > 1 else "",
+                    session_id=getattr(self, "session_id", "") or "",
+                    agent=getattr(self, "agent", None),
+                )
+            except Exception as exc:
+                _cprint(f"  /{canonical} failed: {exc}")
+            else:
+                if _result.text:
+                    _cprint(f"  {_result.text}")
+                if "display.timestamps" in _result.config_updates:
+                    self.show_timestamps = bool(
+                        _result.config_updates["display.timestamps"]
+                    )
+                if "display.battery" in _result.config_updates:
+                    self._battery_visible = bool(
+                        _result.config_updates["display.battery"]
+                    )
+                if _result.agent_seed:
+                    self._pending_agent_seed = _result.agent_seed
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]

@@ -15103,6 +15103,13 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_archive = sessions_subparsers.add_parser("archive", help="Archive a session without deleting it")
+    sessions_archive.add_argument("session_id")
+    sessions_recover = sessions_subparsers.add_parser("recover", help="Recover (unarchive) a session")
+    sessions_recover.add_argument("session_id")
+    sessions_subparsers.add_parser("repair-routing", help="Remove only malformed gateway routing rows")
+    sessions_subparsers.add_parser("optimize-storage", help="Alias for sessions optimize")
+
     sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions")
     sessions_prune.add_argument(
         "--older-than",
@@ -15239,6 +15246,21 @@ Examples:
             else:
                 print(f"Session '{args.session_id}' not found.")
 
+        elif action in {"archive", "recover"}:
+            resolved_session_id = db.resolve_session_id(args.session_id)
+            if not resolved_session_id:
+                print(f"Session '{args.session_id}' not found.")
+                return
+            archived = action == "archive"
+            if db.set_session_archived(resolved_session_id, archived):
+                print(f"Session '{resolved_session_id}' {'archived' if archived else 'recovered'}.")
+            else:
+                print(f"Session '{args.session_id}' not found.")
+
+        elif action == "repair-routing":
+            result = db.repair_gateway_routing()
+            print(f"Routing repair complete: {result}")
+
         elif action == "prune":
             days = args.older_than
             source_msg = f" from '{args.source}'" if args.source else ""
@@ -15292,7 +15314,7 @@ Examples:
             relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
 
-        elif action == "optimize":
+        elif action in {"optimize", "optimize-storage"}:
             db_path = db.db_path
             before_mb = (
                 os.path.getsize(db_path) / (1024 * 1024)
@@ -15459,6 +15481,123 @@ Examples:
         claw_command(args)
 
     claw_parser.set_defaults(func=cmd_claw)
+
+    # Hermes-compatible top-level maintenance aliases.  These delegate to the
+    # same SessionDB/config contracts used by the native Clio commands.
+    def _cmd_parity_top(args):
+        name = args.command
+        values = list(getattr(args, "compat_args", None) or [])
+        if name in {"egress", "pets", "moa"}:
+            from clio_cli.parity_commands import execute
+            mapped = "pet" if name == "pets" else name
+            result = execute(mapped, " ".join(values))
+            print(result.text)
+            return
+        from clio_state import SessionDB
+        if name in {"archive", "recover"}:
+            if not values:
+                print(f"Usage: clio {name} <session-id>"); return
+            db = SessionDB(); sid = db.resolve_session_id(values[0])
+            ok = bool(sid and db.set_session_archived(sid, name == "archive")); db.close()
+            print(f"Session {sid} {name}d." if ok else f"Session '{values[0]}' not found.")
+            return
+        if name == "repair-routing":
+            db = SessionDB(); print(db.repair_gateway_routing()); db.close(); return
+        if name == "optimize-storage":
+            db = SessionDB(); print(f"Optimized {db.vacuum()} FTS index(es)."); db.close(); return
+        if name == "repair":
+            db = SessionDB(); row = db._conn.execute("PRAGMA quick_check").fetchone(); db.close()
+            print(f"Session store: {row[0] if row else 'unknown'}"); return
+        if name == "onepassword":
+            import shutil as _shutil
+            from agent.secret_sources.onepassword import OnePasswordSecretProvider
+            source = OnePasswordSecretProvider()
+            print(f"1Password secret source: {'available' if _shutil.which(source.binary) else 'unavailable'}"); return
+        if name == "whatsapp-cloud":
+            try:
+                from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter  # noqa: F401
+                print("WhatsApp Cloud adapter is installed. Configure it with `clio setup`.")
+            except Exception as exc: print(f"WhatsApp Cloud adapter unavailable: {exc}")
+            return
+        if name == "clean-markers":
+            import datetime as _datetime
+            import re as _re
+            import sqlite3 as _sqlite3
+
+            marker_re = _re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
+            db = SessionDB()
+            rows = db._conn.execute(
+                "SELECT id, content FROM messages WHERE role = 'assistant' "
+                "AND tool_calls IS NOT NULL AND tool_calls != ''"
+            ).fetchall()
+            ids = [row["id"] for row in rows if isinstance(row["content"], str)
+                   and marker_re.fullmatch(row["content"].strip())]
+            if getattr(args, "dry_run", False) or not ids:
+                print(f"Would clear {len(ids)} stale tool-call marker row(s)."
+                      if ids else "No stale tool-call marker rows found.")
+                db.close()
+                return
+            stamp = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup = db.db_path.with_name(f"{db.db_path.name}.pre-clean-markers-{stamp}")
+            target = _sqlite3.connect(backup)
+            try:
+                db._conn.backup(target)
+            finally:
+                target.close()
+            placeholders = ",".join("?" for _ in ids)
+            db._execute_write(lambda conn: conn.execute(
+                f"UPDATE messages SET content = '' WHERE id IN ({placeholders})", ids
+            ).rowcount)
+            db.close()
+            print(f"Cleared {len(ids)} stale tool-call marker row(s); backup: {backup}")
+            return
+        if name == "retitle-skills":
+            from agent.skill_commands import get_skill_commands
+            from agent.title_generator import generate_title
+
+            db = SessionDB()
+            limit = max(1, int(getattr(args, "limit", 200) or 200))
+            rows = db._conn.execute(
+                "SELECT s.id, s.title, "
+                "(SELECT content FROM messages WHERE session_id=s.id AND role='user' ORDER BY id LIMIT 1) user_text, "
+                "(SELECT content FROM messages WHERE session_id=s.id AND role='assistant' ORDER BY id LIMIT 1) assistant_text "
+                "FROM sessions s ORDER BY s.started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            skill_commands = get_skill_commands()
+            changed = 0
+            for row in rows:
+                user_text = str(row["user_text"] or "").strip()
+                command = user_text.split(None, 1)[0] if user_text.startswith("/") else ""
+                if command not in skill_commands:
+                    continue
+                title = generate_title(user_text, str(row["assistant_text"] or ""))
+                if not title or title == row["title"] or not title[0].isalnum():
+                    continue
+                print(f"{row['id']}: {row['title']!r} -> {title!r}")
+                changed += 1
+                if getattr(args, "apply", False):
+                    try:
+                        db.set_session_title(row["id"], title)
+                    except ValueError:
+                        db.set_session_title(row["id"], db.get_next_title_in_lineage(title))
+            db.close()
+            mode = "Retitled" if getattr(args, "apply", False) else "Would retitle"
+            print(f"{mode} {changed} skill-started session(s).")
+            return
+
+    for _compat_name, _compat_help in {
+        "archive": "Archive a session", "clean-markers": "Inspect update recovery markers",
+        "egress": "Show egress status", "onepassword": "Show 1Password secret-source status",
+        "optimize-storage": "Optimize session storage", "pets": "Manage terminal mascots",
+        "recover": "Recover an archived session", "repair": "Check the session store",
+        "repair-routing": "Repair malformed gateway routing rows",
+        "retitle-skills": "Show skill retitling guidance", "whatsapp-cloud": "Show WhatsApp Cloud status",
+        "moa": "Run a Model Fusion prompt",
+    }.items():
+        _p = subparsers.add_parser(_compat_name, help=_compat_help)
+        _p.add_argument("compat_args", nargs="*")
+        _p.set_defaults(func=_cmd_parity_top)
 
     # =========================================================================
     # version command
