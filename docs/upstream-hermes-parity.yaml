@@ -1,0 +1,177 @@
+schema_version: 1
+source:
+  repository: https://github.com/NousResearch/hermes-agent
+  revision: 165c889e5b4277b56dadd42949a4112c1e6175a6
+  audited_at: 2026-08-15
+local:
+  repository: https://github.com/Clioloop/Clioloop-agent
+  baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
+  preserved_local_revision: 6043c96
+  implementation_branch: feat/hermes-parity-20260816-003022
+migration_rules:
+  - Preserve Agentic Fusion, Gmail, music generation, ACP delegation overrides, cross-profile cron, managed provider, Portal, ComfyUI, Vidu, and Clio branding.
+  - Port portable behavior rather than Nous-specific commercial endpoints or branding.
+  - Keep old config, plugin manifests, state databases, and public imports compatible through additive migrations and adapters.
+  - Require focused tests, migration notes, and a full-suite result before marking a capability ported.
+  - Do not restart the running gateway during implementation or verification.
+capabilities:
+  - id: runtime-reliability
+    title: Unified deadlines, bounded I/O, cancellation, retry state, finalization, pause/resume, and gateway recovery
+    upstream_paths: [agent/deadline.py, agent/bounded_response.py, agent/turn_finalizer.py, agent/turn_retry_state.py, agent/estop.py, gateway]
+    phase: 2
+    priority: P0
+    status: in_progress
+    local_paths: [agent, gateway, run_agent.py]
+    tests: [tests/agent, tests/gateway, tests/tools]
+  - id: verification
+    title: Verification recipes, evidence persistence, verify CLI, verify-on-stop, and continuation
+    upstream_paths: [verify, agent/verification_continuation.py, agent/verification_evidence.py]
+    phase: 2
+    priority: P0
+    status: planned
+    local_paths: [verify, agent, clio_cli]
+    tests: [tests/verify, tests/agent]
+  - id: compression-cache-coding
+    title: Native and micro-compaction, prompt-cache boundaries, context accounting, coding context, diff/focus/init/prompt commands
+    upstream_paths: [agent/context_compressor.py, agent/native_compaction.py, agent/prompt_cache_boundary.py, agent/prompt_cache_scope.py, agent/coding_context.py, tools/working_diff.py]
+    phase: 3
+    priority: P0
+    status: planned
+    local_paths: [agent/context_compressor.py, agent, tools, clio_cli, cli.py]
+    tests: [tests/agent, tests/tools, tests/clio_cli]
+  - id: durable-delegation
+    title: Durable background delegation, list/steer/stop, structured output, recovery, logs, worktrees, and daemon pool
+    upstream_paths: [tools/delegate_tool.py, agent/delegation_daemon.py]
+    phase: 4
+    priority: P0
+    status: planned
+    local_paths: [tools/delegate_tool.py, clio_state.py, gateway, apps/desktop]
+    tests: [tests/tools/test_delegate_tool.py, tests/gateway, tests/state]
+  - id: learning-goals
+    title: Journey and learning graph, mutations, suggestions, refinement, heartbeats, wait/unwait, loops, and goal quality gates
+    upstream_paths: [agent/learning_graph.py, agent/learning_mutations.py, hermes_cli/journey.py, hermes_cli/learning.py]
+    phase: 7
+    priority: P1
+    status: planned
+    local_paths: [agent, clio_cli/goals.py, clio_cli]
+    tests: [tests/agent, tests/clio_cli]
+  - id: automation
+    title: Cron history, monitor mode, notepad, blueprints, drift guards, retention, attach-to-session, and provider seam
+    upstream_paths: [cron, plugins/cron-providers]
+    phase: 7
+    priority: P1
+    status: planned
+    local_paths: [cron, clio_cli, web, apps/desktop]
+    tests: [tests/cron]
+  - id: outbound-webhooks-a2a
+    title: Signed outbound webhook queue and A2A v1.0 interoperability
+    upstream_paths: [gateway, plugins/platforms/a2a]
+    phase: 7
+    priority: P1
+    status: planned
+    local_paths: [gateway, plugins/platforms/a2a]
+    tests: [tests/gateway, tests/plugins]
+  - id: plugin-platform-v2
+    title: Manifest v2, capabilities, grants, consent, lifecycle ownership, unload, event bus, packs, portable plugins, and missing hooks
+    upstream_paths: [hermes_cli/plugins.py, hermes_cli/plugin_capabilities.py, hermes_cli/plugin_packs.py, hermes_cli/plugin_dev.py, agent/registration_lifecycle.py, agent/plugin_stream_hooks.py]
+    phase: 5
+    priority: P0
+    status: planned
+    local_paths: [clio_cli/plugins.py, clio_cli, agent, plugins]
+    tests: [tests/plugins, tests/clio_cli]
+  - id: security-secrets-egress
+    title: Scoped external secrets, 1Password and command providers, deny rules, denial breaker, MCP trust tiers, protected files, egress controls, and SSL guards
+    upstream_paths: [agent/secrets.py, tools/egress.py, tools/approvals.py]
+    phase: 8
+    priority: P1
+    status: planned
+    local_paths: [agent, tools, clio_cli, plugins]
+    tests: [tests/security, tests/tools, tests/plugins]
+  - id: sessions-state-projects
+    title: Routing identity, leases, usage, archive/read/pin state, CJK search, recovery, exports, profile bundles, projects, workspace moves, and worktrees
+    upstream_paths: [hermes_state_common.py, hermes_state_schema.py, hermes_state_search.py, hermes_state_portability.py, projects]
+    phase: 6
+    priority: P0
+    status: planned
+    local_paths: [clio_state.py, clio_state_common.py, clio_state_schema.py, clio_state_search.py, clio_state_portability.py, clio_cli, gateway]
+    tests: [tests/state, tests/clio_cli, tests/gateway]
+  - id: voice-wake
+    title: Streaming TTS, sentence chunking, barge-in, stop phrases, wake providers, remote capture, VAD, trimming, idle unload, and speech normalization
+    upstream_paths: [voice, gateway, apps/desktop]
+    phase: 9
+    priority: P1
+    status: planned
+    local_paths: [voice, gateway, tools, apps/desktop, cli.py]
+    tests: [tests/voice, tests/gateway, apps/desktop]
+  - id: tool-ergonomics-recovery
+    title: Tool recovery, working diff, shell shorthand, prompt stash, focus view, context breakdown, and self-repair behavior
+    upstream_paths: [tools, hermes_cli/bang_shell.py, hermes_cli/prompt_stash.py, hermes_cli/focus_view.py]
+    phase: 3
+    priority: P1
+    status: planned
+    local_paths: [tools, clio_cli, cli.py]
+    tests: [tests/tools, tests/clio_cli]
+  - id: sandboxes-remote
+    title: Vercel Sandbox and stronger remote degraded-mode behavior
+    upstream_paths: [tools/environments/vercel_sandbox.py]
+    phase: 8
+    priority: P2
+    status: planned
+    local_paths: [tools/environments]
+    tests: [tests/tools/environments]
+  - id: providers-media
+    title: Actual, AI Gateway, DeepInfra, Fireworks, Nous-compatible generic path, Upstage, Vertex, additional image/video providers, batch/upscale/edit/extend flows
+    upstream_paths: [plugins/model-providers, plugins/image-generation, plugins/video-generation]
+    phase: 10
+    priority: P2
+    status: planned
+    local_paths: [plugins/model-providers, plugins/image-generation, plugins/video-generation]
+    tests: [tests/plugins]
+  - id: platforms-gateway
+    title: WhatsApp Cloud, A2A, Slack/Discord lifecycle improvements, and optional Buzz/Photon/Raft adapters
+    upstream_paths: [plugins/platforms, gateway]
+    phase: 10
+    priority: P1
+    status: planned
+    local_paths: [plugins/platforms, gateway/platforms]
+    tests: [tests/plugins, tests/gateway]
+  - id: web-dashboard
+    title: Profile-scoped dashboard, Profile Builder, Files, blueprints, reasoning picker, skill editor, toolset drawer, MCP setup, robust PTY, and pressure banners
+    upstream_paths: [web/src]
+    phase: 11
+    priority: P1
+    status: planned
+    local_paths: [web/src]
+    tests: [web]
+  - id: cli-tui
+    title: Missing CLI and slash commands, overlays, plugin widgets, resume view, battery/timestamps, journey, wake, plugin hub, fuzzy ranking, and attachments
+    upstream_paths: [hermes_cli, cli.py]
+    phase: 11
+    priority: P1
+    status: planned
+    local_paths: [clio_cli, cli.py]
+    tests: [tests/clio_cli, tests/test_cli.py]
+  - id: desktop-backend-product
+    title: Typed modular Electron backend, connection registry, SSH lifecycle, projects/worktrees, multi-window layout, Quick Entry, HUD, artifacts, plugin SDK, crash recovery, and update handoff
+    upstream_paths: [apps/desktop]
+    phase: 12
+    priority: P1
+    status: planned
+    local_paths: [apps/desktop]
+    tests: [apps/desktop]
+  - id: observability-operations
+    title: Local telemetry and spans, OTLP, health metrics, monitoring CLI, instrumentation, live doctor, DB/WAL/FTS diagnostics, and support bundles
+    upstream_paths: [observability, hermes_cli/monitoring.py]
+    phase: 14
+    priority: P1
+    status: planned
+    local_paths: [observability, clio_cli, agent, gateway, cron, tools]
+    tests: [tests/observability, tests/clio_cli]
+  - id: docs-localization-release
+    title: Generated docs, migrations, localization, installer rollback, dependency policy, CI shards, skill linting, packaging, and weekly upstream intake
+    upstream_paths: [docs, website, scripts, .github]
+    phase: 15
+    priority: P2
+    status: planned
+    local_paths: [docs, website, scripts, .github]
+    tests: [tests, website, apps/desktop]
