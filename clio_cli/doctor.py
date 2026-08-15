@@ -494,6 +494,22 @@ def run_doctor(args):
     print(color("│                 🩺 Clioloop Doctor                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
+    if getattr(args, "live", False):
+        _section("Live Operations (read-only)")
+        try:
+            from clio_cli.operations import collect_health, format_health
+            health = collect_health(CLIO_HOME, live=True)
+            for line in format_health(health).splitlines():
+                check_info(line)
+            if health["status"] == "error":
+                manual_issues.append("Resolve live storage/resource errors reported above")
+            elif health["status"] == "warning":
+                check_warn("Live operations checks reported pressure or growth warnings")
+            else:
+                check_ok("Live operations checks healthy")
+        except Exception as exc:
+            check_warn("Live operations checks unavailable", str(exc))
+
     _section("Security Advisories")
     try:
         from clio_cli.security_advisories import (

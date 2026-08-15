@@ -39,6 +39,7 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from clio_constants import get_clio_home
+from clio_cli.observability import instrument
 from clio_cli._subprocess_compat import windows_hide_flags
 from clio_cli.config import load_config, _expand_env_vars
 from clio_time import now as _clio_now
@@ -1311,6 +1312,7 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     return assembled
 
 
+@instrument("cron.execute", kind="cron")
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]

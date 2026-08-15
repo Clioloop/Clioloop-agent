@@ -556,6 +556,14 @@ def collect_debug_report(
         dump_text = _capture_dump()
     buf.write(dump_text)
 
+    # Rich, read-only and force-redacted operations context for support triage.
+    try:
+        from clio_cli.operations import support_bundle_data
+        buf.write("\n\n--- operations-health.json ---\n")
+        buf.write(json.dumps(support_bundle_data(), indent=2, sort_keys=True))
+    except Exception as exc:
+        buf.write(f"\n\n--- operations-health.json ---\nunavailable: {type(exc).__name__}\n")
+
     if log_snapshots is None:
         log_snapshots = _capture_default_log_snapshots(log_lines)
 

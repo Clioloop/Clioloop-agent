@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import unquote, urlsplit
 
 from utils import normalize_proxy_url
+from clio_cli.observability import instrument
 
 logger = logging.getLogger(__name__)
 
@@ -3873,6 +3874,7 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    @instrument("gateway.message", kind="gateway")
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.

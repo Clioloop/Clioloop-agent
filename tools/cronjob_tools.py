@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from clio_constants import display_clio_home
+from clio_cli.observability import instrument
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +457,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+@instrument("cron.manage", kind="cron")
 def cronjob(
     action: str,
     job_id: Optional[str] = None,

@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any, Optional
 
+from clio_cli.observability import instrument
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -188,6 +189,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
+@instrument("tool.batch.concurrent", kind="tool")
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -753,6 +755,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 
 
+@instrument("tool.batch.sequential", kind="tool")
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     num_tools = len(assistant_message.tool_calls) if assistant_message.tool_calls else 0

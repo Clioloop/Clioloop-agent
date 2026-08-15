@@ -33,6 +33,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from clio_constants import get_clio_home
+from clio_cli.observability import instrument
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -2134,6 +2135,7 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+@instrument("delegation.spawn", kind="delegation")
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,

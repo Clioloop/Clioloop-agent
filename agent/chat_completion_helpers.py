@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from clio_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from clio_cli.observability import instrument
 from clio_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
@@ -122,6 +123,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+@instrument("model.request", kind="model")
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -1531,6 +1533,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 
+@instrument("model.stream", kind="model")
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 

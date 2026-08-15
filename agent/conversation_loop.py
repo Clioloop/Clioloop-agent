@@ -57,6 +57,7 @@ from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from clio_constants import PARTIAL_STREAM_STUB_ID
+from clio_cli.observability import instrument
 from clio_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
@@ -348,6 +349,7 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+@instrument("agent.turn", kind="agent")
 def run_conversation(
     agent,
     user_message: str,

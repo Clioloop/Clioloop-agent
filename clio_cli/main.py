@@ -6440,6 +6440,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_monitor(args):
+    """Print local operational health and storage diagnostics."""
+    from clio_cli.operations import run_monitor
+
+    return run_monitor(args)
+
+
 def cmd_evolve(args):
     """Evolve the skill library — analyze, merge, archive, and suggest."""
     from agent.evolve_engine import run_evolve
@@ -13821,6 +13828,10 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--live", action="store_true",
+        help="Run bounded local DB/WAL/FTS/lock, memory, disk, process, and resource checks",
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,
@@ -13831,6 +13842,19 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="Show local operational health and storage diagnostics",
+        description=(
+            "Read-only monitoring for memory/disk pressure, limits, logs, and "
+            "SQLite DB/WAL/FTS/lock/growth health; makes no remote requests"
+        ),
+    )
+    monitor_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    monitor_parser.add_argument("--live", action="store_true", help="Include process and stale PID checks")
+    monitor_parser.add_argument("--databases", action="store_true", help="List per-database details")
+    monitor_parser.set_defaults(func=cmd_monitor)
 
     # =========================================================================
     # security command — on-demand supply-chain audit
