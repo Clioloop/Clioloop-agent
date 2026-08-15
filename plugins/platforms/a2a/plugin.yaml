@@ -1,0 +1,14 @@
+name: a2a-platform
+label: Agent-to-Agent (A2A)
+kind: platform
+version: 0.1.0
+description: Localhost-safe A2A JSON-RPC foundation for Clio Agent.
+author: Omni Loop Labs (ported from Hermes)
+optional_env:
+  - name: A2A_ENABLED
+    description: Explicit feature flag; disabled by default
+  - name: A2A_HOST
+    description: Bind host; forced to loopback unless bearer auth is configured
+  - name: A2A_BEARER_TOKEN
+    description: Required before binding to a non-loopback interface
+    password: true

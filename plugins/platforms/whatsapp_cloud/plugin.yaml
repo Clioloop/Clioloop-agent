@@ -1,0 +1,18 @@
+name: whatsapp-cloud-platform
+label: WhatsApp Cloud
+kind: platform
+version: 0.1.0
+description: Official Meta WhatsApp Business Cloud API foundation for Clio Agent.
+author: Omni Loop Labs (ported from Hermes)
+requires_env:
+  - name: WHATSAPP_CLOUD_PHONE_NUMBER_ID
+    description: Meta phone number ID
+  - name: WHATSAPP_CLOUD_ACCESS_TOKEN
+    description: Meta system-user access token
+    password: true
+optional_env:
+  - name: WHATSAPP_CLOUD_APP_SECRET
+    description: App secret used to verify webhook signatures
+    password: true
+  - name: WHATSAPP_CLOUD_ENABLED
+    description: Explicit feature flag; disabled by default

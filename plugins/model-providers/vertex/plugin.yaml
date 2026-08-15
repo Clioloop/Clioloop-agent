@@ -1,0 +1,5 @@
+name: vertex-provider
+kind: model-provider
+version: 1.0.0
+description: Google Vertex AI OpenAI-compatible foundation (ported from Hermes)
+author: Steve Lawton and Hermes Agent

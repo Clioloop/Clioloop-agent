@@ -1215,3 +1215,7 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)
     return deleted
+
+
+# Shared exact-match stop-phrase semantics for CLI/TUI/plugin voice surfaces.
+from tools.voice_state import is_stop_phrase as is_voice_stop_phrase  # noqa: E402,F401
