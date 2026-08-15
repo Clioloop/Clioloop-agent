@@ -6876,6 +6876,17 @@ class ProfileDescribeAuto(BaseModel):
     overwrite: bool = False
 
 
+class ProfileFileUpdate(BaseModel):
+    """A bounded text-file write from the profile Files workspace."""
+
+    content: str
+
+
+class ProfileBuilderUpdate(BaseModel):
+    soul: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+
 def _profile_attr(info, name: str, default: Any = None) -> Any:
     try:
         return getattr(info, name)
@@ -6992,6 +7003,144 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
         save_config(cfg)
     finally:
         reset_clio_home_override(token)
+
+
+# Profile file workspace: least-privilege, UTF-8 text-only and symlink safe.
+_PROFILE_FILE_MAX_BYTES = 1024 * 1024
+_PROFILE_FILE_DENY = {
+    ".env", "auth.json", "credentials.json", "state.db", "state.db-shm",
+    "state.db-wal", "gateway.pid", "dashboard.pid",
+}
+_PROFILE_FILE_EDITABLE_SUFFIXES = {
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".py", ".js",
+    ".ts", ".tsx", ".css", ".html", ".sh",
+}
+
+
+def _resolve_profile_file(name: str, relative: str, *, for_write: bool = False) -> tuple[Path, Path]:
+    """Resolve a dashboard file without allowing traversal or symlink escape."""
+    root = _resolve_profile_dir(name).resolve()
+    raw = str(relative or "").replace("\\", "/").strip("/")
+    parts = Path(raw).parts
+    if not raw or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=400, detail="A safe relative file path is required.")
+    if any(part.startswith(".") for part in parts) or any(part in _PROFILE_FILE_DENY for part in parts):
+        raise HTTPException(status_code=403, detail="That profile file is not exposed by the dashboard.")
+    resolved = root.joinpath(*parts).resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path escapes the selected profile.")
+    if for_write and resolved.suffix.lower() not in _PROFILE_FILE_EDITABLE_SUFFIXES:
+        raise HTTPException(status_code=403, detail="This file type is not editable in the dashboard.")
+    return root, resolved
+
+
+@app.get("/api/profiles/{name}/files")
+async def list_profile_files(name: str, path: str = ""):
+    root = _resolve_profile_dir(name).resolve()
+    directory = _resolve_profile_file(name, path)[1] if path else root
+    if not directory.exists() or not directory.is_dir():
+        raise HTTPException(status_code=404, detail="Directory not found.")
+    entries = []
+    for item in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        if item.name.startswith(".") or item.name in _PROFILE_FILE_DENY or item.is_symlink():
+            continue
+        try:
+            item.resolve().relative_to(root)
+        except (OSError, ValueError):
+            continue
+        is_dir = item.is_dir()
+        if not is_dir and item.suffix.lower() not in _PROFILE_FILE_EDITABLE_SUFFIXES:
+            continue
+        stat = item.stat()
+        entries.append({
+            "name": item.name,
+            "path": item.relative_to(root).as_posix(),
+            "kind": "directory" if is_dir else "file",
+            "size": None if is_dir else stat.st_size,
+            "modified": stat.st_mtime,
+            "editable": not is_dir,
+        })
+    return {"profile": name, "path": path.strip("/"), "entries": entries}
+
+
+@app.get("/api/profiles/{name}/file")
+async def read_profile_file(name: str, path: str):
+    _, file_path = _resolve_profile_file(name, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    size = file_path.stat().st_size
+    if size > _PROFILE_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 1 MiB dashboard limit.")
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="Only UTF-8 text files can be read.")
+    return {"profile": name, "path": path, "content": content, "size": size}
+
+
+@app.put("/api/profiles/{name}/file")
+async def write_profile_file(name: str, path: str, body: ProfileFileUpdate):
+    root, file_path = _resolve_profile_file(name, path, for_write=True)
+    encoded = body.content.encode("utf-8")
+    if len(encoded) > _PROFILE_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 1 MiB dashboard limit.")
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        file_path.parent.resolve().relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path escapes the selected profile.")
+    tmp = file_path.with_name(f".{file_path.name}.clio-tmp")
+    try:
+        tmp.write_bytes(encoded)
+        os.replace(tmp, file_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"ok": True, "profile": name, "path": path, "size": len(encoded)}
+
+
+@app.get("/api/profiles/{name}/builder")
+async def get_profile_builder(name: str):
+    profile_dir = _resolve_profile_dir(name)
+    soul_path = profile_dir / "SOUL.md"
+    from clio_constants import set_clio_home_override, reset_clio_home_override
+    token = set_clio_home_override(str(profile_dir))
+    try:
+        cfg = load_config() or {}
+    finally:
+        reset_clio_home_override(token)
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    return {
+        "profile": name,
+        "soul": soul_path.read_text(encoding="utf-8") if soul_path.is_file() else "",
+        "reasoning_effort": str(agent_cfg.get("reasoning_effort") or "medium"),
+        "reasoning_options": ["none", "minimal", "low", "medium", "high", "xhigh"],
+    }
+
+
+@app.put("/api/profiles/{name}/builder")
+async def update_profile_builder(name: str, body: ProfileBuilderUpdate):
+    profile_dir = _resolve_profile_dir(name)
+    if body.soul is not None:
+        if len(body.soul.encode("utf-8")) > _PROFILE_FILE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="SOUL.md exceeds the 1 MiB dashboard limit.")
+        (profile_dir / "SOUL.md").write_text(body.soul, encoding="utf-8")
+    if body.reasoning_effort is not None:
+        effort = body.reasoning_effort.strip().lower()
+        if effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+            raise HTTPException(status_code=400, detail="Unsupported reasoning effort.")
+        from clio_constants import set_clio_home_override, reset_clio_home_override
+        token = set_clio_home_override(str(profile_dir))
+        try:
+            cfg = load_config() or {}
+            agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+            agent_cfg["reasoning_effort"] = effort
+            cfg["agent"] = agent_cfg
+            save_config(cfg)
+        finally:
+            reset_clio_home_override(token)
+    return {"ok": True, "profile": name}
 
 
 @app.get("/api/profiles")

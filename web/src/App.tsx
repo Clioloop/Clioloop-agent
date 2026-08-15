@@ -20,12 +20,14 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Boxes,
   Clock,
   Code,
   Cpu,
   Database,
   Download,
   Eye,
+  Files,
   FileText,
   Globe,
   Heart,
@@ -46,6 +48,7 @@ import {
   Star,
   Terminal,
   Users,
+  UserRoundCog,
   Webhook,
   Wrench,
   X,
@@ -84,6 +87,11 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
+import FilesPage from "@/pages/FilesPage";
+import BlueprintsPage from "@/pages/BlueprintsPage";
+import { DashboardProfilePicker } from "@/components/DashboardProfilePicker";
+import { PressureBanner } from "@/components/PressureBanner";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -139,6 +147,9 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
+  "/profile-builder": ProfileBuilderPage,
+  "/files": FilesPage,
+  "/blueprints": BlueprintsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -181,6 +192,9 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/webhooks", label: "Webhooks", icon: Webhook },
   { path: "/pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
+  { path: "/profile-builder", label: "Profile Builder", icon: UserRoundCog },
+  { path: "/files", label: "Files", icon: Files },
+  { path: "/blueprints", label: "Blueprints", icon: Boxes },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },
@@ -525,6 +539,7 @@ export default function App() {
       )}
 
       <PluginSlot name="header-banner" />
+      <PressureBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -598,6 +613,8 @@ export default function App() {
                 )}
               </Button>
             </div>
+
+            <DashboardProfilePicker collapsed={isDesktopCollapsed} />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 px-2 py-3"

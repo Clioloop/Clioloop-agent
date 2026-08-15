@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Package, Power, Server, Trash2, X, Zap } from "lucide-react";
+import { Package, Power, Server, Trash2, X, Zap, Workflow } from "lucide-react";
 import { Badge } from "@clioloop-agent/ui/ui/components/badge";
 import { Button } from "@clioloop-agent/ui/ui/components/button";
 import { Select, SelectOption } from "@clioloop-agent/ui/ui/components/select";
@@ -23,6 +23,7 @@ import { Input } from "@clioloop-agent/ui/ui/components/input";
 import { Label } from "@clioloop-agent/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { useDashboardProfile } from "@/contexts/useDashboardProfile";
 
 type Transport = "http" | "stdio";
 
@@ -66,6 +67,7 @@ export default function McpPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
+  const { profile } = useDashboardProfile();
 
   // Add server modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -312,6 +314,8 @@ export default function McpPage() {
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
+
+      <Card className="rounded-none border-primary/30 bg-primary/5"><CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"><Workflow className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="text-sm font-medium">MCP setup workspace</p><p className="text-xs text-muted-foreground">For dashboard profile <code>{profile}</code>: choose a catalog server or add HTTP/stdio transport, provide required environment values, test tools, then restart the gateway.</p></div><div className="flex gap-1 text-[10px] uppercase tracking-wider"><Badge tone="secondary">1 Add</Badge><Badge tone="secondary">2 Test</Badge><Badge tone="secondary">3 Enable</Badge></div></CardContent></Card>
 
       <DeleteConfirmDialog
         open={serverDelete.isOpen}

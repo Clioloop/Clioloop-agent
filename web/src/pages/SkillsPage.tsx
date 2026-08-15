@@ -16,6 +16,9 @@ import {
   Filter,
   Download,
   RefreshCw,
+  Pencil,
+  Settings2,
+  Save,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SkillInfo, ToolsetInfo, SkillHubResult } from "@/lib/api";
@@ -32,6 +35,7 @@ import { Input } from "@clioloop-agent/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { useDashboardProfile } from "@/contexts/useDashboardProfile";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -106,6 +110,36 @@ export default function SkillsPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const { profile } = useDashboardProfile();
+  const [editingSkill, setEditingSkill] = useState<SkillInfo | null>(null);
+  const [skillDraft, setSkillDraft] = useState("");
+  const [savingSkill, setSavingSkill] = useState(false);
+  const [toolsetDrawer, setToolsetDrawer] = useState<ToolsetInfo | null>(null);
+
+  const openSkillEditor = async (skill: SkillInfo) => {
+    setEditingSkill(skill);
+    const fallback = `# ${skill.name}\n\n${skill.description || "Describe this skill."}\n`;
+    try {
+      const file = await api.readProfileFile(profile, `skills/${skill.name}/SKILL.md`);
+      setSkillDraft(file.content);
+    } catch {
+      // Bundled skills become a profile-local override when first saved.
+      setSkillDraft(fallback);
+    }
+  };
+
+  const saveSkill = async () => {
+    if (!editingSkill) return;
+    setSavingSkill(true);
+    try {
+      await api.writeProfileFile(profile, `skills/${editingSkill.name}/SKILL.md`, skillDraft);
+      showToast(`Saved profile override for ${editingSkill.name}`, "success");
+      setEditingSkill(null);
+    } catch (error) { showToast(String(error), "error"); }
+    finally { setSavingSkill(false); }
+  };
+
+  useEffect(() => { setEditingSkill(null); setToolsetDrawer(null); }, [profile]);
 
   useEffect(() => {
     Promise.all([api.getSkills(), api.getToolsets()])
@@ -370,6 +404,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        onEdit={() => void openSkillEditor(skill)}
                       />
                     ))}
                   </div>
@@ -413,6 +448,7 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        onEdit={() => void openSkillEditor(skill)}
                       />
                     ))}
                   </div>
@@ -484,6 +520,7 @@ export default function SkillsPage() {
                                     : t.skills.disabledForCli}
                                 </span>
                               )}
+                              <Button outlined size="sm" className="mt-3" onClick={() => setToolsetDrawer(ts)} prefix={<Settings2 className="h-3.5 w-3.5" />}>Configure</Button>
                             </div>
                           </div>
                         </CardContent>
@@ -498,6 +535,11 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+
+      {editingSkill && <div className="fixed inset-0 z-[90] bg-black/45" onClick={() => setEditingSkill(null)}><aside role="dialog" aria-modal="true" aria-label={`Edit ${editingSkill.name}`} className="absolute inset-y-0 right-0 flex w-full max-w-2xl flex-col border-l border-border bg-card shadow-2xl" onClick={(event) => event.stopPropagation()}><header className="flex items-center gap-2 border-b border-border p-4"><Pencil className="h-4 w-4" /><div className="min-w-0 flex-1"><h3 className="truncate font-mono text-sm">{editingSkill.name}</h3><p className="text-xs text-muted-foreground">Profile override · {profile}</p></div><Button ghost size="icon" onClick={() => setEditingSkill(null)} aria-label="Close editor"><X /></Button></header><textarea className="min-h-0 flex-1 resize-none bg-background/30 p-4 font-mono text-sm focus:outline-none" value={skillDraft} onChange={(event) => setSkillDraft(event.target.value)} /><footer className="flex justify-end border-t border-border p-3"><Button onClick={() => void saveSkill()} disabled={savingSkill} prefix={savingSkill ? <Spinner /> : <Save className="h-4 w-4" />}>Save skill</Button></footer></aside></div>}
+
+      {toolsetDrawer && <div className="fixed inset-0 z-[90] bg-black/45" onClick={() => setToolsetDrawer(null)}><aside role="dialog" aria-modal="true" aria-label={`Configure ${toolsetDrawer.label}`} className="absolute inset-y-0 right-0 w-full max-w-md overflow-y-auto border-l border-border bg-card p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="mb-5 flex items-start gap-2"><Settings2 className="mt-1 h-4 w-4" /><div className="min-w-0 flex-1"><h3 className="font-mondwest uppercase tracking-wider">{toolsetDrawer.label || toolsetDrawer.name}</h3><p className="mt-1 text-xs text-muted-foreground">{toolsetDrawer.description}</p></div><Button ghost size="icon" onClick={() => setToolsetDrawer(null)} aria-label="Close toolset drawer"><X /></Button></div><div className="grid gap-4"><div className="border border-border p-3"><p className="text-xs uppercase tracking-wider text-muted-foreground">Status</p><div className="mt-2 flex gap-2"><Badge tone={toolsetDrawer.enabled ? "success" : "outline"}>{toolsetDrawer.enabled ? "Enabled" : "Disabled"}</Badge><Badge tone={toolsetDrawer.configured ? "success" : "warning"}>{toolsetDrawer.configured ? "Configured" : "Setup needed"}</Badge></div></div><div><p className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">Tools</p><div className="flex flex-wrap gap-1">{toolsetDrawer.tools.map((tool) => <Badge key={tool} tone="secondary" className="font-mono text-xs">{tool}</Badge>)}</div></div><p className="text-xs text-muted-foreground">Provider and credential setup is available through this drawer foundation; secrets remain managed by the existing Keys APIs.</p></div></aside></div>}
+
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -507,6 +549,7 @@ function SkillRow({
   skill,
   toggling,
   onToggle,
+  onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -532,6 +575,7 @@ function SkillRow({
           {skill.description || noDescriptionLabel}
         </p>
       </div>
+      <Button ghost size="icon" className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100" onClick={onEdit} aria-label={`Edit ${skill.name}`}><Pencil className="h-3.5 w-3.5" /></Button>
     </div>
   );
 }
@@ -563,6 +607,7 @@ interface PanelItemProps {
 interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
+  onEdit: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }

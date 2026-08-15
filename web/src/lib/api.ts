@@ -501,6 +501,34 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
+  getProfileBuilder: (name: string) =>
+    fetchJSON<ProfileBuilder>(`/api/profiles/${encodeURIComponent(name)}/builder`),
+  updateProfileBuilder: (name: string, body: { soul?: string; reasoning_effort?: string }) =>
+    fetchJSON<{ ok: boolean; profile: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/builder`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  listProfileFiles: (name: string, path = "") =>
+    fetchJSON<ProfileFilesResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+    ),
+  readProfileFile: (name: string, path: string) =>
+    fetchJSON<ProfileFile>(
+      `/api/profiles/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
+    ),
+  writeProfileFile: (name: string, path: string, content: string) =>
+    fetchJSON<{ ok: boolean; profile: string; path: string; size: number }>(
+      `/api/profiles/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
@@ -1479,6 +1507,35 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
+}
+
+export interface ProfileBuilder {
+  profile: string;
+  soul: string;
+  reasoning_effort: string;
+  reasoning_options: string[];
+}
+
+export interface ProfileFileEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  size: number | null;
+  modified: number;
+  editable: boolean;
+}
+
+export interface ProfileFilesResponse {
+  profile: string;
+  path: string;
+  entries: ProfileFileEntry[];
+}
+
+export interface ProfileFile {
+  profile: string;
+  path: string;
+  content: string;
+  size: number;
 }
 
 export interface ModelsAnalyticsModelEntry {
