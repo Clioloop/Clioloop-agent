@@ -67,6 +67,11 @@ def test_compression_threshold_for_trinity_thinking() -> None:
     assert _compression_threshold_for_model("arcee-ai/trinity-large-thinking") == 0.75
 
 
+def test_compression_threshold_for_local_qwen38_harness() -> None:
+    assert _compression_threshold_for_model("qwen3.8-27b-q5xl") == 0.20
+    assert _compression_threshold_for_model("local/qwen3.8-27b-q5xl") == 0.20
+
+
 def test_compression_threshold_default_none_for_other_models() -> None:
     # None means "leave the user's config value unchanged".
     assert _compression_threshold_for_model(None) is None

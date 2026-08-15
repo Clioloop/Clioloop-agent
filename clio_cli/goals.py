@@ -424,14 +424,14 @@ def judge_goal(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
         )
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
+            goal=_truncate(goal, 4000),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             current_time=current_time,
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
+            goal=_truncate(goal, 4000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             current_time=current_time,
         )

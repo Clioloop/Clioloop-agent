@@ -72,6 +72,8 @@ _CLIO_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS/Windows/Linux, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Gmail full API access (gated on token/credentials via check_fn)
+    "gmail",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -266,6 +268,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "gmail": {
+        "description": "Full Gmail API access — read, search, send, reply, draft, label, archive, trash, delete. OAuth token auto-refreshes.",
+        "tools": ["gmail"],
         "includes": []
     },
 

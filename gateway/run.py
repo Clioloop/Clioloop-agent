@@ -9624,7 +9624,9 @@ class GatewayRunner:
                     source, session_entry, reason="agent-result-compression",
                 )
 
-            # Prepend reasoning/thinking if display is enabled (per-platform)
+            # Non-streaming fallback for reasoning display.  When the model
+            # exposed live reasoning deltas, _run_agent already delivered them
+            # first through the stream consumer and marked reasoning_streamed.
             try:
                 from gateway.display_config import resolve_display_setting as _rds
                 _show_reasoning_effective = _rds(
@@ -9635,17 +9637,31 @@ class GatewayRunner:
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
+            if _show_reasoning_effective and not agent_result.get("reasoning_streamed"):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
                     lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                    if len(lines) > 50:
+                        display_reasoning = "\n".join(lines[:50])
+                        display_reasoning += f"\n_... ({len(lines) - 50} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    _reasoning_msg = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+                    # Send reasoning as a separate message so it appears before
+                    # the response rather than being prepended to the same block.
+                    try:
+                        _reasoning_adapter = self.adapters.get(source.platform)
+                        if _reasoning_adapter:
+                            await _reasoning_adapter.send(
+                                source.chat_id,
+                                _reasoning_msg,
+                                metadata=self._thread_metadata_for_source(
+                                    source, self._reply_anchor_for_event(event),
+                                ),
+                            )
+                    except Exception as _reasoning_err:
+                        logger.debug("Reasoning message send failed: %s", _reasoning_err)
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -17935,6 +17951,7 @@ class GatewayRunner:
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
+            _reasoning_stream_bridge = None
             _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
             if _scfg is None:
                 from gateway.config import StreamingConfig
@@ -17951,6 +17968,14 @@ class GatewayRunner:
                 _scfg.enabled and _scfg.transport != "off"
                 if _plat_streaming is None
                 else bool(_plat_streaming)
+            )
+            _show_reasoning_effective = bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "show_reasoning",
+                    getattr(self, "_show_reasoning", False),
+                )
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
@@ -18007,9 +18032,16 @@ class GatewayRunner:
                             initial_reply_to_id=event_message_id,
                         )
                         if _want_stream_deltas:
+                            if _show_reasoning_effective:
+                                from gateway.reasoning_stream import ReasoningStreamBridge
+                                _reasoning_stream_bridge = ReasoningStreamBridge(_stream_consumer)
+
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
-                                    _stream_consumer.on_delta(text)
+                                    if _reasoning_stream_bridge is not None:
+                                        _reasoning_stream_bridge.on_response_delta(text)
+                                    else:
+                                        _stream_consumer.on_delta(text)
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -18118,6 +18150,19 @@ class GatewayRunner:
             )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
+            # Reasoning uses its own model callback, but shares the stream
+            # consumer queue with visible text.  The bridge inserts a segment
+            # boundary before the first answer delta, producing two live blocks
+            # in deterministic order instead of appending reasoning afterward.
+            setattr(
+                agent,
+                "reasoning_callback",
+                (
+                    _reasoning_stream_bridge.on_reasoning_delta
+                    if _reasoning_stream_bridge is not None
+                    else None
+                ),
+            )
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
@@ -18630,6 +18675,10 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "reasoning_streamed": bool(
+                        _reasoning_stream_bridge
+                        and _reasoning_stream_bridge.reasoning_started
+                    ),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -18800,6 +18849,10 @@ class GatewayRunner:
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 "fusion_completed": bool(result.get("fusion_completed")),
+                "reasoning_streamed": bool(
+                    _reasoning_stream_bridge
+                    and _reasoning_stream_bridge.reasoning_started
+                ),
             }
         
         # Start progress message sender if enabled

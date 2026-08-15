@@ -2016,6 +2016,11 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Optional cron-only inference defaults. Per-job model/provider pins
+        # take precedence; empty values inherit the main agent settings.
+        "model": "",
+        "provider": "",
+        "reasoning_effort": "",
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,

@@ -24,6 +24,12 @@ class TestRegistry:
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None
 
+    def test_named_custom_provider_uses_custom_profile(self):
+        """custom:<slug> selects config, but must retain custom API quirks."""
+        assert get_provider_profile("custom:local-bonsai-27b") is get_provider_profile(
+            "custom"
+        )
+
     def test_all_providers_have_name(self):
         get_provider_profile("nvidia")  # trigger discovery
         for name, profile in _REGISTRY.items():

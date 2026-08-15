@@ -234,6 +234,11 @@ def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
+    normalized = (model or "").strip().lower()
+    if "qwen3.8-27b-q5xl" in normalized:
+        # This local harness profile keeps a 65K safety window but compresses
+        # early to avoid the hybrid attention decode slowdown at long context.
+        return 0.20
     if _is_arcee_trinity_thinking(model):
         return 0.75
     return None

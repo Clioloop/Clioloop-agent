@@ -1595,7 +1595,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
-                    if isinstance(_model_cfg, str):
+                    _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+                    if isinstance(_cron_cfg, dict) and _cron_cfg.get("model"):
+                        model = str(_cron_cfg["model"]).strip()
+                    elif isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
@@ -1611,16 +1614,26 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Cron may use a cheaper/faster reasoning profile without changing the
+        # interactive agent's default. Cron-specific config takes precedence;
+        # an empty value preserves legacy inheritance.
         from clio_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+        if not isinstance(_cron_cfg, dict):
+            _cron_cfg = {}
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg, dict) else {}
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        effort = str(
+            _cron_cfg.get("reasoning_effort")
+            or agent_cfg.get("reasoning_effort", "")
+        ).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
         # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
         prefill_file = (
             os.getenv("CLIO_PREFILL_MESSAGES_FILE", "")
             or _cfg.get("prefill_messages_file", "")
@@ -1658,7 +1671,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": job.get("provider") or _cron_cfg.get("provider"),
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")

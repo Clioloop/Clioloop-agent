@@ -66,11 +66,17 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 
     Returns None if the provider has no profile (falls back to generic).
+    Named custom-provider selectors (``custom:<slug>``) share the base
+    ``custom`` transport profile; the suffix only selects credentials and
+    endpoint configuration.
     """
     if not _discovered:
         _discover_providers()
     canonical = _ALIASES.get(name, name)
-    return _REGISTRY.get(canonical)
+    profile = _REGISTRY.get(canonical)
+    if profile is None and name.startswith("custom:"):
+        profile = _REGISTRY.get("custom")
+    return profile
 
 
 def list_providers() -> list[ProviderProfile]:
