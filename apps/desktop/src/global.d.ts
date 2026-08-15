@@ -3,6 +3,21 @@ export {}
 declare global {
   interface Window {
     clioDesktop: {
+      /** Versioned channel catalog for projects/worktrees/Git review. */
+      backendContracts: {
+        version: 1
+        channels: Readonly<{
+          projectsList: 'clio:projects:list'
+          projectAdd: 'clio:projects:add'
+          worktreesList: 'clio:worktrees:list'
+          worktreeCreate: 'clio:worktrees:create'
+          worktreeRemove: 'clio:worktrees:remove'
+          reviewList: 'clio:git-review:list'
+          reviewDiff: 'clio:git-review:diff'
+          reviewStage: 'clio:git-review:stage'
+          reviewCommit: 'clio:git-review:commit'
+        }>
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.

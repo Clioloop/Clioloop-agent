@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
+const { DESKTOP_IPC } = require('./backend-foundations.cjs')
 
 contextBridge.exposeInMainWorld('clioDesktop', {
+  // Inert capability discovery for typed projects/worktree/Git-review IPC.
+  backendContracts: { version: 1, channels: DESKTOP_IPC },
   getConnection: profile => ipcRenderer.invoke('clio:connection', profile),
   touchBackend: profile => ipcRenderer.invoke('clio:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('clio:gateway:ws-url', profile),

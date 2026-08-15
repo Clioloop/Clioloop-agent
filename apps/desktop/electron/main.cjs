@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportClioCli, verifyClioCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { createCrashJournal } = require('./backend-foundations.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -233,6 +234,19 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 // ~/.clio/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+const desktopCrashJournal = createCrashJournal(path.join(app.getPath('userData'), 'crash-journal.json'), {
+  dirname: path.dirname,
+  mkdirSync: fs.mkdirSync,
+  readFileSync: fs.readFileSync,
+  renameSync: fs.renameSync,
+  writeFileSync: fs.writeFileSync
+})
+const previousDesktopCrash = desktopCrashJournal.read()
+try {
+  desktopCrashJournal.record('boot')
+} catch {
+  // Forensics must never make the shell less reliable.
+}
 // Mirrors clio_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -590,6 +604,22 @@ function rememberLog(chunk) {
   }
 
   scheduleDesktopLogFlush()
+}
+
+// Capture last-chance main-process failures in the tiny atomic journal. The
+// normal desktop log remains authoritative; this survives faults before its
+// buffered writer can flush and makes an unclean previous exit detectable.
+if (previousDesktopCrash && !previousDesktopCrash.clean) {
+  rememberLog(`[app] previous desktop exit was unclean during ${previousDesktopCrash.phase}`)
+}
+for (const eventName of ['uncaughtExceptionMonitor', 'unhandledRejection']) {
+  process.on(eventName, reason => {
+    try {
+      desktopCrashJournal.record('runtime', { reason })
+    } catch {
+      // Never throw from a crash observer.
+    }
+  })
 }
 
 function openExternalUrl(rawUrl) {
@@ -5405,6 +5435,11 @@ ipcMain.handle('clio:version', async () => ({
 }))
 
 app.whenReady().then(() => {
+  try {
+    desktopCrashJournal.record('ready')
+  } catch {
+    // Best-effort forensics only.
+  }
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
@@ -5448,6 +5483,11 @@ function configureSpellChecker() {
 app.on('before-quit', () => {
   appIsQuitting = true
   rememberLog('[app] before-quit')
+  try {
+    desktopCrashJournal.record('quit')
+  } catch {
+    // Best-effort forensics only.
+  }
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {

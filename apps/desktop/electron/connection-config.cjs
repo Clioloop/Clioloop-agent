@@ -36,6 +36,7 @@
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 const AT_COOKIE_VARIANTS = ['__Host-clio_session_at', '__Secure-clio_session_at', 'clio_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-clio_session_rt', '__Secure-clio_session_rt', 'clio_session_rt']
+const { backendRouteKey } = require('./backend-foundations.cjs')
 
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
@@ -242,6 +243,7 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  backendRouteKey,
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
