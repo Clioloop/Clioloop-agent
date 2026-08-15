@@ -13643,6 +13643,30 @@ def main():
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     _add_accept_hooks_flag(cron_tick)
+
+    cron_history = cron_subparsers.add_parser("history", help="Show durable execution history")
+    cron_history.add_argument("job_id", nargs="?", help="Optional job ID filter")
+    cron_history.add_argument("--limit", type=int, default=50)
+    cron_history.add_argument("--json", action="store_true")
+
+    cron_notepad = cron_subparsers.add_parser("notepad", help="Manage a job's durable scratchpad")
+    cron_notepad.add_argument("job_id")
+    cron_notepad.add_argument("notepad_action", nargs="?", default="list",
+                              choices=["list", "get", "set", "delete", "remove", "clear"])
+    cron_notepad.add_argument("key", nargs="?")
+    cron_notepad.add_argument("value", nargs="?")
+
+    cron_blueprint = cron_subparsers.add_parser("blueprint", help="List or instantiate automation blueprints")
+    cron_blueprint.add_argument("blueprint_key", nargs="?")
+    cron_blueprint.add_argument("values", nargs="*", metavar="SLOT=VALUE")
+    cron_blueprint.add_argument("--schema", action="store_true")
+
+    cron_monitor = cron_subparsers.add_parser("monitor", help="Run one bounded change probe")
+    monitor_source = cron_monitor.add_mutually_exclusive_group(required=True)
+    monitor_source.add_argument("--command", dest="monitor_command")
+    monitor_source.add_argument("--url")
+    cron_monitor.add_argument("--previous", help="File containing the previous result")
+    cron_monitor.add_argument("--timeout", type=float, default=30.0)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
 
@@ -14550,6 +14574,12 @@ Examples:
         _register_curator_cli(curator_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
+
+    journey_parser = subparsers.add_parser(
+        "journey", help="Inspect and manage learned skills and memories"
+    )
+    from clio_cli.journey import register_cli as _register_journey_cli
+    _register_journey_cli(journey_parser)
 
     # =========================================================================
     # memory command

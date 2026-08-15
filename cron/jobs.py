@@ -903,6 +903,13 @@ def remove_job(job_id: str) -> bool:
         # Clean up output directory to prevent orphaned dirs accumulating
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
+        try:
+            from cron.notepad import clear_notepad
+
+            clear_notepad(canonical_id)
+        except Exception:
+            # Job removal must not fail because optional scratchpad cleanup did.
+            pass
         return True
     return False
 

@@ -326,6 +326,88 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_history(args) -> int:
+    """Print durable execution history as JSON or compact rows."""
+    from cron.automation import history
+    rows = history(job_id=getattr(args, "job_id", None), limit=getattr(args, "limit", 50))
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+    elif not rows:
+        print("No execution history.")
+    else:
+        for row in rows:
+            print(f"{row.get('execution_id')}  {row.get('job_id')}  {row.get('status')}  {row.get('started_at')}")
+    return 0
+
+
+def cron_notepad(args) -> int:
+    from cron.automation import notepad
+    action = getattr(args, "notepad_action", "list") or "list"
+    key, value = getattr(args, "key", None), getattr(args, "value", None)
+    if action in {"get", "delete", "remove", "set"} and not key:
+        print(f"notepad {action} requires a key")
+        return 1
+    if action == "set" and value is None:
+        print("notepad set requires a value")
+        return 1
+    try:
+        result = notepad(action, args.job_id, key=key, value=value)
+    except (ValueError, OSError) as exc:
+        print(f"Notepad error: {exc}")
+        return 1
+    if action == "get" and result is None:
+        print("Key not found.")
+        return 1
+    print(json.dumps(result, indent=2, default=str) if isinstance(result, (dict, list)) else result)
+    return 0
+
+
+def cron_blueprint(args) -> int:
+    from cron.automation import CATALOG, blueprint_schema, create_from_blueprint, get_blueprint
+    key = getattr(args, "blueprint_key", None)
+    if not key:
+        for item in CATALOG:
+            print(f"{item.key}: {item.title} — {item.description}")
+        return 0
+    blueprint = get_blueprint(key)
+    if blueprint is None:
+        print(f"Unknown blueprint: {key}")
+        return 1
+    values = {}
+    for raw in getattr(args, "values", []) or []:
+        if "=" not in raw:
+            print(f"Expected slot=value, got: {raw}")
+            return 1
+        name, value = raw.split("=", 1)
+        values[name] = value
+    if getattr(args, "schema", False):
+        print(json.dumps(blueprint_schema(blueprint), indent=2))
+        return 0
+    try:
+        job = create_from_blueprint(key, values)
+    except (ValueError, KeyError) as exc:
+        print(f"Blueprint error: {exc}")
+        return 1
+    print(f"Created job {job.get('id')} from blueprint {key}")
+    return 0
+
+
+def cron_monitor(args) -> int:
+    from cron.automation import monitor_probe
+    try:
+        previous = None
+        if getattr(args, "previous", None):
+            previous = Path(args.previous).read_text(encoding="utf-8")
+        result = monitor_probe(command=getattr(args, "monitor_command", None),
+                               url=getattr(args, "url", None), previous=previous,
+                               timeout=getattr(args, "timeout", 30.0))
+    except Exception as exc:
+        print(f"Monitor failed: {exc}")
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -342,6 +424,18 @@ def cron_command(args):
     if subcmd == "tick":
         cron_tick()
         return 0
+
+    if subcmd == "history":
+        return cron_history(args)
+
+    if subcmd == "notepad":
+        return cron_notepad(args)
+
+    if subcmd == "blueprint":
+        return cron_blueprint(args)
+
+    if subcmd == "monitor":
+        return cron_monitor(args)
 
     if subcmd in {"create", "add"}:
         return cron_create(args)
@@ -362,5 +456,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: clio cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: clio cron [list|create|edit|pause|resume|run|remove|status|tick|history|notepad|blueprint|monitor]")
     sys.exit(1)

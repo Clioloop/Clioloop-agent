@@ -1154,6 +1154,17 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    # Inject the per-job scratchpad only when populated. Empty notepads leave
+    # legacy prompts byte-identical.
+    try:
+        from cron.notepad import render_notepad_section
+
+        notepad_section = render_notepad_section(str(job.get("id") or ""))
+    except Exception:
+        notepad_section = ""
+    if notepad_section:
+        prompt = notepad_section + prompt
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (

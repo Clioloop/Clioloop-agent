@@ -29,9 +29,12 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -66,6 +69,9 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+DEFAULT_GATE_TIMEOUT_SECONDS = 300
+DEFAULT_GATE_MAX_RETRIES = 3
+_GATE_OUTPUT_TAIL_CHARS = 3000
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -74,6 +80,14 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "Continue working toward this goal. Take the next concrete step. "
     "If you believe the goal is complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly and stop."
+)
+
+CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
+    "[Continuing toward your standing goal — a quality gate failed]\n"
+    "Goal: {goal}\n\n"
+    "Required command (attempt {attempt}/{max_retries}):\n  $ {command}\n"
+    "Exit code: {exit_code}\nOutput (tail):\n```\n{output}\n```\n\n"
+    "Fix the underlying problem and verify this command passes before claiming completion."
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -135,8 +149,67 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Dataclass
+# Dataclasses and deterministic quality gates
 # ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class GoalGate:
+    """Deterministic command which must pass before the judge may say done."""
+
+    command: str
+    timeout_seconds: int = DEFAULT_GATE_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_GATE_MAX_RETRIES
+    attempts: int = 0
+    last_exit_code: Optional[int] = None
+    last_output_tail: str = ""
+    last_failed_fingerprint: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalGate":
+        if not isinstance(data, dict):
+            return cls(command="")
+        return cls(
+            command=str(data.get("command") or ""),
+            timeout_seconds=int(data.get("timeout_seconds", DEFAULT_GATE_TIMEOUT_SECONDS) or DEFAULT_GATE_TIMEOUT_SECONDS),
+            max_retries=int(data.get("max_retries", DEFAULT_GATE_MAX_RETRIES) or DEFAULT_GATE_MAX_RETRIES),
+            attempts=int(data.get("attempts", 0) or 0),
+            last_exit_code=int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None,
+            last_output_tail=str(data.get("last_output_tail") or ""),
+            last_failed_fingerprint=str(data.get("last_failed_fingerprint") or ""),
+        )
+
+
+def workspace_fingerprint(cwd: Optional[str] = None) -> str:
+    """Cheap git-state fingerprint; empty outside a git worktree."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=10)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=cwd, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=30)
+        if head.returncode or status.returncode:
+            return ""
+        return hashlib.sha256((head.stdout.strip() + "\n" + status.stdout).encode()).hexdigest()
+    except Exception:
+        return ""
+
+
+def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
+    """Run a bounded quality gate and retain useful UTF-8 diagnostics."""
+    try:
+        proc = subprocess.run(gate.command, shell=True, cwd=cwd, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=max(1, int(gate.timeout_seconds)))
+        output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        return proc.returncode == 0, proc.returncode, output[-_GATE_OUTPUT_TAIL_CHARS:]
+    except subprocess.TimeoutExpired as exc:
+        chunks = []
+        for chunk in (exc.stdout, exc.stderr):
+            if chunk:
+                chunks.append(chunk if isinstance(chunk, str) else chunk.decode("utf-8", "replace"))
+        return False, -1, ("".join(chunks) + f"\n[gate timed out after {gate.timeout_seconds}s]")[-_GATE_OUTPUT_TAIL_CHARS:]
+    except Exception as exc:
+        return False, -1, f"[gate could not run: {type(exc).__name__}: {exc}]"
 
 
 @dataclass
@@ -159,6 +232,12 @@ class GoalState:
     # them into the verdict. Backwards-compatible: defaults to empty so
     # old state_meta rows load unchanged.
     subgoals: List[str] = field(default_factory=list)
+    # Additive completion contracts: absent fields preserve old loop behavior.
+    gates: List[GoalGate] = field(default_factory=list)
+    waiting_on_pid: Optional[int] = None
+    waiting_until: float = 0.0
+    waiting_reason: Optional[str] = None
+    waiting_since: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -182,6 +261,11 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             subgoals=subgoals,
+            gates=[GoalGate.from_dict(g) for g in (data.get("gates") or []) if isinstance(g, dict)],
+            waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
+            waiting_until=float(data.get("waiting_until", 0.0) or 0.0),
+            waiting_reason=data.get("waiting_reason"),
+            waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
         )
 
     # --- subgoals helpers -------------------------------------------------
@@ -508,8 +592,10 @@ class GoalManager:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+        gates = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
         if s.status == "active":
-            return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
+            waiting = "parked" if self.is_waiting() else "active"
+            return f"⊙ Goal ({waiting}, {turns}{sub}{gates}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
             return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
@@ -540,6 +626,9 @@ class GoalManager:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
+        self._state.waiting_on_pid = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -548,6 +637,9 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        self._state.waiting_on_pid = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
@@ -615,6 +707,125 @@ class GoalManager:
             return "(no subgoals — use /subgoal <text> to add criteria)"
         return self._state.render_subgoals_block()
 
+    # --- quality gates / wait barriers ---------------------------------
+
+    def add_gate(self, command: str, *, timeout_seconds: Optional[int] = None,
+                 max_retries: Optional[int] = None) -> GoalGate:
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        command = (command or "").strip()
+        if not command:
+            raise ValueError("gate command is empty")
+        gate = GoalGate(command, int(timeout_seconds or DEFAULT_GATE_TIMEOUT_SECONDS),
+                        int(max_retries or DEFAULT_GATE_MAX_RETRIES))
+        self._state.gates.append(gate)
+        save_goal(self.session_id, self._state)
+        return gate
+
+    def remove_gate(self, index_1based: int) -> str:
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        idx = int(index_1based) - 1
+        if idx < 0 or idx >= len(self._state.gates):
+            raise IndexError(f"index out of range (1..{len(self._state.gates)})")
+        command = self._state.gates.pop(idx).command
+        save_goal(self.session_id, self._state)
+        return command
+
+    def clear_gates(self) -> int:
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        count = len(self._state.gates)
+        self._state.gates = []
+        save_goal(self.session_id, self._state)
+        return count
+
+    def render_gates(self) -> str:
+        if not self._state or not self._state.gates:
+            return "(no quality gates)"
+        return "\n".join(f"- {i}. $ {g.command}" for i, g in enumerate(self._state.gates, 1))
+
+    def wait_on(self, pid: int, reason: str = "") -> GoalState:
+        if self._state is None or self._state.status != "active":
+            raise RuntimeError("no active goal to park")
+        if int(pid) <= 0:
+            raise ValueError("pid must be positive")
+        self._state.waiting_on_pid = int(pid)
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = reason.strip() or None
+        self._state.waiting_since = time.time()
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def wait_for_seconds(self, seconds: int, reason: str = "") -> GoalState:
+        if self._state is None or self._state.status != "active":
+            raise RuntimeError("no active goal to park")
+        if int(seconds) <= 0:
+            raise ValueError("seconds must be positive")
+        self._state.waiting_on_pid = None
+        self._state.waiting_until = time.time() + int(seconds)
+        self._state.waiting_reason = reason.strip() or None
+        self._state.waiting_since = time.time()
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def stop_waiting(self) -> bool:
+        if not self._state or (self._state.waiting_on_pid is None and not self._state.waiting_until):
+            return False
+        self._state.waiting_on_pid = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
+        self._state.waiting_since = 0.0
+        save_goal(self.session_id, self._state)
+        return True
+
+    def is_waiting(self) -> bool:
+        if not self._state:
+            return False
+        if self._state.waiting_until:
+            if time.time() < self._state.waiting_until:
+                return True
+            self.stop_waiting()
+        if self._state and self._state.waiting_on_pid:
+            try:
+                os.kill(self._state.waiting_on_pid, 0)
+                return True
+            except (OSError, ValueError):
+                self.stop_waiting()
+        return False
+
+    def _check_gates(self) -> Optional[Dict[str, Any]]:
+        state = self._state
+        if state is None or not state.gates:
+            return None
+        fingerprint = workspace_fingerprint()
+        for gate in state.gates:
+            unchanged = bool(fingerprint) and gate.last_exit_code not in (None, 0) and gate.last_failed_fingerprint == fingerprint
+            passed, code, output = ((False, int(gate.last_exit_code or -1), gate.last_output_tail)
+                                    if unchanged else run_gate(gate))
+            gate.last_exit_code, gate.last_output_tail = code, output
+            if passed:
+                gate.attempts, gate.last_failed_fingerprint = 0, ""
+                continue
+            gate.attempts += 1
+            gate.last_failed_fingerprint = fingerprint
+            if gate.attempts > gate.max_retries:
+                state.status = "paused"
+                state.paused_reason = f"quality gate exhausted retries: $ {gate.command}"
+                save_goal(self.session_id, state)
+                return {"status": "paused", "should_continue": False, "continuation_prompt": None,
+                        "verdict": "gate_failed", "reason": state.paused_reason,
+                        "message": f"⏸ Goal paused — quality gate still failing: $ {gate.command}"}
+            prompt = CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE.format(
+                goal=state.goal, command=gate.command, exit_code=code,
+                attempt=gate.attempts, max_retries=gate.max_retries, output=output or "(no output)")
+            save_goal(self.session_id, state)
+            return {"status": "active", "should_continue": True, "continuation_prompt": prompt,
+                    "verdict": "gate_failed", "reason": f"gate failed: $ {gate.command}",
+                    "message": f"✗ Quality gate failed: $ {gate.command}" + (" (workspace unchanged)" if unchanged else "")}
+        save_goal(self.session_id, state)
+        return None
+
     # --- the main entry point called after every turn -----------------
 
     def evaluate_after_turn(
@@ -648,9 +859,29 @@ class GoalManager:
                 "message": "",
             }
 
+        # Wait barriers quiesce the loop without consuming judge/turn budget.
+        if self.is_waiting():
+            return {
+                "status": "waiting", "should_continue": False,
+                "continuation_prompt": None, "verdict": "wait",
+                "reason": state.waiting_reason or "waiting for asynchronous work",
+                "message": "⏳ Goal parked; use /goal unwait to resume immediately.",
+            }
+
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        # Deterministic evidence gates run before the probabilistic judge.
+        gate_decision = self._check_gates()
+        if gate_decision is not None:
+            if state.turns_used >= state.max_turns and gate_decision.get("should_continue"):
+                state.status = "paused"
+                state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+                save_goal(self.session_id, state)
+                gate_decision.update(status="paused", should_continue=False, continuation_prompt=None,
+                                     message=f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used.")
+            return gate_decision
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None
