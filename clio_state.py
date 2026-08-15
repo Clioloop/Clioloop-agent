@@ -18,6 +18,7 @@ import json
 import logging
 import random
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -25,15 +26,31 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from clio_constants import get_clio_home
+from clio_state_schema import (
+    LEGACY_SCHEMA_VERSION,
+    PHASE1_SCHEMA_SQL,
+    SCHEMA_VERSION,
+    apply_additive_migrations,
+)
+import clio_state_delegations as _delegations
+import clio_state_leases as _leases
+import clio_state_prompts as _prompts
+import clio_state_routing as _routing
+import clio_state_usage as _usage
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_clio_home() / "state.db"
+def _default_db_path() -> Path:
+    """Resolve at construction time so in-process profile switches isolate DBs."""
+    return get_clio_home() / "state.db"
 
-SCHEMA_VERSION = 14
+
+# Long-standing public constant retained for callers that import it. SessionDB
+# deliberately resolves the default again at construction time.
+DEFAULT_DB_PATH = _default_db_path()
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -397,8 +414,9 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = Path(db_path) if db_path is not None else _default_db_path()
         self.read_only = read_only
+        self.migration_backup_path: Optional[Path] = None
 
         self._lock = threading.Lock()
         self._write_count = 0
@@ -441,7 +459,12 @@ class SessionDB:
             apply_wal_with_fallback(self._conn, db_label="state.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+            self.migration_backup_path = self._prepare_migration_backup()
+            try:
+                self._init_schema()
+            except BaseException:
+                self._restore_migration_backup()
+                raise
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -457,6 +480,61 @@ class SessionDB:
             # ``clio_state._set_last_init_error(None)`` explicitly.
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
+
+    def _prepare_migration_backup(self) -> Optional[Path]:
+        """Create one consistent pre-migration backup of an existing DB."""
+        try:
+            if not self.db_path.exists() or self.db_path.stat().st_size == 0:
+                return None
+            table = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'"
+            ).fetchone()
+            if table is None:
+                return None
+            row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            version = int(row[0]) if row else 0
+            if version >= SCHEMA_VERSION:
+                return None
+            backup_path = self.db_path.with_name(
+                f"{self.db_path.name}.pre-v{version}-to-v{SCHEMA_VERSION}.bak"
+            )
+            if backup_path.exists():
+                return backup_path
+            dest = sqlite3.connect(str(backup_path))
+            try:
+                self._conn.backup(dest)
+            finally:
+                dest.close()
+            return backup_path
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            logger.warning(
+                "Could not create state migration backup for %s: %s",
+                self.db_path,
+                exc,
+            )
+            return None
+
+    def _restore_migration_backup(self) -> None:
+        """Best-effort restore used only when schema initialization fails."""
+        backup_path = self.migration_backup_path
+        if backup_path is None or not backup_path.exists():
+            return
+        try:
+            if getattr(self, "_conn", None) is not None:
+                self._conn.close()
+                self._conn = None
+            for suffix in ("-wal", "-shm"):
+                try:
+                    Path(str(self.db_path) + suffix).unlink()
+                except FileNotFoundError:
+                    pass
+            shutil.copy2(backup_path, self.db_path)
+        except (OSError, sqlite3.Error) as exc:
+            logger.error(
+                "Could not restore state migration backup %s: %s",
+                backup_path,
+                exc,
+            )
 
     # ── Core write helper ──
 
@@ -771,6 +849,16 @@ class SessionDB:
         # column gets created here.
         self._reconcile_columns(cursor)
 
+        # Phase-1 schema is additive and intentionally kept outside the legacy
+        # SCHEMA_SQL compatibility constant. Ensure the final shape first; the
+        # versioned callbacks below remain durable migration markers.
+        session_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(sessions)")
+        }
+        if "system_prompt_hash" not in session_columns:
+            cursor.execute("ALTER TABLE sessions ADD COLUMN system_prompt_hash TEXT")
+        cursor.executescript(PHASE1_SCHEMA_SQL)
+
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
         # makes the initial executescript fail on legacy DBs (the index's
@@ -899,10 +987,10 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
-            if current_version < SCHEMA_VERSION and fts_migrations_complete:
+            if current_version < LEGACY_SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
-                    (SCHEMA_VERSION,),
+                    (LEGACY_SCHEMA_VERSION,),
                 )
 
         # Unique title index — always ensure it exists
@@ -931,7 +1019,130 @@ class SessionDB:
                 if trigram_enabled and triggers_need_repair:
                     self._rebuild_fts_indexes(cursor)
 
+        # Advance the modular registry after all legacy data migrations.
+        version_row = cursor.execute(
+            "SELECT version FROM schema_version LIMIT 1"
+        ).fetchone()
+        durable_version = int(version_row[0]) if version_row else LEGACY_SCHEMA_VERSION
+        if durable_version < SCHEMA_VERSION and fts_migrations_complete:
+            apply_additive_migrations(self._conn, durable_version)
+        if durable_version >= SCHEMA_VERSION or fts_migrations_complete:
+            _prompts.migrate_inline_prompts(self._conn)
+
         self._conn.commit()
+
+    # =========================================================================
+    # Modular profile-local state APIs
+    # =========================================================================
+
+    def save_gateway_routing_entry(
+        self, session_key: str, source_json: str, *, scope: str = "default"
+    ) -> None:
+        self._execute_write(
+            lambda conn: _routing.save_gateway_routing_entry(
+                conn, session_key, source_json, scope=scope
+            )
+        )
+
+    def load_gateway_routing_entries(self, *, scope: str = "default") -> Dict[str, str]:
+        with self._lock:
+            rows = _routing.load_gateway_routing_entries(self._conn, scope=scope)
+        return {row["session_key"]: row["source_json"] for row in rows}
+
+    def delete_gateway_routing_entry(
+        self, session_key: str, *, scope: str = "default"
+    ) -> bool:
+        return bool(
+            self._execute_write(
+                lambda conn: _routing.delete_gateway_routing_entry(
+                    conn, session_key, scope=scope
+                )
+            )
+        )
+
+    def try_acquire_turn_lease(
+        self, session_key: str, holder: str, *, ttl_seconds: float = 120.0
+    ) -> bool:
+        return bool(
+            self._execute_write(
+                lambda conn: _leases.try_acquire(
+                    conn, session_key, holder, ttl_seconds=ttl_seconds
+                )
+            )
+        )
+
+    def refresh_turn_lease(
+        self, session_key: str, holder: str, *, ttl_seconds: float = 120.0
+    ) -> bool:
+        return bool(
+            self._execute_write(
+                lambda conn: _leases.refresh(
+                    conn, session_key, holder, ttl_seconds=ttl_seconds
+                )
+            )
+        )
+
+    def release_turn_lease(self, session_key: str, holder: str) -> bool:
+        return bool(
+            self._execute_write(
+                lambda conn: _leases.release(conn, session_key, holder)
+            )
+        )
+
+    def get_turn_lease_holder(self, session_key: str) -> Optional[str]:
+        with self._lock:
+            return _leases.current_holder(self._conn, session_key)
+
+    def record_model_usage(self, session_id: str, **usage: Any) -> None:
+        self._execute_write(
+            lambda conn: _usage.record_model_usage(conn, session_id, **usage)
+        )
+
+    def list_model_usage(self, session_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            return _usage.list_model_usage(self._conn, session_id)
+
+    def collect_unreferenced_system_prompts(self) -> int:
+        return int(self._execute_write(_prompts.collect_unreferenced))
+
+    def upsert_async_delegation(self, record: Dict[str, Any]) -> None:
+        self._execute_write(lambda conn: _delegations.upsert(conn, record))
+
+    def get_async_delegation(self, delegation_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return _delegations.get(self._conn, delegation_id)
+
+    def list_async_delegations(self, **filters: Any) -> List[Dict[str, Any]]:
+        with self._lock:
+            return _delegations.list_records(self._conn, **filters)
+
+    def claim_async_delegation_delivery(
+        self, delegation_id: str, claim_id: str, **options: Any
+    ) -> bool:
+        return bool(self._execute_write(
+            lambda conn: _delegations.claim_delivery(
+                conn, delegation_id, claim_id, **options
+            )
+        ))
+
+    def release_async_delegation_delivery(
+        self, delegation_id: str, claim_id: str
+    ) -> bool:
+        return bool(self._execute_write(
+            lambda conn: _delegations.release_delivery(conn, delegation_id, claim_id)
+        ))
+
+    def complete_async_delegation_delivery(
+        self, delegation_id: str, claim_id: str
+    ) -> bool:
+        return bool(self._execute_write(
+            lambda conn: _delegations.complete_delivery(conn, delegation_id, claim_id)
+        ))
+
+    def delete_async_delegation(self, delegation_id: str) -> bool:
+        return bool(self._execute_write(
+            lambda conn: _delegations.delete(conn, delegation_id)
+        ))
 
     # =========================================================================
     # Session lifecycle
@@ -950,17 +1161,18 @@ class SessionDB:
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
+            prompt_digest = _prompts.store(conn, system_prompt)
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, system_prompt_hash, parent_session_id, cwd, started_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
                     model,
                     json.dumps(model_config) if model_config else None,
-                    system_prompt,
+                    prompt_digest,
                     parent_session_id,
                     cwd,
                     time.time(),
@@ -1153,12 +1365,16 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(
+        self, session_id: str, system_prompt: Optional[str]
+    ) -> None:
+        """Store a content-addressed prompt while preserving hydrated reads."""
         def _do(conn):
+            digest = _prompts.store(conn, system_prompt)
             conn.execute(
-                "UPDATE sessions SET system_prompt = ? WHERE id = ?",
-                (system_prompt, session_id),
+                "UPDATE sessions SET system_prompt = NULL, system_prompt_hash = ? "
+                "WHERE id = ?",
+                (digest, session_id),
             )
         self._execute_write(_do)
 
@@ -1359,10 +1575,13 @@ class SessionDB:
         """Get a session by ID."""
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+                "SELECT s.*, p.prompt AS _system_prompt_resolved "
+                "FROM sessions s LEFT JOIN system_prompts p "
+                "ON p.hash = s.system_prompt_hash WHERE s.id = ?",
+                (session_id,),
             )
             row = cursor.fetchone()
-        return dict(row) if row else None
+        return _prompts.hydrate_row(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

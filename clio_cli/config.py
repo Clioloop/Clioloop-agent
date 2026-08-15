@@ -222,7 +222,9 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+_LOAD_CONFIG_CACHE: Dict[
+    str, Tuple[int, int, Dict[str, Any], Dict[str, Optional[str]]]
+] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -2463,6 +2465,12 @@ DEFAULT_CONFIG = {
     "_config_version": 27,
 }
 
+# Keep the historical mapping in this module for public-import compatibility,
+# while all new defaults are supplied by the modular additive layer.
+from clio_cli.config_defaults import merge_compat_defaults as _merge_compat_defaults
+
+DEFAULT_CONFIG = _merge_compat_defaults(DEFAULT_CONFIG)
+
 # =============================================================================
 # Config Migration System
 # =============================================================================
@@ -4031,7 +4039,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates",
+    "sessions", "streaming", "updates", "state",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -4290,6 +4298,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Check config version
     current_ver, latest_ver = check_config_version()
+
+    # New migrations live in the table-driven registry.  It operates on raw
+    # user config (never the defaults-expanded runtime view) and therefore
+    # cannot accidentally materialize the complete default tree.
+    from clio_cli.config_migrations import run_additive_migrations
+    raw_for_modular_migrations = read_raw_config()
+    migrated_raw, modular_steps = run_additive_migrations(
+        current_ver,
+        raw_for_modular_migrations,
+        target_version=latest_ver,
+    )
+    if migrated_raw != raw_for_modular_migrations:
+        save_config(migrated_raw)
+    results["config_added"].extend(modular_steps)
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
@@ -4882,24 +4904,80 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+def _env_ref_var_name(ref: str) -> Optional[str]:
+    """Return the environment name read by one placeholder body.
 
-    Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    ``${VAR}`` and ``${env:VAR}`` are supported. Lower-case source prefixes
+    other than ``env:`` are intentionally not resolved: external secret
+    providers inject environment variables and config should reference those.
+    """
+    ref = ref.strip()
+    if ref.startswith("env:"):
+        name = ref[4:].strip()
+        return name or None
+    if ":" in ref and re.match(r"^[a-z][a-z0-9_-]*:", ref):
+        return None
+    return ref or None
+
+
+def _env_expand_match(match: re.Match) -> str:
+    raw = match.group(0)
+    body = match.group(1).strip()
+    name = _env_ref_var_name(body)
+    if name is None:
+        # Log syntax/source metadata only; never log a resolved secret value.
+        source = body.split(":", 1)[0] if ":" in body else body
+        logger.warning(
+            "Config ref %r uses unsupported source %r; keeping placeholder",
+            raw,
+            source,
+        )
+        return raw
+    value = os.environ.get(name)
+    return value if value is not None else raw
+
+
+def _expand_env_vars(obj: Any) -> Any:
+    """Recursively expand ``${VAR}`` / ``${env:VAR}`` config values.
+
+    Dict keys and non-string scalars are unchanged. Missing variables and
+    unsupported secret sources stay verbatim so callers can diagnose them.
+    Expansion is runtime-only; save paths preserve the raw templates.
     """
     if isinstance(obj, str):
-        return re.sub(
-            r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
-            obj,
-        )
+        return re.sub(r"\${([^}]+)}", _env_expand_match, obj)
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_expand_env_vars(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_expand_env_vars(item) for item in obj)
     return obj
+
+
+def _env_ref_snapshot(
+    obj: Any,
+    snapshot: Optional[Dict[str, Optional[str]]] = None,
+) -> Dict[str, Optional[str]]:
+    """Snapshot env values used by placeholders for cache invalidation.
+
+    Values live only in the private in-process cache and are never logged or
+    persisted. This prevents stale expansion after an in-process key rotation.
+    """
+    if snapshot is None:
+        snapshot = {}
+    if isinstance(obj, str):
+        for body in re.findall(r"\${([^}]+)}", obj):
+            name = _env_ref_var_name(body)
+            if name is not None:
+                snapshot[name] = os.environ.get(name)
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            _env_ref_snapshot(value, snapshot)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _env_ref_snapshot(item, snapshot)
+    return snapshot
 
 
 def _items_by_unique_name(items):
@@ -5165,10 +5243,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             cache_key = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_key is not None and cached[:2] == cache_key:
+        if (
+            cached is not None
+            and cache_key is not None
+            and cached[:2] == cache_key
+            and _env_ref_snapshot(read_raw_config()) == cached[3]
+        ):
             return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        user_config: Dict[str, Any] = {}
 
         if cache_key is not None:
             try:
@@ -5195,7 +5279,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object.
             cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            _LOAD_CONFIG_CACHE[path_key] = (
+                cache_key[0],
+                cache_key[1],
+                cached_copy,
+                _env_ref_snapshot(user_config),
+            )
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.
