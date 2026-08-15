@@ -52,6 +52,17 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_WORKERS = 8
 
 
+def _resolve_concurrent_tool_timeout() -> float | None:
+    """Resolve the optional whole-batch deadline without changing defaults."""
+    from agent.deadline import resolve_timeout
+
+    return resolve_timeout(
+        "tools.concurrent_batch",
+        default=None,
+        env_var="CLIO_CONCURRENT_TOOL_TIMEOUT_S",
+    )
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
@@ -378,7 +389,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
-    results = [None] * num_tools
+    results: list[Optional[tuple[Any, Any, Any, float, bool, bool]]] = [None] * num_tools
     for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True)
@@ -443,7 +454,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
                 duration = time.time() - start
                 logger.info("tool %s cancelled (%.2fs)", function_name, duration)
-                results[index] = (function_name, function_args, result, duration, True, False)
+                if results[index] is None:
+                    results[index] = (function_name, function_args, result, duration, True, False)
                 return
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
@@ -454,7 +466,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-            results[index] = (function_name, function_args, result, duration, is_error, False)
+            # A batch deadline may already have installed the canonical
+            # timeout result while this abandoned daemon worker unwound.
+            # Never let a late completion rewrite what the caller observed.
+            if results[index] is None:
+                results[index] = (function_name, function_args, result, duration, is_error, False)
         finally:
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
@@ -483,9 +499,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if block_result is None
         ]
         futures = []
+        future_indices: list[int] = []
         if runnable_calls:
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            timeout_s = _resolve_concurrent_tool_timeout()
+            deadline = time.monotonic() + timeout_s if timeout_s is not None else None
+            executor = DaemonThreadPoolExecutor(max_workers=max_workers)
+            abandoned = False
+            try:
                 for i, tc, name, args in runnable_calls:
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
@@ -494,26 +517,63 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         propagate_context_to_thread(_run_tool), i, tc, name, args
                     )
                     futures.append(f)
+                    future_indices.append(i)
 
-                # Wait for all to complete with periodic heartbeats so the
-                # gateway's inactivity monitor doesn't kill us during long
-                # concurrent tool batches. Also check for user interrupts
-                # so we don't block indefinitely when the user sends /stop
-                # or a new message during concurrent tool execution.
+                # Wait for all to complete with periodic heartbeats. A configured
+                # deadline abandons daemon workers rather than letting executor
+                # shutdown re-join a cancellation-shielded/wedged tool.
                 _conc_start = time.time()
                 _interrupt_logged = False
                 while True:
-                    done, not_done = concurrent.futures.wait(
-                        futures, timeout=5.0,
-                    )
+                    wait_s = 5.0
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            done = {future for future in futures if future.done()}
+                            not_done = set(futures) - done
+                            abandoned = bool(not_done)
+                        else:
+                            done, not_done = concurrent.futures.wait(
+                                futures, timeout=min(wait_s, remaining)
+                            )
+                    else:
+                        done, not_done = concurrent.futures.wait(
+                            futures, timeout=wait_s
+                        )
                     if not not_done:
                         break
 
-                    # Check for interrupt — the per-thread interrupt signal
-                    # already causes individual tools (terminal, execute_code)
-                    # to abort, but tools without interrupt checks (web_search,
-                    # read_file) will run to completion. Cancel any futures
-                    # that haven't started yet so we don't block on them.
+                    if deadline is not None and time.monotonic() >= deadline:
+                        abandoned = True
+                        for future in not_done:
+                            future.cancel()
+                        with agent._tool_worker_threads_lock:
+                            worker_ids = list(agent._tool_worker_threads)
+                        for worker_id in worker_ids:
+                            try:
+                                _ra()._set_interrupt(True, worker_id)
+                            except Exception:
+                                pass
+                        for future in not_done:
+                            index = future_indices[futures.index(future)]
+                            _, name, args, _, _ = parsed_calls[index]
+                            results[index] = (  # type: ignore[index]
+                                name,
+                                args,
+                                f"Error executing tool '{name}': timed out after {timeout_s:.1f}s",
+                                timeout_s,
+                                True,
+                                False,
+                            )
+                        logger.warning(
+                            "concurrent tool batch timed out after %.1fs (%d unfinished)",
+                            timeout_s,
+                            len(not_done),
+                        )
+                        break
+
+                    # Check for interrupt — cancel work that has not started and
+                    # give cooperative running tools a short chance to exit.
                     if agent._interrupt_requested:
                         if not _interrupt_logged:
                             _interrupt_logged = True
@@ -524,16 +584,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             )
                         for f in not_done:
                             f.cancel()
-                        # Give already-running tools a moment to notice the
-                        # per-thread interrupt signal and exit gracefully.
                         concurrent.futures.wait(not_done, timeout=3.0)
+                        abandoned = any(not future.done() for future in not_done)
                         break
 
                     _conc_elapsed = int(time.time() - _conc_start)
-                    # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
-                            parsed_calls[futures.index(f)][1]
+                            parsed_calls[future_indices[futures.index(f)]][1]
                             for f in not_done
                             if f in futures
                         ]
@@ -541,6 +599,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             f"concurrent tools running ({_conc_elapsed}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
+            finally:
+                executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
     finally:
         if spinner:
             # Build a summary message for the spinner stop
@@ -656,7 +716,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if _is_multimodal_tool_result(function_result):
                 # Append the hint to the text summary part so the model
                 # still sees it; don't touch the image blocks.
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                _append_subdir_hint_to_multimodal(
+                    function_result, subdir_hints  # type: ignore[arg-type]
+                )
             else:
                 function_result += subdir_hints
 
@@ -1199,7 +1261,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                _append_subdir_hint_to_multimodal(
+                    function_result, subdir_hints  # type: ignore[arg-type]
+                )
             else:
                 function_result += subdir_hints
 

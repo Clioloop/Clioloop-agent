@@ -804,6 +804,14 @@ def _ensure_clio_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    # Unified runtime deadlines. Zero means unbounded, preserving historical
+    # behavior until an operator opts a call site into a finite bound.
+    "timeouts": {
+        "tools": {
+            "concurrent_batch": 0,
+            "sequential_call": 0,
+        },
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["clio-cli"],
