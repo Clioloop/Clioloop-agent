@@ -6,6 +6,7 @@ const path = require('node:path')
 
 const {
   DESKTOP_IPC,
+  DESKTOP_PRODUCT_FEATURES,
   backendRouteKey,
   createCrashJournal,
   createLivenessTracker,
@@ -16,6 +17,7 @@ test('CommonJS bridge preserves legacy local keys and typed IPC names', () => {
   assert.equal(backendRouteKey('local', ' author '), 'author')
   assert.equal(backendRouteKey('remote one', 'author'), 'connection:remote%20one::profile:author')
   assert.equal(DESKTOP_IPC.reviewDiff, 'clio:git-review:diff')
+  assert.deepEqual(DESKTOP_PRODUCT_FEATURES.slice(-3), ['artifact-history', 'voice-wake', 'crash-handoff'])
 })
 
 test('CommonJS liveness and quit guard policies are conservative', () => {

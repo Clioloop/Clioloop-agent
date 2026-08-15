@@ -18,6 +18,11 @@ const DESKTOP_IPC = Object.freeze({
   reviewStage: 'clio:git-review:stage',
   reviewCommit: 'clio:git-review:commit'
 })
+const DESKTOP_PRODUCT_FEATURES = Object.freeze([
+  'windows', 'layout-tree', 'quick-entry', 'hud', 'floating-panes',
+  'project-review-rail', 'operations', 'composer-context', 'plugins',
+  'artifact-history', 'voice-wake', 'crash-handoff'
+])
 
 function profileRouteKey(profile) {
   return String(profile ?? '').trim() || 'default'
@@ -117,6 +122,7 @@ function createCrashJournal(filePath, io) {
 
 module.exports = {
   DESKTOP_IPC,
+  DESKTOP_PRODUCT_FEATURES,
   LOCAL_CONNECTION_ID,
   backendRouteKey,
   createCrashJournal,

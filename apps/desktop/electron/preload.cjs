@@ -1,9 +1,12 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
-const { DESKTOP_IPC } = require('./backend-foundations.cjs')
+const { DESKTOP_IPC, DESKTOP_PRODUCT_FEATURES } = require('./backend-foundations.cjs')
 
 contextBridge.exposeInMainWorld('clioDesktop', {
   // Inert capability discovery for typed projects/worktree/Git-review IPC.
   backendContracts: { version: 1, channels: DESKTOP_IPC },
+  // Renderer-safe feature seams; individual surfaces can adopt them without
+  // creating a second gateway or changing today's app shell.
+  productContracts: { version: 1, features: DESKTOP_PRODUCT_FEATURES },
   getConnection: profile => ipcRenderer.invoke('clio:connection', profile),
   touchBackend: profile => ipcRenderer.invoke('clio:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('clio:gateway:ws-url', profile),

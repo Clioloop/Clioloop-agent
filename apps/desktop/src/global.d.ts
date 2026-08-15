@@ -18,6 +18,15 @@ declare global {
           reviewCommit: 'clio:git-review:commit'
         }>
       }
+      /** Versioned renderer-state feature catalog; no side effects are exposed. */
+      productContracts: {
+        version: 1
+        features: readonly [
+          'windows', 'layout-tree', 'quick-entry', 'hud', 'floating-panes',
+          'project-review-rail', 'operations', 'composer-context', 'plugins',
+          'artifact-history', 'voice-wake', 'crash-handoff'
+        ]
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
