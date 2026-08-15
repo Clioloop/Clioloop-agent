@@ -9262,6 +9262,8 @@ class ClioCLI:
             if retry_msg and hasattr(self, '_pending_input'):
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
+        elif canonical == "prompt":
+            self._handle_prompt_compose_command(cmd_original)
         elif canonical == "undo":
             # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
             _undo_n = 1
@@ -9301,16 +9303,26 @@ class ClioCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "init":
+            self._handle_init_command(cmd_original)
+        elif canonical == "verify":
+            self._handle_verify_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "context":
+            self._show_context_breakdown(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
+        elif canonical == "diff":
+            self._handle_diff_command(cmd_original)
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical == "focus":
+            self._handle_focus_command(cmd_original)
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
@@ -9721,6 +9733,111 @@ class ClioCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _handle_prompt_compose_command(self, command: str) -> None:
+        """Compose the next prompt in $EDITOR and queue the saved markdown."""
+        import shlex
+        import subprocess
+        import tempfile
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "nano")
+        initial = command.split(None, 1)[1] if len(command.split(None, 1)) > 1 else ""
+        fd, path = tempfile.mkstemp(suffix=".md", prefix="clio_prompt_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("#! Save and quit to send; leave empty to cancel.\n\n" + initial)
+            subprocess.call([*shlex.split(editor), path])
+            with open(path, encoding="utf-8") as handle:
+                text = "\n".join(line for line in handle.read().splitlines() if not line.startswith("#!")).strip()
+        except Exception as exc:
+            _cprint(f"  Could not open editor: {exc}")
+            return
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        if text:
+            self._pending_agent_seed = text
+        else:
+            _cprint("  Empty prompt — nothing sent.")
+
+    def _handle_init_command(self, command: str) -> None:
+        from clio_cli.init_command import build_init_prompt_for_cwd
+        extra = command.split(None, 1)[1] if len(command.split(None, 1)) > 1 else ""
+        self._pending_input.put(build_init_prompt_for_cwd(extra=extra))
+        _cprint("  Generating or updating AGENTS.md from a project scan...")
+
+    def _show_context_breakdown(self, command: str = "") -> None:
+        if not self.agent:
+            _cprint("  No active agent — send a message first.")
+            return
+        from agent.context_breakdown import compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines
+        try:
+            payload = compute_session_context_breakdown(self.agent, self.conversation_history)
+            details = compute_context_details(self.agent) if command.rstrip().endswith(" all") else None
+            _cprint(f"\n  Context Usage — {payload.get('model') or self.model}\n")
+            for line in render_context_breakdown_lines(payload, details=details, grid=True):
+                _cprint(f"  {line}")
+        except Exception as exc:
+            _cprint(f"  Could not compute context breakdown: {exc}")
+
+    def _handle_diff_command(self, command: str) -> None:
+        """Render staged/unstaged git changes without invoking a shell."""
+        import shlex
+        import subprocess
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        args = shlex.split(command)[1:]
+        stat_only = "--stat" in args
+        staged_only = bool(args and args[0] == "staged")
+        paths = [arg for arg in args if arg not in {"staged", "all", "--stat"}]
+        variants = [("Staged", ["--cached"])] if staged_only else [("Staged", ["--cached"]), ("Unstaged", [])]
+        shown = False
+        try:
+            subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd, check=True, capture_output=True, timeout=5)
+            for label, flags in variants:
+                argv = ["git", "diff", *flags, *(["--stat"] if stat_only else []), *(["--", *paths] if paths else [])]
+                result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=30)
+                if result.stdout.strip():
+                    shown = True
+                    _cprint(f"\n  {label}:\n{result.stdout.rstrip()}")
+            if not shown:
+                _cprint("  No changes.")
+        except Exception as exc:
+            _cprint(f"  Git diff unavailable: {exc}")
+
+    def _handle_verify_command(self, command: str) -> None:
+        """Run detected build/test commands without installing dependencies."""
+        import shlex
+        import subprocess
+        from pathlib import Path
+        from agent.verify.recipes import detect_recipe
+        cwd = Path(os.getenv("TERMINAL_CWD", os.getcwd())).resolve()
+        recipe = detect_recipe(cwd)
+        if recipe is None:
+            _cprint("  No verification recipe detected.")
+            return
+        mode = command.split(maxsplit=1)[1].strip().lower() if " " in command else "all"
+        commands = recipe.build if mode == "build" else recipe.test if mode == "test" else recipe.verification_commands
+        for verify_command in commands:
+            _cprint(f"  $ {verify_command}")
+            result = subprocess.run(shlex.split(verify_command), cwd=cwd, text=True, timeout=300)
+            if result.returncode:
+                _cprint(f"  Verification failed (exit {result.returncode}).")
+                return
+        _cprint("  Verification passed." if commands else f"  No {mode} commands detected.")
+
+    def _handle_focus_command(self, command: str) -> None:
+        arg = command.split(maxsplit=1)[1].strip().lower() if " " in command else ""
+        current = bool(getattr(self, "_focus_view_enabled", False))
+        enabled = current if arg == "status" else (arg == "on" or (not current and arg != "off"))
+        self._focus_view_enabled = enabled
+        if enabled:
+            self._focus_previous_tool_progress = getattr(self, "tool_progress_mode", "new")
+            self.tool_progress_mode = "off"
+        elif hasattr(self, "_focus_previous_tool_progress"):
+            self.tool_progress_mode = self._focus_previous_tool_progress
+            del self._focus_previous_tool_progress
+        _cprint(f"  Focus view {'on' if enabled else 'off'}.")
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:

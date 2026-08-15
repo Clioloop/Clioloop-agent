@@ -7943,6 +7943,9 @@ class GatewayRunner:
                 return ("Agent is running — wait or /stop first, then "
                         "change runtime.")
 
+            if _cmd_def_inner and _cmd_def_inner.name == "pause":
+                return await self._handle_pause_command(event)
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
@@ -8364,6 +8367,9 @@ class GatewayRunner:
 
         if canonical == "bundles":
             return await self._handle_bundles_command(event)
+
+        if canonical == "pause":
+            return await self._handle_pause_command(event)
 
         if canonical == "approve":
             return await self._handle_approve_command(event)
@@ -15049,6 +15055,20 @@ class GatewayRunner:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
 
+
+    async def _handle_pause_command(self, event: MessageEvent):
+        """Engage or lift the profile-scoped emergency stop."""
+        from agent import estop
+        args = (event.get_command_args() or "").strip()
+        if args.lower() in {"off", "resume", "stop", "disengage"}:
+            return "▶️ Resumed — new work is accepted again." if estop.disengage() else "Clio wasn't paused."
+        state = estop.get_state()
+        if state is not None and not args:
+            reason = state.get("reason")
+            return f"⏸️ Clio is already paused{f' (reason: {reason})' if reason else ''}. Use `/pause off` to resume."
+        estop.engage(reason=args or None)
+        suffix = f" (reason: {args})" if args else ""
+        return f"⏸️ Paused{suffix}. New work is on hold; in-flight work finishes normally. Use `/pause off` to resume."
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
