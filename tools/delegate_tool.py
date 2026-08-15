@@ -22,14 +22,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import threading
 import time
+import weakref
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
 
+from clio_constants import get_clio_home
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -178,6 +181,7 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
+    record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
@@ -221,6 +225,100 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
         ]
+
+
+def steer_subagent(subagent_id: str, message: str) -> bool:
+    """Queue a course correction into a running child without interrupting it."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        agent = record.get("agent") if record else None
+        accepting = bool(record and record.get("accepting_steer", True))
+    if not accepting or agent is None or not message.strip():
+        return False
+    steer = getattr(agent, "steer", None)
+    try:
+        return bool(steer(message.strip())) if callable(steer) else False
+    except Exception:
+        logger.debug("steer_subagent(%s) failed", subagent_id, exc_info=True)
+        return False
+
+
+def _is_descendant_of(child: Any, parent: Any, max_hops: int = 32) -> bool:
+    current = child
+    for _ in range(max_hops):
+        ref = getattr(current, "_delegate_parent_ref", None)
+        current = ref() if callable(ref) else None
+        if current is None:
+            return False
+        if current is parent:
+            return True
+    return False
+
+
+_CONTROL_ACTIONS = frozenset({"list", "status", "steer", "stop"})
+
+
+def _handle_control_action(
+    action: str,
+    subagent_id: Optional[str],
+    message: Optional[str],
+    parent_agent: Any,
+) -> str:
+    """Ownership-scoped control plane for live and durable children."""
+    if action == "list":
+        now = time.time()
+        with _active_subagents_lock:
+            records = list(_active_subagents.values())
+        children = []
+        for record in records:
+            agent = record.get("agent")
+            if not _is_descendant_of(agent, parent_agent):
+                continue
+            started = record.get("started_at")
+            children.append({
+                "subagent_id": record.get("subagent_id"),
+                "parent_id": record.get("parent_id"),
+                "goal": record.get("goal"),
+                "model": record.get("model"),
+                "status": record.get("status", "running"),
+                "running_seconds": round(now - started, 1) if isinstance(started, (int, float)) else None,
+                "accepting_steer": bool(record.get("accepting_steer", True)),
+                "transcript_path": getattr(agent, "_delegate_transcript_path", None),
+                "worktree_path": getattr(agent, "_delegate_worktree_path", None),
+            })
+        return json.dumps({"action": "list", "count": len(children), "subagents": children}, ensure_ascii=False)
+
+    sid = str(subagent_id or "").strip()
+    if not sid:
+        return tool_error(f"action='{action}' requires subagent_id.")
+    with _active_subagents_lock:
+        record = _active_subagents.get(sid)
+        agent = record.get("agent") if record else None
+    owned = bool(record and _is_descendant_of(agent, parent_agent))
+    if action == "status" and not owned:
+        try:
+            from tools.async_delegation import status as durable_status
+            found = durable_status(sid, db=getattr(parent_agent, "_session_db", None))
+        except Exception:
+            found = None
+        return json.dumps(found or {"error": f"No delegation or live subagent '{sid}'."}, ensure_ascii=False, default=str)
+    if not owned:
+        return tool_error(f"No live subagent '{sid}' in this conversation's spawn tree.")
+    if action == "status":
+        return json.dumps({
+            "action": "status", "subagent_id": sid,
+            "status": record.get("status", "running"), "goal": record.get("goal"),
+            "transcript_path": getattr(agent, "_delegate_transcript_path", None),
+        }, ensure_ascii=False)
+    if action == "steer":
+        if not str(message or "").strip():
+            return tool_error("action='steer' requires a non-empty message.")
+        if steer_subagent(sid, str(message)):
+            return json.dumps({"action": "steer", "subagent_id": sid, "status": "queued"})
+        return tool_error(f"Subagent '{sid}' is no longer accepting steering.")
+    if interrupt_subagent(sid):
+        return json.dumps({"action": "stop", "subagent_id": sid, "status": "interrupt_requested"})
+    return tool_error(f"Could not interrupt '{sid}'.")
 
 
 def _extract_output_tail(
@@ -672,6 +770,38 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _create_isolated_worktree(workspace: Optional[str], subagent_id: str) -> Optional[str]:
+    """Create an opt-in detached git worktree for a child, best effort."""
+    if not workspace or not is_truthy_value(_load_config().get("worktree_isolation")):
+        return None
+    try:
+        root = subprocess.run(
+            ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        target = get_clio_home() / "cache" / "delegation" / "worktrees" / subagent_id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", root, "worktree", "add", "--detach", str(target), "HEAD"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        return str(target)
+    except Exception:
+        logger.warning("Could not create isolated worktree for %s; using shared workspace", subagent_id)
+        return None
+
+
+def _create_transcript_path(subagent_id: str, goal: str) -> Optional[str]:
+    try:
+        root = get_clio_home() / "cache" / "delegation" / "live"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{subagent_id}.jsonl"
+        path.write_text(json.dumps({"event": "dispatched", "at": time.time(), "goal": goal}, ensure_ascii=False) + "\n", encoding="utf-8")
+        return str(path)
+    except Exception:
+        return None
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
@@ -891,6 +1021,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    output_schema: Optional[Dict[str, Any]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -971,6 +1102,12 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    worktree_path = _create_isolated_worktree(workspace_hint, subagent_id)
+    if worktree_path:
+        workspace_hint = worktree_path
+    if output_schema is not None:
+        from tools.delegation_output_schema import append_output_contract
+        context = append_output_contract(context, output_schema)
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1150,6 +1287,14 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    child._delegate_parent_ref = weakref.ref(parent_agent)
+    child._delegate_output_schema = output_schema
+    child._delegate_worktree_path = worktree_path
+    child._delegate_transcript_path = _create_transcript_path(subagent_id, goal)
+    if worktree_path:
+        # Terminal/file tools consult these conventional cwd hints.
+        child.terminal_cwd = worktree_path
+        child.cwd = worktree_path
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1627,6 +1772,35 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
+        # Optional structured output: validate and permit exactly one correction
+        # turn.  Schema-less calls never enter this branch (wire compatible).
+        _schema_valid = None
+        _schema_errors: List[str] = []
+        _schema_retries = 0
+        _structured_output = None
+        _output_schema = getattr(child, "_delegate_output_schema", None)
+        if isinstance(_output_schema, dict):
+            from tools.delegation_output_schema import build_retry_message, validate_output
+            _schema_valid, _schema_errors, _structured_output = validate_output(
+                result.get("final_response") or "", _output_schema
+            )
+            if not _schema_valid and not result.get("interrupted", False):
+                _schema_retries = 1
+                try:
+                    retry = child.run_conversation(
+                        user_message=build_retry_message(_schema_errors),
+                        task_id=child_task_id,
+                    )
+                    retry_text = retry.get("final_response") or ""
+                    if retry_text:
+                        result["final_response"] = retry_text
+                    result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(retry.get("api_calls", 0) or 0)
+                    _schema_valid, _schema_errors, _structured_output = validate_output(
+                        retry_text, _output_schema
+                    )
+                except Exception as exc:
+                    _schema_errors.append(f"Correction retry failed: {exc}")
+
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
             try:
@@ -1715,6 +1889,11 @@ def _run_single_child(
                 "output": (
                     _output_tokens if isinstance(_output_tokens, (int, float)) else 0
                 ),
+                "reasoning": (
+                    getattr(child, "session_reasoning_tokens", 0)
+                    if isinstance(getattr(child, "session_reasoning_tokens", 0), (int, float))
+                    else 0
+                ),
             },
             "tool_trace": tool_trace,
             # Captured before the finally block calls child.close() so the
@@ -1735,6 +1914,27 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        # Durable observability fields are public; _child_cost_usd remains for
+        # the existing parent roll-up and is stripped before serialization.
+        entry["cost_usd"] = entry["_child_cost_usd"]
+        transcript_path = getattr(child, "_delegate_transcript_path", None)
+        worktree_path = getattr(child, "_delegate_worktree_path", None)
+        if isinstance(transcript_path, str) and transcript_path:
+            entry["transcript_path"] = transcript_path
+            try:
+                with open(transcript_path, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"event": "completed", "at": time.time(), "status": status, "summary": summary}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        if isinstance(worktree_path, str) and worktree_path:
+            entry["worktree_path"] = worktree_path
+        if _schema_valid is not None:
+            entry["schema_valid"] = bool(_schema_valid)
+            entry["schema_retries"] = _schema_retries
+            if _structured_output is not None:
+                entry["structured_output"] = _structured_output
+            if _schema_errors:
+                entry["schema_errors"] = _schema_errors
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -1943,6 +2143,11 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    background: Optional[bool] = None,
+    action: Optional[str] = None,
+    subagent_id: Optional[str] = None,
+    message: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1961,6 +2166,15 @@ def delegate_task(
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    normalized_action = str(action or "spawn").strip().lower()
+    if normalized_action in _CONTROL_ACTIONS:
+        return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+    if normalized_action != "spawn":
+        return tool_error(
+            f"Unknown action '{action}'. Use spawn, list, status, steer, or stop."
+        )
+    background = is_truthy_value(background, default=False) if background is not None else False
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -2037,7 +2251,10 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal, "context": context, "toolsets": toolsets,
+                "role": top_role, "output_schema": output_schema,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2045,7 +2262,9 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
+    # Validate each task has a goal and normalize optional JSON Schema contracts.
+    from tools.delegation_output_schema import coerce_output_schema
+    normalized_tasks: List[Dict[str, Any]] = []
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return tool_error(
@@ -2053,6 +2272,39 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        schema, schema_error = coerce_output_schema(task.get("output_schema"))
+        if schema_error:
+            return tool_error(f"Task {i} output_schema invalid: {schema_error}")
+        normalized = dict(task)
+        if schema is not None:
+            normalized["output_schema"] = schema
+        normalized_tasks.append(normalized)
+    task_list = normalized_tasks
+
+    if background:
+        # Reuse the complete synchronous Clio/ACP path on a detached daemon
+        # worker. This keeps every historical toolset/acp/role/depth behavior
+        # in one implementation while making top-level execution non-blocking.
+        from tools.async_delegation import dispatch
+
+        def _background_runner():
+            return delegate_task(
+                tasks=task_list,
+                toolsets=toolsets,
+                max_iterations=max_iterations,
+                acp_command=acp_command,
+                acp_args=acp_args,
+                role=role,
+                background=False,
+                parent_agent=parent_agent,
+            )
+
+        return json.dumps(dispatch(
+            tasks=task_list,
+            runner=_background_runner,
+            parent_agent=parent_agent,
+            max_workers=max_children,
+        ), ensure_ascii=False)
 
     overall_start = time.monotonic()
     results = []
@@ -2100,6 +2352,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                output_schema=t.get("output_schema"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2764,6 +3017,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional JSON Schema for this child's final answer; validation permits one correction retry.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2799,6 +3056,27 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": "Run durably in the background and deliver the completion as a new turn. Default false preserves synchronous behavior.",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["spawn", "list", "status", "steer", "stop"],
+                "description": "Spawn (default) or list/query/steer/stop this conversation's subagents.",
+            },
+            "subagent_id": {
+                "type": "string",
+                "description": "Live subagent id, or durable delegation id for action='status'.",
+            },
+            "message": {
+                "type": "string",
+                "description": "Course correction used by action='steer'.",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "Optional JSON Schema for the single-goal child's final answer.",
+            },
         },
         "required": [],
     },
@@ -2821,6 +3099,11 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        background=args.get("background"),
+        action=args.get("action"),
+        subagent_id=args.get("subagent_id"),
+        message=args.get("message"),
+        output_schema=args.get("output_schema"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

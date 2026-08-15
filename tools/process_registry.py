@@ -1518,6 +1518,25 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        delegation_id = evt.get("delegation_id", "unknown")
+        status = evt.get("status", "completed")
+        results = evt.get("results") or []
+        lines = [
+            f"[IMPORTANT: Durable delegation {delegation_id} finished with status={status}.",
+            "Treat this as a fresh completion turn; verify side effects before reporting them.",
+        ]
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            label = int(result.get("task_index", 0) or 0) + 1
+            summary = result.get("summary") or result.get("error") or "(no summary)"
+            lines.append(f"Task {label} ({result.get('status', '?')}): {summary}")
+        if evt.get("transcript_paths"):
+            lines.append("Transcripts: " + ", ".join(evt["transcript_paths"]))
+        lines.append("]")
+        return "\n".join(lines)
+
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (

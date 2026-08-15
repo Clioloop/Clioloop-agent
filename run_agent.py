@@ -4844,6 +4844,11 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            background=function_args.get("background"),
+            action=function_args.get("action"),
+            subagent_id=function_args.get("subagent_id"),
+            message=function_args.get("message"),
+            output_schema=function_args.get("output_schema"),
             parent_agent=self,
         )
 

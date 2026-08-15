@@ -279,6 +279,15 @@ def _result_text(tool_name: str, result: Any, function_args: dict[str, Any] | No
         rows = data["processes"]
         return f"Processes: {len(rows)}\n" + "\n".join(f"`{p.get('session_id')}` {p.get('status')} {p.get('pid')} {p.get('command')}" for p in rows if isinstance(p, dict))
     if tool_name == "delegate_task" and isinstance(data, dict):
+        if data.get("status") == "dispatched":
+            paths = ", ".join(str(p) for p in data.get("transcript_paths") or [])
+            return (
+                f"Delegation dispatched: `{data.get('delegation_id')}` "
+                f"({data.get('count', 1)} task(s), background)"
+                + (f"\nTranscripts: {paths}" if paths else "")
+            )
+        if data.get("action") in {"list", "status", "steer", "stop"}:
+            return _format_generic_dict("delegate_task", data)
         results = data.get("results") or []
         lines = [f"Delegation results: {len(results)} task"]
         for r in results:
