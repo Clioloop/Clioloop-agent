@@ -34,11 +34,13 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -132,49 +134,57 @@ _install_plugin_debug_handler()
 # Constants
 # ---------------------------------------------------------------------------
 
+# Hermes-compatible lifecycle/stream taxonomy.  Hook names are portable;
+# payloads are versioned below and may grow additive optional fields.
 VALID_HOOKS: Set[str] = {
-    "pre_tool_call",
-    "post_tool_call",
-    "transform_terminal_output",
-    "transform_tool_result",
-    # Transform LLM output before it's returned to the user.
-    # Plugins return a string to replace the response text, or None/empty to leave unchanged.
-    # First non-None string wins. Useful for vocabulary/personality transformation.
-    "transform_llm_output",
-    "pre_llm_call",
-    "post_llm_call",
-    "pre_api_request",
-    "post_api_request",
-    "api_request_error",
-    "on_session_start",
-    "on_session_end",
-    "on_session_finalize",
-    "on_session_reset",
-    "subagent_start",
-    "subagent_stop",
-    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
-    # after the internal-event guard but BEFORE auth/pairing and agent
-    # dispatch. Plugins may return a dict to influence flow:
-    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
-    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
-    #   {"action": "allow"}  /  None             -> normal dispatch
-    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
-    "pre_gateway_dispatch",
-    # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
-    # command needs user approval -- fires BOTH for CLI-interactive prompts
-    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
-    # Observers only: return values are ignored. Plugins cannot veto or
-    # pre-answer an approval from these hooks (use pre_tool_call to block
-    # a tool before it reaches approval).
-    #
-    # Kwargs for pre_approval_request:
-    #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
-    #   session_key: str, surface: "cli" | "gateway"
-    # Kwargs for post_approval_response: same as above plus
-    #   choice: "once" | "session" | "always" | "deny" | "timeout"
-    "pre_approval_request",
-    "post_approval_response",
+    "pre_tool_call", "post_tool_call", "transform_terminal_output",
+    "transform_tool_result", "transform_llm_output", "pre_llm_call",
+    "post_llm_call", "on_stream_start", "on_stream_delta", "on_stream_end",
+    "on_interim_message", "pre_verify", "pre_api_request", "post_api_request",
+    "api_request_error", "transform_api_error_classification",
+    "on_session_start", "on_session_end", "on_session_finalize",
+    "on_session_reset", "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    "pre_gateway_dispatch", "pre_approval_request", "post_approval_response",
+    "pre_transcription", "kanban_task_claimed", "kanban_task_completed",
+    "kanban_task_blocked", "on_kanban_worker_spawned", "on_kanban_worker_exited",
+    "on_kanban_worker_stale_claim", "on_kanban_task_updated",
+    "on_kanban_dispatch_tick", "gateway_platform_event", "pre_command",
 }
+
+HOOK_PAYLOAD_CONTRACTS: Dict[str, tuple[str, ...]] = {
+    "pre_tool_call": ("tool_name", "args"), "post_tool_call": ("tool_name", "args", "result"),
+    "transform_terminal_output": ("output",), "transform_tool_result": ("tool_name", "result"),
+    "transform_llm_output": ("text",), "pre_llm_call": ("messages",), "post_llm_call": ("response",),
+    "on_stream_start": ("stream_id", "model"), "on_stream_delta": ("stream_id", "delta"),
+    "on_stream_end": ("stream_id",), "on_interim_message": ("message",), "pre_verify": ("session_id",),
+    "pre_api_request": ("provider", "model"), "post_api_request": ("provider", "model"),
+    "api_request_error": ("provider", "error"), "transform_api_error_classification": ("provider", "error"),
+    "on_session_start": ("session_id",), "on_session_end": ("session_id",),
+    "on_session_finalize": ("session_id",), "on_session_reset": ("session_id",),
+    "on_skill_lifecycle": ("skill_name", "action"), "subagent_start": ("task_id",),
+    "subagent_stop": ("task_id",), "pre_gateway_dispatch": ("event", "gateway", "session_store"),
+    "pre_approval_request": ("command", "surface"), "post_approval_response": ("command", "surface", "choice"),
+    "pre_transcription": ("file_path", "provider", "model", "language", "prompt", "source"),
+    "kanban_task_claimed": ("task_id", "profile_name"), "kanban_task_completed": ("task_id", "profile_name"),
+    "kanban_task_blocked": ("task_id", "profile_name"),
+    "on_kanban_worker_spawned": ("task_id", "profile_name", "workspace_path"),
+    "on_kanban_worker_exited": ("task_id", "profile_name", "exit_kind", "outcome"),
+    "on_kanban_worker_stale_claim": ("task_id", "profile_name", "heartbeat_stale"),
+    "on_kanban_task_updated": ("task_id", "profile_name", "changed_fields"),
+    "on_kanban_dispatch_tick": ("profile_name", "dry_run", "outcome", "result"),
+    "gateway_platform_event": ("platform", "event_type", "payload"),
+    "pre_command": ("surface", "command", "alias_used", "args_raw"),
+}
+
+
+def fire_plugin_hook(hook_name: str, /, **payload: Any) -> List[Any]:
+    """Validate a portable payload contract and dispatch the hook."""
+    if hook_name not in VALID_HOOKS:
+        raise ValueError(f"unknown plugin hook: {hook_name}")
+    missing = [key for key in HOOK_PAYLOAD_CONTRACTS.get(hook_name, ()) if key not in payload]
+    if missing:
+        raise TypeError(f"{hook_name} payload missing required field(s): {', '.join(missing)}")
+    return invoke_hook(hook_name, **payload)
 
 ENTRY_POINTS_GROUP = "clio_agent.plugins"
 
@@ -238,6 +248,15 @@ def _get_enabled_plugins() -> Optional[set]:
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 SUPPORTED_MANIFEST_VERSION = 2
+
+
+def portable_skill_namespace(key: str) -> str:
+    """Stable collision-resistant namespace used by portable skills/data."""
+    slug = "".join(
+        ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-"
+        for ch in key.lower()
+    ).strip("-_") or "plugin"
+    return f"agent-plugin-{slug}-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _string_list(value: Any) -> List[str]:
@@ -324,6 +343,13 @@ class PluginManifest:
     capabilities: List[str] = field(default_factory=list)
     emits: List[str] = field(default_factory=list)
     listens: List[str] = field(default_factory=list)
+    # Portable Agent Plugins/package provenance (additive; v1 native inert).
+    portable: bool = False
+    skill_namespace: str = ""
+    package: Dict[str, Any] = field(default_factory=dict)
+    exact_ref: str = ""
+    dependencies: Dict[str, str] = field(default_factory=dict)
+    entry_points: Dict[str, str] = field(default_factory=dict)
 
     @property
     def trust(self) -> str:
@@ -360,6 +386,15 @@ class PluginContext:
         self.state = NamespacedState(manager._state_root, self._owner)
         self.config = NamespacedConfig(self._owner)
 
+    @property
+    def data_dir(self) -> Path:
+        """Profile-scoped durable storage shared with portable PLUGIN_DATA."""
+        path = self._manager._data_root / (
+            self.manifest.skill_namespace or portable_skill_namespace(self._owner)
+        )
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def has_capability(self, capability: str) -> bool:
         if self.manifest.source == "bundled":
             return True
@@ -370,6 +405,12 @@ class PluginContext:
 
     def _own(self, kind: str, key: str, disposer: Callable[[], None]) -> RegistrationHandle:
         return self._manager._ownership.own(self._owner, kind, key, disposer)
+
+    @staticmethod
+    def _restore_provider(unregister, register, name: str, provider, previous) -> None:
+        """Remove an owned provider and restore the entry it replaced, if any."""
+        if unregister(name, provider) and previous is not None:
+            register(previous)
 
     def on_unload(self, callback: Callable[[], None]) -> RegistrationHandle:
         if not callable(callback):
@@ -502,31 +543,24 @@ class PluginContext:
 
     # -- message injection --------------------------------------------------
 
-    def inject_message(self, content: str, role: str = "user") -> bool:
-        """Inject a message into the active conversation.
-
-        If the agent is idle (waiting for user input), this starts a new turn.
-        If the agent is running, this interrupts and injects the message.
-
-        This enables plugins (e.g. remote control viewers, messaging bridges)
-        to send messages into the conversation from external sources.
-
-        Returns True if the message was queued successfully.
-        """
+    def inject_message(
+        self, content: str, role: str = "user", *, session_key: str | None = None
+    ) -> bool:
+        """Inject into CLI or an explicitly bound live gateway session."""
         cli = self._manager._cli_ref
-        if cli is None:
-            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
-            return False
-
         msg = content if role == "user" else f"[{role}] {content}"
-
-        if getattr(cli, "_agent_running", False):
-            # Agent is mid-turn — interrupt with the message
-            cli._interrupt_queue.put(msg)
-        else:
-            # Agent is idle — queue as next input
-            cli._pending_input.put(msg)
-        return True
+        if cli is not None:
+            if getattr(cli, "_agent_running", False):
+                cli._interrupt_queue.put(msg)
+            else:
+                cli._pending_input.put(msg)
+            return True
+        if not session_key:
+            logger.warning("inject_message: gateway mode requires session_key")
+            return False
+        return self._manager.inject_gateway_message(
+            session_key=session_key, content=msg, plugin_id=self._owner
+        )
 
     # -- CLI command registration --------------------------------------------
 
@@ -543,7 +577,8 @@ class PluginContext:
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
-        self._manager._cli_commands[name] = {
+        previous = self._manager._cli_commands.get(name)
+        entry = {
             "name": name,
             "help": help,
             "description": description,
@@ -551,7 +586,16 @@ class PluginContext:
             "handler_fn": handler_fn,
             "plugin": self.manifest.name,
         }
+        self._manager._cli_commands[name] = entry
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
+        def dispose() -> None:
+            if self._manager._cli_commands.get(name) is entry:
+                if previous is None:
+                    self._manager._cli_commands.pop(name, None)
+                else:
+                    self._manager._cli_commands[name] = previous
+        return self._own("cli_command", name, dispose)
 
     # -- slash command registration -------------------------------------------
 
@@ -601,13 +645,23 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
-        self._manager._plugin_commands[clean] = {
+        previous = self._manager._plugin_commands.get(clean)
+        entry = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
         }
+        self._manager._plugin_commands[clean] = entry
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+
+        def dispose() -> None:
+            if self._manager._plugin_commands.get(clean) is entry:
+                if previous is None:
+                    self._manager._plugin_commands.pop(clean, None)
+                else:
+                    self._manager._plugin_commands[clean] = previous
+        return self._own("slash_command", clean, dispose)
 
     # -- tool dispatch -------------------------------------------------------
 
@@ -671,6 +725,47 @@ class PluginContext:
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
         )
+        return self._own(
+            "context_engine", engine.name,
+            lambda: setattr(self._manager, "_context_engine", None)
+            if self._manager._context_engine is engine else None,
+        )
+
+    def register_context_reference(self, provider) -> Optional[RegistrationHandle]:
+        """Register an unload-safe custom ``@prefix:`` provider."""
+        from agent.context_references import (
+            register_context_reference_provider, unregister_context_reference_provider,
+        )
+        try:
+            register_context_reference_provider(provider)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Plugin '%s' context reference rejected: %s", self.manifest.name, exc)
+            return None
+        return self._own(
+            "context_reference", provider.prefix,
+            lambda: unregister_context_reference_provider(provider.prefix, provider),
+        )
+
+    def register_system_prompt_section(
+        self, id: str, content: Union[str, Callable[[Mapping[str, Any]], str]], *,
+        position: str = "after_memory", max_chars: int = 4000,
+    ) -> RegistrationHandle:
+        """Register bounded plugin context for new-session system prompts."""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", id):
+            raise ValueError("invalid system prompt section id")
+        if position != "after_memory" or isinstance(max_chars, bool) or not 0 < max_chars <= 4000:
+            raise ValueError("invalid system prompt section position or max_chars")
+        if not isinstance(content, str) and not callable(content):
+            raise TypeError("content must be a string or callable")
+        if id in self._manager._system_prompt_sections:
+            raise ValueError(f"system prompt section {id!r} already registered")
+        section = {"id": id, "content": content, "position": position,
+                   "max_chars": max_chars, "plugin": self._owner}
+        self._manager._system_prompt_sections[id] = section
+        return self._own(
+            "system_prompt_section", id,
+            lambda: self._manager._system_prompt_sections.pop(id, None),
+        )
 
     # -- image gen provider registration ------------------------------------
 
@@ -684,7 +779,7 @@ class PluginContext:
         tool calls.
         """
         from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import register_provider
+        from agent.image_gen_registry import get_provider, register_provider, unregister_provider
 
         if not isinstance(provider, ImageGenProvider):
             logger.warning(
@@ -693,11 +788,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = get_provider(provider.name)
         register_provider(provider)
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("image_gen_provider", provider.name, lambda: self._restore_provider(
+            unregister_provider, register_provider, provider.name, provider, previous))
 
     # -- cron provider registration -----------------------------------------
 
@@ -779,7 +877,11 @@ class PluginContext:
         tool calls.
         """
         from agent.video_gen_provider import VideoGenProvider
-        from agent.video_gen_registry import register_provider as _register_video_provider
+        from agent.video_gen_registry import (
+            get_provider as _get_video_provider,
+            register_provider as _register_video_provider,
+            unregister_provider as _unregister_video_provider,
+        )
 
         if not isinstance(provider, VideoGenProvider):
             logger.warning(
@@ -788,11 +890,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_video_provider(provider.name)
         _register_video_provider(provider)
         logger.info(
             "Plugin '%s' registered video_gen provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("video_gen_provider", provider.name, lambda: self._restore_provider(
+            _unregister_video_provider, _register_video_provider, provider.name, provider, previous))
 
     # -- music gen provider registration -------------------------------------
 
@@ -806,7 +911,11 @@ class PluginContext:
         tool calls.
         """
         from agent.music_gen_provider import MusicGenProvider
-        from agent.music_gen_registry import register_provider as _register_music_provider
+        from agent.music_gen_registry import (
+            get_provider as _get_music_provider,
+            register_provider as _register_music_provider,
+            unregister_provider as _unregister_music_provider,
+        )
 
         if not isinstance(provider, MusicGenProvider):
             logger.warning(
@@ -815,11 +924,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_music_provider(provider.name)
         _register_music_provider(provider)
         logger.info(
             "Plugin '%s' registered music_gen provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("music_gen_provider", provider.name, lambda: self._restore_provider(
+            _unregister_music_provider, _register_music_provider, provider.name, provider, previous))
 
     # -- web search/extract provider registration ----------------------------
 
@@ -834,7 +946,11 @@ class PluginContext:
         tool calls.
         """
         from agent.web_search_provider import WebSearchProvider
-        from agent.web_search_registry import register_provider as _register_web_provider
+        from agent.web_search_registry import (
+            get_provider as _get_web_provider,
+            register_provider as _register_web_provider,
+            unregister_provider as _unregister_web_provider,
+        )
 
         if not isinstance(provider, WebSearchProvider):
             logger.warning(
@@ -843,11 +959,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_web_provider(provider.name)
         _register_web_provider(provider)
         logger.info(
             "Plugin '%s' registered web provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("web_provider", provider.name, lambda: self._restore_provider(
+            _unregister_web_provider, _register_web_provider, provider.name, provider, previous))
 
     # -- browser provider registration ---------------------------------------
 
@@ -866,7 +985,11 @@ class PluginContext:
         consults the registry built up by these calls.
         """
         from agent.browser_provider import BrowserProvider
-        from agent.browser_registry import register_provider as _register_browser_provider
+        from agent.browser_registry import (
+            get_provider as _get_browser_provider,
+            register_provider as _register_browser_provider,
+            unregister_provider as _unregister_browser_provider,
+        )
 
         if not isinstance(provider, BrowserProvider):
             logger.warning(
@@ -875,11 +998,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_browser_provider(provider.name)
         _register_browser_provider(provider)
         logger.info(
             "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("browser_provider", provider.name, lambda: self._restore_provider(
+            _unregister_browser_provider, _register_browser_provider, provider.name, provider, previous))
 
     # -- TTS provider registration -------------------------------------------
 
@@ -904,7 +1030,11 @@ class PluginContext:
         replacing it — see issue #30398 for the full design rationale.
         """
         from agent.tts_provider import TTSProvider
-        from agent.tts_registry import register_provider as _register_tts_provider
+        from agent.tts_registry import (
+            get_provider as _get_tts_provider,
+            register_provider as _register_tts_provider,
+            unregister_provider as _unregister_tts_provider,
+        )
 
         if not isinstance(provider, TTSProvider):
             logger.warning(
@@ -913,11 +1043,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_tts_provider(provider.name)
         _register_tts_provider(provider)
         logger.info(
             "Plugin '%s' registered TTS provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("tts_provider", provider.name, lambda: self._restore_provider(
+            _unregister_tts_provider, _register_tts_provider, provider.name, provider, previous))
 
     # -- transcription (STT) provider registration ---------------------------
 
@@ -948,7 +1081,11 @@ class PluginContext:
         backends).
         """
         from agent.transcription_provider import TranscriptionProvider
-        from agent.transcription_registry import register_provider as _register_stt_provider
+        from agent.transcription_registry import (
+            get_provider as _get_stt_provider,
+            register_provider as _register_stt_provider,
+            unregister_provider as _unregister_stt_provider,
+        )
 
         if not isinstance(provider, TranscriptionProvider):
             logger.warning(
@@ -957,11 +1094,14 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        previous = _get_stt_provider(provider.name)
         _register_stt_provider(provider)
         logger.info(
             "Plugin '%s' registered transcription provider: %s",
             self.manifest.name, provider.name,
         )
+        return self._own("transcription_provider", provider.name, lambda: self._restore_provider(
+            _unregister_stt_provider, _register_stt_provider, provider.name, provider, previous))
 
     # -- platform adapter registration ---------------------------------------
 
@@ -1199,17 +1339,28 @@ class PluginContext:
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
-        qualified = f"{self.manifest.name}:{name}"
-        self._manager._plugin_skills[qualified] = {
+        namespace = self.manifest.skill_namespace or self.manifest.name
+        qualified = f"{namespace}:{name}"
+        previous = self._manager._plugin_skills.get(qualified)
+        entry = {
             "path": path,
             "plugin": self.manifest.name,
             "bare_name": name,
             "description": description,
         }
+        self._manager._plugin_skills[qualified] = entry
         logger.debug(
             "Plugin %s registered skill: %s",
             self.manifest.name, qualified,
         )
+
+        def dispose() -> None:
+            if self._manager._plugin_skills.get(qualified) is entry:
+                if previous is None:
+                    self._manager._plugin_skills.pop(qualified, None)
+                else:
+                    self._manager._plugin_skills[qualified] = previous
+        return self._own("skill", qualified, dispose)
 
 
 # ---------------------------------------------------------------------------
@@ -1226,9 +1377,11 @@ class PluginManager:
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._system_prompt_sections: Dict[str, Dict[str, Any]] = {}
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        self._gateway_message_injector: tuple[object, Callable[..., bool]] | None = None
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,
@@ -1237,6 +1390,7 @@ class PluginManager:
         self._ownership = OwnershipLedger()
         self._events = EventBus()
         self._state_root = get_clio_home() / "plugin-state"
+        self._data_root = get_clio_home() / "plugin-data"
 
     # -----------------------------------------------------------------------
     # Public
@@ -1249,6 +1403,22 @@ class PluginManager:
         if loaded and loaded.module:
             sys.modules.pop(loaded.module.__name__, None)
         return loaded is not None or count > 0
+
+    @property
+    def has_gateway_message_injector(self) -> bool:
+        return self._gateway_message_injector is not None
+
+    def set_gateway_message_injector(self, owner: object, injector: Callable[..., bool]) -> None:
+        self._gateway_message_injector = (owner, injector)
+
+    def clear_gateway_message_injector(self, owner: object) -> None:
+        current = self._gateway_message_injector
+        if current is not None and current[0] is owner:
+            self._gateway_message_injector = None
+
+    def inject_gateway_message(self, **payload: Any) -> bool:
+        current = self._gateway_message_injector
+        return bool(current is not None and current[1](**payload))
 
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found.
@@ -1507,6 +1677,30 @@ class PluginManager:
                     manifests.append(manifest)
                 continue
 
+            # Portable Agent Plugins v1 packages use plugin.json and contain no
+            # importable Python entrypoint. Parse metadata during discovery.
+            portable_file = child / "plugin.json"
+            if portable_file.exists() or portable_file.is_symlink():
+                try:
+                    from clio_cli.agent_plugins import read_agent_plugin_manifest
+                    data, diagnostics = read_agent_plugin_manifest(child)
+                    for diagnostic in diagnostics:
+                        logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
+                    key = f"{prefix}/{child.name}" if prefix else data["name"]
+                    package = data.get("package") if isinstance(data.get("package"), dict) else {}
+                    manifests.append(PluginManifest(
+                        name=data["name"], version=str(data.get("version") or ""),
+                        description=str(data.get("description") or ""), source=source,
+                        path=str(child), key=key, portable=True,
+                        skill_namespace=portable_skill_namespace(key), package=package,
+                        exact_ref=str(data.get("exact_ref") or package.get("exact_ref") or ""),
+                        dependencies=dict(data.get("dependencies") or {}),
+                        entry_points=dict(data.get("entry_points") or {}),
+                    ))
+                except Exception as exc:
+                    logger.warning("Failed to parse %s: %s", portable_file, exc)
+                continue
+
             # No manifest at this level. If we're still within the depth
             # cap, treat this directory as a category namespace and recurse
             # one level in looking for children with manifests.
@@ -1693,6 +1887,17 @@ class PluginManager:
         )
 
         try:
+            if manifest.portable:
+                from clio_cli.agent_plugins import load_agent_plugin_package
+                package = load_agent_plugin_package(
+                    Path(manifest.path), self._data_root / manifest.skill_namespace
+                )
+                ctx = PluginContext(manifest, self)
+                for skill in package.skills:
+                    ctx.register_skill(skill.name, skill.skill_md, skill.description)
+                loaded.enabled = True
+                self._plugins[manifest.key or manifest.name] = loaded
+                return
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
@@ -1941,6 +2146,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 def has_hook(hook_name: str) -> bool:
     """Return True when a hook has registered callbacks."""
     return get_plugin_manager().has_hook(hook_name)
+
+
+def iter_hook_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
+    """Immutable callback snapshot for asynchronous stream dispatchers."""
+    return tuple(get_plugin_manager()._hooks.get(hook_name, ()))
 
 
 _thread_tool_whitelist = threading.local()

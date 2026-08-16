@@ -143,3 +143,13 @@ def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:
         _providers.clear()
+
+
+def unregister_provider(name: str, provider: ImageGenProvider | None = None) -> bool:
+    """Identity-safe inverse used by plugin unload."""
+    with _lock:
+        current = _providers.get(name)
+        if current is None or (provider is not None and current is not provider):
+            return False
+        del _providers[name]
+        return True

@@ -120,3 +120,13 @@ def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:
         _providers.clear()
+
+
+def unregister_provider(name: str, provider: TranscriptionProvider | None = None) -> bool:
+    key = name.strip().lower()
+    with _lock:
+        current = _providers.get(key)
+        if current is None or (provider is not None and current is not provider):
+            return False
+        del _providers[key]
+        return True

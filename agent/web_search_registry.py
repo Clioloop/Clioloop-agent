@@ -243,3 +243,12 @@ def _reset_for_tests() -> None:
     """Clear the registry. **Test-only.**"""
     with _lock:
         _providers.clear()
+
+
+def unregister_provider(name: str, provider: WebSearchProvider | None = None) -> bool:
+    with _lock:
+        current = _providers.get(name)
+        if current is None or (provider is not None and current is not provider):
+            return False
+        del _providers[name]
+        return True

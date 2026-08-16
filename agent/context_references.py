@@ -7,15 +7,65 @@ import mimetypes
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
+from abc import ABC, abstractmethod
+
+BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
+_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+_provider_lock = threading.RLock()
+
+
+class ContextCompletionItem:
+    __slots__ = ("text", "display", "meta")
+    def __init__(self, text: str, display: str = "", meta: str = ""):
+        self.text, self.display, self.meta = text, display, meta
+
+
+class ContextReferenceProvider(ABC):
+    prefix: str = ""
+
+    @abstractmethod
+    async def resolve(self, value: str, cwd: Path) -> str:
+        raise NotImplementedError
+
+    async def complete(self, partial: str, cwd: Path) -> list[ContextCompletionItem]:
+        return []
+
+
+def register_context_reference_provider(provider: ContextReferenceProvider) -> None:
+    if not isinstance(provider, ContextReferenceProvider):
+        raise TypeError("provider must be a ContextReferenceProvider instance")
+    prefix = str(provider.prefix).lower().strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", prefix) or prefix in BUILTIN_PREFIXES:
+        raise ValueError(f"invalid or reserved context prefix: {prefix!r}")
+    with _provider_lock:
+        if prefix in _context_reference_providers:
+            raise ValueError(f"prefix {prefix!r} is already registered")
+        _context_reference_providers[prefix] = provider
+
+
+def unregister_context_reference_provider(prefix: str, provider: ContextReferenceProvider | None = None) -> bool:
+    prefix = prefix.lower().strip()
+    with _provider_lock:
+        current = _context_reference_providers.get(prefix)
+        if current is None or (provider is not None and current is not provider):
+            return False
+        del _context_reference_providers[prefix]
+        return True
+
+
+def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
+    with _provider_lock:
+        return dict(_context_reference_providers)
 
 from agent.model_metadata import estimate_tokens_rough
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
+    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>[a-z][a-z0-9_-]{{0,31}}):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
@@ -79,6 +129,8 @@ def parse_context_references(message: str) -> list[ContextReference]:
             continue
 
         kind = match.group("kind")
+        if kind not in BUILTIN_PREFIXES and kind not in get_context_reference_providers():
+            continue
         value = _strip_trailing_punctuation(match.group("value") or "")
         line_start = None
         line_end = None
@@ -227,6 +279,12 @@ async def _expand_reference(
             if not content:
                 return f"{ref.raw}: no content extracted", None
             return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
+        provider = get_context_reference_providers().get(ref.kind)
+        if provider is not None:
+            content = str(await provider.resolve(ref.target, cwd) or "").strip()
+            if not content:
+                return f"{ref.raw}: provider returned no content", None
+            return None, f"🔌 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
 
