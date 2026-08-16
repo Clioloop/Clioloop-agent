@@ -41,6 +41,13 @@ export default defineConfig({
     port: 4174
   },
   test: {
-    exclude: ['**/node_modules/**', '**/dist/**', 'build/**', 'electron/**/*.test.cjs', 'scripts/**/*.test.cjs']
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'build/**',
+      'release/**',
+      'electron/**/*.test.cjs',
+      'scripts/**/*.test.cjs'
+    ]
   }
 })

@@ -29,7 +29,7 @@ _active_slots = 0
 def _process_started_at(pid: int) -> Optional[int]:
     """Return Linux process start ticks, protecting against PID reuse."""
     try:
-        return int(Path(f"/proc/{pid}/stat").read_text().split()[21])
+        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
     except Exception:
         return None
 
