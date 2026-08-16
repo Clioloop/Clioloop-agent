@@ -11,6 +11,7 @@ Routes messages to the appropriate destination based on:
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -191,6 +192,17 @@ class DeliveryRouter:
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_clio_home() / "cron" / "output"
+        self._reliability_store = None
+        self._delivery_owner = f"delivery:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        try:
+            from gateway.reliability import ReliabilityStore, feature_enabled
+            if (
+                feature_enabled("CLIO_DELIVERY_RELIABILITY_ENABLED")
+                or feature_enabled("CLIO_GATEWAY_RELIABILITY_ENABLED")
+            ):
+                self._reliability_store = ReliabilityStore()
+        except Exception:
+            logger.debug("Delivery ledger initialization failed", exc_info=True)
     
     async def deliver(
         self,
@@ -214,24 +226,49 @@ class DeliveryRouter:
             Dict with delivery results per target
         """
         results = {}
-        
+        delivery_base = (metadata or {}).get("idempotency_key") or (metadata or {}).get(
+            "_delivery_idempotency_key"
+        )
+
         for target in targets:
+            claim = None
             try:
+                if self._reliability_store is not None and delivery_base:
+                    claim = self._reliability_store.claim_delivery(
+                        f"platform:{delivery_base}:{target.to_string()}",
+                        self._delivery_owner,
+                        ttl=300.0,
+                        payload=content,
+                    )
+                    if not claim.acquired:
+                        results[target.to_string()] = {
+                            "success": bool(claim.delivered),
+                            "deduplicated": bool(claim.delivered),
+                            "in_progress": not bool(claim.delivered),
+                        }
+                        continue
                 if target.platform == Platform.LOCAL:
                     result = self._deliver_local(content, job_id, job_name, metadata)
                 else:
                     result = await self._deliver_to_platform(target, content, metadata)
-                
+                if claim is not None and not self._reliability_store.complete_delivery(claim):
+                    raise RuntimeError("delivery claim ownership was lost")
+
                 results[target.to_string()] = {
                     "success": True,
                     "result": result
                 }
             except Exception as e:
+                if claim is not None:
+                    try:
+                        self._reliability_store.fail_delivery(claim, str(e))
+                    except Exception:
+                        logger.debug("Delivery ledger failure update failed", exc_info=True)
                 results[target.to_string()] = {
                     "success": False,
                     "error": str(e)
                 }
-        
+
         return results
     
     def _deliver_local(

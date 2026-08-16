@@ -163,6 +163,21 @@ class CronBackend:
                 (record_type, max_age_seconds, max_records, self.store.clock()),
             )
 
+    def ensure_default_retention(self) -> None:
+        """Install conservative bounds once without overriding operator policy."""
+        defaults = {
+            "executions": (30 * 86400.0, 10000),
+            "notepad": (30 * 86400.0, None),
+            "webhooks": (14 * 86400.0, None),
+        }
+        now = self.store.clock()
+        with self.store._transaction() as conn:
+            for record_type, (max_age, max_records) in defaults.items():
+                conn.execute(
+                    "INSERT OR IGNORE INTO cron_retention_policies VALUES(?,?,?,?)",
+                    (record_type, max_age, max_records, now),
+                )
+
     def apply_retention(self) -> Mapping[str, int]:
         """Apply configured age/count bounds in a single transaction."""
         deleted = {"executions": 0, "notepad": 0, "webhooks": 0}

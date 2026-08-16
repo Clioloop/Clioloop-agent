@@ -2044,6 +2044,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
         for job in due_jobs:
+            # Capture the due slot before advance_next_run mutates persistent
+            # state; this key remains stable across crash/restart redelivery.
+            job["_reliability_scheduled_at"] = job.get("next_run_at") or "manual"
             advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -2082,12 +2085,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
                 _history = integration_backend()
                 if _history is not None:
-                    _execution_id, _ = _history.begin_execution(
+                    _delivery_key = f"cron:{job['id']}:{job.get('_reliability_scheduled_at', 'manual')}"
+                    _execution_id, _created = _history.begin_execution(
                         job["id"],
-                        idempotency_key=f"cron:{job['id']}:{job.get('next_run_at') or 'manual'}",
-                        scheduled_at=job.get("next_run_at"),
+                        idempotency_key=_delivery_key,
+                        scheduled_at=job.get("_reliability_scheduled_at"),
                         metadata={"name": job.get("name"), "profile": job.get("profile")},
                     )
+                    job["_reliability_delivery_key"] = _delivery_key
+                    if not _created:
+                        logger.info("Cron execution %s already claimed; skipping duplicate", _delivery_key)
+                        return True
             except Exception:
                 logger.debug("Cron execution-history begin failed", exc_info=True)
                 _history = None

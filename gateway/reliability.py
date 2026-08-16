@@ -17,6 +17,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,6 +246,66 @@ class ReliabilityStore:
     def is_paused(self, scope: str = "global") -> bool:
         return bool(self.pause_state(scope)["paused"])
 
+    def list_webhooks(self, *, status: Optional[str] = None, limit: int = 100) -> list[Mapping[str, Any]]:
+        """Return bounded, secret-free outbox metadata for operators."""
+        limit = max(1, min(int(limit), 1000))
+        columns = (
+            "id,idempotency_key,url,status,attempts,available_at,last_error,"
+            "created_at,delivered_at"
+        )
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    f"SELECT {columns} FROM outbound_webhooks WHERE status=? "
+                    "ORDER BY created_at DESC LIMIT ?", (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {columns} FROM outbound_webhooks "
+                    "ORDER BY created_at DESC LIMIT ?", (limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def retry_webhook(self, item_id: str) -> bool:
+        """Make an outbox item immediately dispatchable."""
+        now = self.clock()
+        with self._transaction() as conn:
+            return bool(conn.execute(
+                "UPDATE outbound_webhooks SET status='pending', available_at=?, "
+                "lease_owner=NULL, lease_expires_at=NULL, last_error=NULL "
+                "WHERE id=? AND status IN ('dead','pending','sending')",
+                (now, item_id),
+            ).rowcount)
+
+    def recover_expired(self) -> Mapping[str, int]:
+        """Release expired process claims after a crash/restart."""
+        now = self.clock()
+        with self._transaction() as conn:
+            webhooks = conn.execute(
+                "UPDATE outbound_webhooks SET status='pending', lease_owner=NULL, "
+                "lease_expires_at=NULL WHERE status='sending' AND lease_expires_at<=?",
+                (now,),
+            ).rowcount
+            leases = conn.execute(
+                "DELETE FROM turn_leases WHERE expires_at<=?", (now,)
+            ).rowcount
+        return {"webhooks": webhooks, "turn_leases": leases}
+
+    def prune_delivery_ledger(self, *, delivered_before: float, failed_before: Optional[float] = None) -> int:
+        """Safely prune terminal delivery rows; active claims are never removed."""
+        with self._transaction() as conn:
+            deleted = conn.execute(
+                "DELETE FROM delivery_ledger WHERE status='delivered' AND delivered_at<?",
+                (delivered_before,),
+            ).rowcount
+            if failed_before is not None:
+                deleted += conn.execute(
+                    "DELETE FROM delivery_ledger WHERE status='failed' AND updated_at<?",
+                    (failed_before,),
+                ).rowcount
+        return deleted
+
+
 
 def global_automation_paused(path: Optional[Path | str] = None) -> bool:
     """Default-safe integration probe: false unless reliability control is enabled."""
@@ -466,3 +527,96 @@ class SignedWebhookQueue:
                 (now, row["id"], claim_owner),
             ).rowcount
         return bool(changed)
+
+
+class OutboundWebhookDispatcher:
+    """Bounded background dispatcher with retry, flush and graceful drain."""
+
+    def __init__(
+        self,
+        queue: SignedWebhookQueue,
+        *,
+        sender: Optional[Callable[[str, bytes, Mapping[str, str]], int]] = None,
+        poll_interval: float = 1.0,
+        batch_size: int = 16,
+        max_attempts: int = 8,
+        owner: Optional[str] = None,
+    ) -> None:
+        if poll_interval <= 0 or batch_size < 1 or max_attempts < 1:
+            raise ValueError("dispatcher bounds must be positive")
+        self.queue = queue
+        self.sender = sender or self._http_sender
+        self.poll_interval = float(poll_interval)
+        self.batch_size = int(batch_size)
+        self.max_attempts = int(max_attempts)
+        self.owner = owner or f"webhook:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._accepting = True
+
+    @staticmethod
+    def _http_sender(url: str, body: bytes, headers: Mapping[str, str]) -> int:
+        request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
+        with urllib.request.urlopen(request, timeout=15.0) as response:
+            response.read(4096)
+            return int(response.status)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self.queue.store.recover_expired()
+        self._accepting = True
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="webhook-outbox", daemon=True)
+        self._thread.start()
+
+    def notify(self) -> bool:
+        if not self._accepting:
+            return False
+        self._wake.set()
+        return True
+
+    def dispatch_batch(self, limit: Optional[int] = None) -> int:
+        delivered = 0
+        cap = max(0, min(int(limit or self.batch_size), self.batch_size))
+        for _ in range(cap):
+            result = self.queue.dispatch_one(
+                self.sender, owner=self.owner, max_attempts=self.max_attempts,
+            )
+            if result is None:
+                break
+            delivered += int(bool(result))
+        return delivered
+
+    def flush(self, timeout: float = 5.0, *, max_items: Optional[int] = None) -> Mapping[str, int | bool]:
+        deadline = time.monotonic() + max(0.0, timeout)
+        processed = delivered = 0
+        cap = max(1, int(max_items or self.batch_size * 4))
+        while processed < cap and time.monotonic() < deadline:
+            result = self.queue.dispatch_one(
+                self.sender, owner=self.owner, max_attempts=self.max_attempts,
+            )
+            if result is None:
+                return {"processed": processed, "delivered": delivered, "drained": True}
+            processed += 1
+            delivered += int(bool(result))
+        return {"processed": processed, "delivered": delivered, "drained": False}
+
+    def drain(self, timeout: float = 5.0) -> Mapping[str, int | bool]:
+        self._accepting = False
+        return self.flush(timeout)
+
+    def shutdown(self, timeout: float = 5.0) -> Mapping[str, int | bool]:
+        result = self.drain(timeout=max(0.0, timeout * 0.7))
+        self._stop.set()
+        self._wake.set()
+        if self._thread:
+            self._thread.join(timeout=max(0.0, timeout * 0.3))
+        return dict(result, worker_stopped=not bool(self._thread and self._thread.is_alive()))
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.dispatch_batch()
+            self._wake.wait(self.poll_interval)
+            self._wake.clear()
