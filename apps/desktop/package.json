@@ -132,7 +132,7 @@
     "wait-on": "^9.0.10"
   },
   "build": {
-    "electronVersion": "40.9.3",
+    "electronVersion": "43.4.0",
     "appId": "com.clioloop.clio",
     "productName": "Clio",
     "executableName": "Clio",
