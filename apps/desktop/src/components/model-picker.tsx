@@ -6,7 +6,6 @@ import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/
 import type { ClioGateway } from '../clio'
 import { getGlobalModelOptions } from '../clio'
 import { managedModelTag } from '../lib/model-tag'
-import { cn } from '../lib/utils'
 import {
   compareOmniFirst,
   isOmniProvider,
@@ -14,6 +13,7 @@ import {
   OMNI_PROVIDER_DESCRIPTION,
   OMNI_PROVIDER_LABEL
 } from '../lib/provider-label'
+import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
@@ -383,6 +383,7 @@ function SectionLabel({ label }: { label: string }) {
 
 function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const omni = isOmniProvider(provider.slug)
+
   // Some provider integrations expose account tier metadata.
   const tierBadge =
     omni ? (

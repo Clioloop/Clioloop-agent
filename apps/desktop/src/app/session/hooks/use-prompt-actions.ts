@@ -565,7 +565,9 @@ export function usePromptActions({
               session_id: sessionId,
               command: 'fusion gate'
             })
+
             const output = (res?.output ?? '').trim()
+
             if (output === 'OK') {
               setFusionPickerOpen(true)
             } else {

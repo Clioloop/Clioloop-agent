@@ -36,13 +36,16 @@ function lineCount(value: string): number {
 
 function plainTitle(value: string, tag: 'h1' | 'title'): string {
   const found = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(value)?.[1] || ''
+
   return found.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
 }
 
 function codeTitle(language: string, content: string): string {
   const file = /^\s*(?:\/\/|#|<!--)\s*([\w./-]+\.[a-z0-9]{1,8})\b/i.exec(content)?.[1]
-  if (file) return file
+
+  if (file) {return file}
   const declaration = /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?(?:function|class|interface|def|fn)\s+([\w$]+)/.exec(content)?.[1]
+
   return declaration || language || 'Code'
 }
 
@@ -50,11 +53,14 @@ function codeTitle(language: string, content: string): string {
 export function detectRendererArtifact(language: string | undefined, source: string | undefined): RendererArtifactDetection | null {
   const content = String(source || '').trim()
   const lang = languageTag(language)
-  if (!content) return null
+
+  if (!content) {return null}
 
   const htmlHint = lang === 'html' || lang === 'htm' || lang === 'xhtml'
+
   if (htmlHint) {
     const substantial = HTML_DOCUMENT.test(content) ? content.length >= 160 : content.length >= 1_200 && HTML_TAG.test(content)
+
     return substantial
       ? { kind: 'html', language: lang, title: plainTitle(content, 'title') || plainTitle(content, 'h1') || 'HTML' }
       : null
@@ -66,22 +72,26 @@ export function detectRendererArtifact(language: string | undefined, source: str
       : null
   }
 
-  if (PROSE_LANGUAGES.has(lang) || (content.length < 3_000 && lineCount(content) < 48)) return null
+  if (PROSE_LANGUAGES.has(lang) || (content.length < 3_000 && lineCount(content) < 48)) {return null}
+
   return { kind: 'code', language: lang, title: codeTitle(lang, content) }
 }
 
 /** FNV-1a is for deterministic de-duplication, not security. */
 export function rendererArtifactHash(content: string): string {
   let hash = 0x811c9dc5
+
   for (let index = 0; index < content.length; index += 1) {
     hash ^= content.charCodeAt(index)
     hash = Math.imul(hash, 0x01000193)
   }
+
   return (hash >>> 0).toString(36)
 }
 
 export function rendererArtifactId(detection: RendererArtifactDetection): string {
   const slug = detection.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48) || 'untitled'
+
   return `${detection.kind}:${detection.language}:${slug}`
 }
 
@@ -96,10 +106,13 @@ export function addRendererArtifactVersion(
   const normalized = content.trim()
   const hash = rendererArtifactHash(normalized)
   const id = rendererArtifactId(detection)
-  if (artifact && artifact.id === id && artifact.versions.some(version => version.hash === hash)) return artifact
+
+  if (artifact && artifact.id === id && artifact.versions.some(version => version.hash === hash)) {return artifact}
   const maxVersions = Math.max(1, Math.floor(options.maxVersions ?? 20))
+
   const versions = [...(artifact?.id === id ? artifact.versions : []), { content: normalized, createdAt: options.at ?? Date.now(), hash }]
     .slice(-maxVersions)
+
   return { ...detection, id, versions }
 }
 
@@ -117,6 +130,7 @@ export interface ArtifactSandboxPolicy {
  * is sanitized and receives no script capability. */
 export function artifactSandboxPolicy(kind: RendererArtifactKind, allowHtmlScripts = true): ArtifactSandboxPolicy {
   const html = kind === 'html'
+
   return {
     sandbox: html && allowHtmlScripts ? 'allow-scripts' : '',
     contentSecurityPolicy: html
@@ -129,8 +143,10 @@ export function artifactSandboxPolicy(kind: RendererArtifactKind, allowHtmlScrip
 
 export function composeSandboxedHtml(content: string, policy = artifactSandboxPolicy('html')): string {
   const csp = `<meta http-equiv="Content-Security-Policy" content="${policy.contentSecurityPolicy.replace(/"/g, '&quot;')}">`
+
   if (/<html[\s>]|<!doctype\s+html/i.test(content)) {
     return /<head[\s>]/i.test(content) ? content.replace(/<head([^>]*)>/i, `<head$1>${csp}`) : `${csp}${content}`
   }
+
   return `<!doctype html><html><head><meta charset="utf-8">${csp}</head><body>${content}</body></html>`
 }

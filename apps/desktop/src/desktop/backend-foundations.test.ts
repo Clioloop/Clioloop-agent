@@ -20,6 +20,7 @@ describe('desktop backend foundations', () => {
         { id: 'bad', kind: 'ssh', label: 'Bad', host: '', port: 99 }
       ]
     })
+
     expect(registry.primaryId).toBe('local')
     expect(registry.connections.map(connection => connection.id)).toEqual(['local', 'edge'])
     expect(registry.connections[1]).toMatchObject({ url: 'https://example.test/gateway', authMode: 'token' })

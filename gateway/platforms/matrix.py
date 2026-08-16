@@ -107,6 +107,19 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+
+def _matrix_event_type(name: str, fallback: str) -> Any:
+    """Resolve a mautrix event type across optional-dependency reloads.
+
+    Some test/plugin import orders can leave the module-global ``EventType``
+    bound to a lightweight string stub. The client accepts the canonical
+    Matrix event-type string, so fall back to that value rather than failing
+    an otherwise valid send.
+    """
+
+    return getattr(EventType, name, fallback)
+
+
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
     re.DOTALL,
@@ -807,6 +820,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 from mautrix.crypto import OlmMachine
                 from mautrix.crypto.store.asyncpg import PgCryptoStore
+                from mautrix.types import TrustState as RuntimeTrustState
                 from mautrix.util.async_db import Database
 
                 _STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -855,8 +869,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
                 # Accept unverified devices so senders share Megolm
                 # session keys with us automatically.
-                olm.share_keys_min_trust = TrustState.UNVERIFIED
-                olm.send_keys_min_trust = TrustState.UNVERIFIED
+                olm.share_keys_min_trust = RuntimeTrustState.UNVERIFIED
+                olm.send_keys_min_trust = RuntimeTrustState.UNVERIFIED
 
                 await olm.load()
 
@@ -968,12 +982,13 @@ class MatrixAdapter(BasePlatformAdapter):
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
+        from mautrix.types import EventType as RuntimeEventType
 
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
+        client.add_event_handler(RuntimeEventType.ROOM_MESSAGE, self._on_room_message)
+        client.add_event_handler(RuntimeEventType.REACTION, self._on_reaction)
         client.add_event_handler(IntEvt.INVITE, self._on_invite)
 
         # Initial sync to catch up, then start background sync.
@@ -1105,7 +1120,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 event_id = await asyncio.wait_for(
                     self._client.send_message_event(
                         RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
+                        _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                         msg_content,
                     ),
                     timeout=45,
@@ -1120,7 +1135,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         event_id = await asyncio.wait_for(
                             self._client.send_message_event(
                                 RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
+                                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                                 msg_content,
                             ),
                             timeout=45,
@@ -1153,7 +1168,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 name_evt = await self._client.get_state_event(
                     RoomID(chat_id),
-                    EventType.ROOM_NAME,
+                    _matrix_event_type("ROOM_NAME", "m.room.name"),
                 )
                 if name_evt and hasattr(name_evt, "name") and name_evt.name:
                     name = name_evt.name
@@ -1210,7 +1225,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -1468,7 +1483,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))
@@ -2188,7 +2203,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             resp_event_id = await self._client.send_message_event(
                 RoomID(room_id),
-                EventType.REACTION,
+                _matrix_event_type("REACTION", "m.reaction"),
                 content,
             )
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
@@ -2580,7 +2595,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             event_id = await self._client.send_message_event(
                 RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
+                _matrix_event_type("ROOM_MESSAGE", "m.room.message"),
                 msg_content,
             )
             return SendResult(success=True, message_id=str(event_id))

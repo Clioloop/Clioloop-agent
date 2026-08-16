@@ -62,9 +62,9 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImageProvider, useGeneratedImageContext } from '@/components/chat/generated-image-context'
 import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-placeholder'
-import { ResolvedImage } from '@/components/chat/resolved-image'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { ResolvedImage } from '@/components/chat/resolved-image'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
@@ -418,7 +418,7 @@ const MusicGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
 
   return (
     <div className="mt-1.5 max-w-72 rounded-[0.25rem] border border-(--ui-stroke-tertiary) p-2">
-      <audio controls src={src} className="w-full" style={{ maxWidth: '18rem' }} />
+      <audio className="w-full" controls src={src} style={{ maxWidth: '18rem' }} />
     </div>
   )
 }

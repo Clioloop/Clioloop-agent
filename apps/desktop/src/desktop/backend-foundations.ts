@@ -61,6 +61,7 @@ export function profileRouteKey(profile?: null | string): string {
 export function backendRouteKey(connectionId?: null | string, profile?: null | string): string {
   const profileKey = profileRouteKey(profile)
   const connectionKey = connectionId?.trim()
+
   return !connectionKey || connectionKey === LOCAL_CONNECTION_ID
     ? profileKey
     : `connection:${encodeURIComponent(connectionKey)}::profile:${encodeURIComponent(profileKey)}`
@@ -74,19 +75,22 @@ export function normalizeConnectionRegistry(raw: unknown): ConnectionRegistry {
   const connections: RegistryConnection[] = []
 
   for (const candidate of input) {
-    if (!candidate || typeof candidate !== 'object') continue
+    if (!candidate || typeof candidate !== 'object') {continue}
     const value = candidate as Record<string, unknown>
     const kind = value.kind
     const id = String(value.id || '').trim()
     const label = String(value.label || '').trim()
-    if (!id || !label || ids.has(id) || labels.has(connectionLabelKey(label))) continue
+
+    if (!id || !label || ids.has(id) || labels.has(connectionLabelKey(label))) {continue}
 
     let connection: RegistryConnection | null = null
+
     if (kind === 'local' && id === LOCAL_CONNECTION_ID) {
       connection = { id, kind, label, profile: typeof value.profile === 'string' ? value.profile : null }
     } else if (kind === 'url') {
       try {
         const url = new URL(String(value.url || ''))
+
         if (url.protocol === 'http:' || url.protocol === 'https:') {
           url.hash = ''
           connection = {
@@ -104,6 +108,7 @@ export function normalizeConnectionRegistry(raw: unknown): ConnectionRegistry {
     } else if (kind === 'ssh') {
       const host = String(value.host || '').trim()
       const port = Number(value.port || 22)
+
       if (host && Number.isInteger(port) && port > 0 && port <= 65_535) {
         connection = {
           id,
@@ -122,7 +127,7 @@ export function normalizeConnectionRegistry(raw: unknown): ConnectionRegistry {
       }
     }
 
-    if (!connection) continue
+    if (!connection) {continue}
     ids.add(id)
     labels.add(connectionLabelKey(label))
     connections.push(connection)
@@ -133,9 +138,11 @@ export function normalizeConnectionRegistry(raw: unknown): ConnectionRegistry {
   }
 
   const requestedPrimary = String(source.primaryId || '')
+
   const primaryId = connections.some(connection => connection.id === requestedPrimary)
     ? requestedPrimary
     : LOCAL_CONNECTION_ID
+
   return { version: CONNECTION_REGISTRY_VERSION, primaryId, connections }
 }
 
@@ -185,14 +192,17 @@ export interface SshLifecycleDescriptor extends LifecycleBase {
 
 export function lifecycleFor(connection: RegistryConnection, profile?: null | string): LifecycleDescriptor {
   const normalizedProfile = profile?.trim() || null
+
   const base = {
     connectionId: connection.id,
     profile: normalizedProfile,
     routeKey: backendRouteKey(connection.id, normalizedProfile)
   }
+
   if (connection.kind === 'url') {
     return { ...base, kind: 'url', ownership: 'external', baseUrl: connection.url }
   }
+
   if (connection.kind === 'ssh') {
     return {
       ...base,
@@ -204,6 +214,7 @@ export function lifecycleFor(connection: RegistryConnection, profile?: null | st
       remoteCommand: connection.remoteCommand || 'clio gateway --port 0'
     }
   }
+
   return {
     ...base,
     kind: 'local',
@@ -225,7 +236,7 @@ export class LivenessTracker {
   readonly #routes = new Map<string, HealthObservation>()
 
   constructor(failureLimit = 3) {
-    if (!Number.isInteger(failureLimit) || failureLimit < 1) throw new Error('failureLimit must be a positive integer')
+    if (!Number.isInteger(failureLimit) || failureLimit < 1) {throw new Error('failureLimit must be a positive integer')}
     this.#failureLimit = failureLimit
   }
 
@@ -235,6 +246,7 @@ export class LivenessTracker {
     const state: ConnectionHealth = ok ? 'healthy' : failures >= this.#failureLimit ? 'offline' : 'degraded'
     const observation = { checkedAt, failures, latencyMs: ok ? latencyMs : null, state }
     this.#routes.set(routeKey, observation)
+
     return observation
   }
 
@@ -243,8 +255,8 @@ export class LivenessTracker {
   }
 
   clear(routeKey?: string): void {
-    if (routeKey) this.#routes.delete(routeKey)
-    else this.#routes.clear()
+    if (routeKey) {this.#routes.delete(routeKey)}
+    else {this.#routes.clear()}
   }
 }
 
@@ -290,21 +302,26 @@ export interface ActiveWork { count: number; titles: string[] }
 export interface QuitPrompt { detail: string; message: string }
 
 export function normalizeActiveWork(value: unknown): ActiveWork {
-  if (!value || typeof value !== 'object') return { count: 0, titles: [] }
+  if (!value || typeof value !== 'object') {return { count: 0, titles: [] }}
   const raw = value as { count?: unknown; titles?: unknown }
+
   const titles = Array.isArray(raw.titles)
     ? [...new Set(raw.titles.filter((title): title is string => typeof title === 'string').map(title => title.trim()).filter(Boolean))]
     : []
+
   const count = typeof raw.count === 'number' && Number.isFinite(raw.count) ? Math.max(0, Math.floor(raw.count)) : 0
+
   return { count: Math.max(count, titles.length), titles }
 }
 
 export function quitPromptFor(work: ActiveWork, handoff = false): QuitPrompt | null {
-  if (handoff || work.count === 0) return null
+  if (handoff || work.count === 0) {return null}
   const listed = work.titles.slice(0, 4)
   const remaining = work.count - listed.length
   const lines = listed.map(title => `• ${title}`)
-  if (remaining > 0) lines.push(`• ${remaining} more`)
+
+  if (remaining > 0) {lines.push(`• ${remaining} more`)}
+
   return {
     message: `Clio is still working on ${work.count} ${work.count === 1 ? 'chat' : 'chats'}.`,
     detail: `${lines.length ? `${lines.join('\n')}\n\n` : ''}Quitting stops active work and may leave a tool operation incomplete.`
@@ -324,6 +341,7 @@ export function nextCrashJournalEntry(
   options: { at?: number; clean?: boolean; reason?: unknown } = {}
 ): CrashJournalEntry {
   const reason = options.reason instanceof Error ? options.reason.stack || options.reason.message : String(options.reason ?? '').trim()
+
   return {
     version: 1,
     at: options.at ?? Date.now(),

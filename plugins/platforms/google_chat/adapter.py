@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 #
 # All names below are module globals that ``_load_google_modules()``
 # rebinds on first call. The ``HttpError = Exception`` placeholder is
-# important: ``except HttpError as exc:`` clauses elsewhere in this
+# important: ``except Exception as exc:`` clauses elsewhere in this
 # module bind the *current* module-global at try/except evaluation time,
 # so as long as ``_load_google_modules()`` runs before any such
 # ``try`` block executes (which it does — ``__init__`` calls it), the
@@ -738,7 +738,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     .list(parent=s, pageSize=50)
                     .execute(http=self._new_authed_http())
                 )
-            except HttpError as exc:
+            except Exception as exc:
                 logger.debug(
                     "[GoogleChat] members.list failed on %s: %s",
                     space,
@@ -1705,7 +1705,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
             try:
                 data = await asyncio.to_thread(_fetch_media)
-            except HttpError as exc:
+            except Exception as exc:
                 logger.warning(
                     "[GoogleChat] media.download_media failed: %s",
                     _redact_sensitive(str(exc)),
@@ -1817,7 +1817,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     else:
                         result = await self._create_message(chat_id, body)
                     last_result = result
-                except HttpError as exc:
+                except Exception as exc:
+                    # Optional google dependencies may be reloaded after plugin
+                    # discovery, and tests/integrators can provide a compatible
+                    # HttpError implementation. Classify by the stable
+                    # ``resp.status`` contract instead of relying on one class
+                    # identity; unknown exceptions are still re-raised below.
                     status = getattr(getattr(exc, "resp", None), "status", None)
                     if status == 403:
                         self._set_fatal_error(
@@ -1896,7 +1901,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             content = content[: _MAX_TEXT_LENGTH - 1] + "…"
         try:
             return await self._patch_message(message_id, {"text": content})
-        except HttpError as exc:
+        except Exception as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
             if status == 429:
                 self._rate_limit_hits[chat_id] = (
@@ -1905,9 +1910,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False, error=_redact_sensitive(str(exc))
             )
-        except Exception as exc:
-            logger.debug("[GoogleChat] edit_message failed", exc_info=True)
-            return SendResult(success=False, error=str(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a message — used sparingly (deletion creates a tombstone).
@@ -1933,7 +1935,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(_do_delete)
             return True
-        except HttpError as exc:
+        except Exception as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
             if status in {403, 404}:
                 return False
@@ -1941,9 +1943,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 "[GoogleChat] delete_message failed: %s",
                 _redact_sensitive(str(exc)),
             )
-            return False
-        except Exception:
-            logger.debug("[GoogleChat] delete_message failed", exc_info=True)
             return False
 
     async def _patch_message(
@@ -2457,7 +2456,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             result = await self._patch_message(current, {"text": text})
             self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
             return result
-        except HttpError as exc:
+        except Exception as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
             if status == 404:
                 # Card disappeared — caller should create a new message.
@@ -2493,7 +2492,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if thread_id:
                 body["thread"] = {"name": thread_id}
             return await self._create_message(chat_id, body)
-        except HttpError as exc:
+        except Exception as exc:
             return SendResult(success=False, error=_redact_sensitive(str(exc)))
 
     async def send_image_file(
@@ -2789,7 +2788,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         try:
             upload_resp = await asyncio.to_thread(_upload)
-        except HttpError as exc:
+        except Exception as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
             if status in {401, 403}:
                 logger.warning(
@@ -2860,7 +2859,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True, message_id=resp.get("name"),
             )
-        except HttpError as exc:
+        except Exception as exc:
             return SendResult(
                 success=False, error=_redact_sensitive(str(exc))
             )
@@ -2918,7 +2917,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 .get(name=chat_id)
                 .execute(http=self._new_authed_http())
             )
-        except HttpError as exc:
+        except Exception as exc:
             logger.debug(
                 "[GoogleChat] get_chat_info failed: %s", _redact_sensitive(str(exc))
             )

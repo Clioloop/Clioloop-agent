@@ -75,12 +75,15 @@ export interface DesktopLayoutState {
 }
 
 export function normalizeLayoutTree(node: LayoutNode): LayoutNode {
-  if (node.kind === 'pane') return { ...node, id: node.id.trim() }
+  if (node.kind === 'pane') {return { ...node, id: node.id.trim() }}
+
   if (node.kind === 'tabs') {
     const children = node.children.map(child => normalizeLayoutTree(child) as PaneLeaf)
     const activeId = children.some(child => child.id === node.activeId) ? node.activeId : (children[0]?.id ?? '')
+
     return { ...node, activeId, children }
   }
+
   return {
     ...node,
     ratio: Math.min(0.9, Math.max(0.1, Number.isFinite(node.ratio) ? node.ratio : 0.5)),
@@ -90,8 +93,10 @@ export function normalizeLayoutTree(node: LayoutNode): LayoutNode {
 }
 
 export function layoutPaneIds(node: LayoutNode): string[] {
-  if (node.kind === 'pane') return [node.id]
-  if (node.kind === 'tabs') return node.children.map(child => child.id)
+  if (node.kind === 'pane') {return [node.id]}
+
+  if (node.kind === 'tabs') {return node.children.map(child => child.id)}
+
   return [...layoutPaneIds(node.first), ...layoutPaneIds(node.second)]
 }
 
@@ -112,15 +117,21 @@ export type QuickEntryEvent =
 export interface QuickEntryTransition { send: null | { target: QuickEntryTarget; text: string }; state: QuickEntryState }
 
 export function reduceQuickEntry(state: QuickEntryState, event: QuickEntryEvent): QuickEntryTransition {
-  if (event.type === 'edit') return { send: null, state: { ...state, draft: event.draft, error: null } }
-  if (event.type === 'connection') return { send: null, state: { ...state, connected: event.connected } }
-  if (event.type === 'target') return { send: null, state: { ...state, target: event.target } }
+  if (event.type === 'edit') {return { send: null, state: { ...state, draft: event.draft, error: null } }}
+
+  if (event.type === 'connection') {return { send: null, state: { ...state, connected: event.connected } }}
+
+  if (event.type === 'target') {return { send: null, state: { ...state, target: event.target } }}
+
   if (event.type === 'dismiss') {
     return { send: null, state: { ...state, draft: '', error: null, submitting: false, visible: false } }
   }
-  if (event.type === 'show') return { send: null, state: { ...state, error: null, submitting: false, visible: true } }
+
+  if (event.type === 'show') {return { send: null, state: { ...state, error: null, submitting: false, visible: true } }}
   const text = state.draft.trim()
-  if (!text || !state.connected || state.submitting) return { send: null, state }
+
+  if (!text || !state.connected || state.submitting) {return { send: null, state }}
+
   return {
     send: { target: state.target, text },
     state: { ...state, draft: '', error: null, submitting: true, visible: false }
@@ -250,17 +261,20 @@ export function upsertComposerReference(
   reference: ComposerReference
 ): AdvancedComposerState {
   const references = [...state.references.filter(item => item.id !== reference.id), reference]
+
   const chip: ComposerChip = {
     id: `reference:${reference.id}`,
     label: reference.label,
     referenceId: reference.id,
     tone: reference.locked ? 'locked' : 'default'
   }
+
   return { ...state, chips: [...state.chips.filter(item => item.referenceId !== reference.id), chip], references }
 }
 
 export function rankComposerSuggestions(suggestions: ComposerSuggestion[], limit = 8): ComposerSuggestion[] {
   const byId = new Map(suggestions.map(item => [item.id, item]))
+
   return [...byId.values()]
     .sort((a, b) => b.score - a.score || a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id))
     .slice(0, Math.max(0, limit))
@@ -298,23 +312,29 @@ export class PluginContributionRegistry {
 
   load(pluginId: string, contributions: readonly PluginContribution[]): () => string[] {
     const normalizedId = pluginId.trim()
-    if (!normalizedId) throw new Error('pluginId is required')
+
+    if (!normalizedId) {throw new Error('pluginId is required')}
     const keys = contributions.map(item => `${item.kind}:${item.id.trim()}`)
+
     if (keys.some(key => key.endsWith(':')) || new Set(keys).size !== keys.length) {
       throw new Error(`Plugin ${normalizedId} has empty or duplicate contribution ids`)
     }
+
     for (const key of keys) {
       const owner = this.#entries.get(key)?.pluginId
-      if (owner && owner !== normalizedId) throw new Error(`Contribution ${key} is already owned by ${owner}`)
+
+      if (owner && owner !== normalizedId) {throw new Error(`Contribution ${key} is already owned by ${owner}`)}
     }
 
     this.unload(normalizedId)
     const registeredAt = ++this.#revision
     contributions.forEach((item, index) => {
       const key = keys[index]
-      if (key) this.#entries.set(key, { ...item, id: item.id.trim(), pluginId: normalizedId, registeredAt })
+
+      if (key) {this.#entries.set(key, { ...item, id: item.id.trim(), pluginId: normalizedId, registeredAt })}
     })
     this.#plugins.set(normalizedId, keys)
+
     return () => this.unload(normalizedId)
   }
 
@@ -331,11 +351,14 @@ export class PluginContributionRegistry {
   unload(pluginId: string): string[] {
     const keys = this.#plugins.get(pluginId) ?? []
     const removed = [...keys].sort()
-    for (const key of removed) this.#entries.delete(key)
+
+    for (const key of removed) {this.#entries.delete(key)}
+
     if (keys.length) {
       this.#plugins.delete(pluginId)
       this.#revision += 1
     }
+
     return removed
   }
 }
@@ -359,16 +382,19 @@ export interface ArtifactCardState {
 export function addArtifactVersion(state: ArtifactCardState, version: ArtifactVersion): ArtifactCardState {
   const versions = [...state.versions.filter(item => item.id !== version.id), version]
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+
   return { ...state, currentVersionId: version.id, versions }
 }
 
 export function lockArtifactPreview(state: ArtifactCardState, versionId: null | string): ArtifactCardState {
-  if (versionId && !state.versions.some(version => version.id === versionId)) return state
+  if (versionId && !state.versions.some(version => version.id === versionId)) {return state}
+
   return { ...state, lockedPreviewVersionId: versionId }
 }
 
 export function artifactPreviewVersion(state: ArtifactCardState): ArtifactVersion | null {
   const id = state.lockedPreviewVersionId ?? state.currentVersionId
+
   return state.versions.find(version => version.id === id) ?? null
 }
 
@@ -388,14 +414,20 @@ export type VoiceWakeEvent =
   | { type: 'arm' | 'disable' | 'processing' | 'speaking' | 'wake' }
 
 export function reduceVoiceWake(state: VoiceWakeState, event: VoiceWakeEvent): VoiceWakeState {
-  if (event.type === 'level') return { ...state, inputLevel: Math.min(1, Math.max(0, event.level)) }
-  if (event.type === 'heard') return { ...state, transcript: event.transcript }
-  if (event.type === 'error') return { ...state, error: event.error, mode: 'disabled' }
-  if (event.type === 'disable') return { ...state, inputLevel: 0, mode: 'disabled', wakeEnabled: false }
-  if (event.type === 'arm') return state.microphonePermission === 'granted'
+  if (event.type === 'level') {return { ...state, inputLevel: Math.min(1, Math.max(0, event.level)) }}
+
+  if (event.type === 'heard') {return { ...state, transcript: event.transcript }}
+
+  if (event.type === 'error') {return { ...state, error: event.error, mode: 'disabled' }}
+
+  if (event.type === 'disable') {return { ...state, inputLevel: 0, mode: 'disabled', wakeEnabled: false }}
+
+  if (event.type === 'arm') {return state.microphonePermission === 'granted'
     ? { ...state, error: null, mode: 'wake-armed', wakeEnabled: true }
-    : { ...state, error: 'Microphone permission is required', mode: 'disabled' }
-  if (event.type === 'wake') return { ...state, error: null, mode: 'listening', transcript: '' }
+    : { ...state, error: 'Microphone permission is required', mode: 'disabled' }}
+
+  if (event.type === 'wake') {return { ...state, error: null, mode: 'listening', transcript: '' }}
+
   return { ...state, mode: event.type }
 }
 
@@ -420,9 +452,11 @@ export function createCrashHandoff(
   crash: { at: number; clean: boolean; reason?: string },
   sessions: Array<{ id: string; title: string }>
 ): CrashAutoContinueHandoff | null {
-  if (crash.clean || sessions.length === 0) return null
+  if (crash.clean || sessions.length === 0) {return null}
   const unique = [...new Map(sessions.filter(item => item.id.trim()).map(item => [item.id, item])).values()]
-  if (!unique.length) return null
+
+  if (!unique.length) {return null}
+
   return {
     version: 1,
     crashAt: crash.at,
@@ -442,6 +476,8 @@ export function updateCrashHandoffItem(
   const items = handoff.items.map(item => item.sessionId !== sessionId || item.attempt > 0
     ? item
     : { ...item, attempt: 1, error, status })
+
   const complete = items.every(item => item.status !== 'pending')
+
   return { ...handoff, items, status: complete ? 'complete' : 'running' }
 }

@@ -88,6 +88,7 @@ function FusionSetupDialog({
     () => (modelOptions.data?.providers ?? []).find(p => p.slug === OMNI_PROVIDER_SLUG),
     [modelOptions.data]
   )
+
   const models = managed?.models ?? []
   const pricing = managed?.pricing ?? {}
   const warnings = managed?.model_warnings ?? {}
@@ -96,15 +97,19 @@ function FusionSetupDialog({
   const submit = async (selectedReviewers = reviewers) => {
     if (!gw || !sessionId) {
       notifyError(new Error('Open a chat first, then run /fusion.'), 'Fusion')
+
       return
     }
+
     setPhase('submitting')
     const command = `fusion advisors=${advisors.join(',')} reviewers=${selectedReviewers.join(',')}`
+
     try {
       const res = await gw.request<{ output?: string; warning?: string }>('slash.exec', {
         session_id: sessionId,
         command
       })
+
       notify({ kind: 'success', title: 'Fusion', message: res?.output?.replace(/\*/g, '') || 'Fusion configured.' })
       onOpenChange(false)
     } catch (err) {
@@ -116,20 +121,26 @@ function FusionSetupDialog({
   // A model click advances the wizard through its phases.
   const pickModel = (model: string) => {
     setSearch('')
+
     if (phase === 'plannerPick') {
       const next = [...advisors, model]
       setAdvisors(next)
+
       if (next.length >= plannerCount) {
         setPhase('reviewerCount')
       }
+
       return
     }
+
     if (phase === 'reviewerPick') {
       const next = [...reviewers, model]
       setReviewers(next)
+
       if (next.length >= reviewerCount) {
         void submit(next)
       }
+
       return
     }
   }
@@ -137,6 +148,7 @@ function FusionSetupDialog({
   const pickCount = (n: number) => {
     const count = Math.max(1, Math.min(MAX_PER_GROUP, n))
     setSearch('')
+
     if (phase === 'plannerCount') {
       setPlannerCount(count)
       setPhase('plannerPick')
@@ -148,6 +160,7 @@ function FusionSetupDialog({
 
   const back = () => {
     setSearch('')
+
     switch (phase) {
       case 'reviewerPick':
         if (reviewers.length > 0) {
@@ -155,24 +168,31 @@ function FusionSetupDialog({
         } else {
           setPhase('reviewerCount')
         }
+
         break
+
       case 'reviewerCount':
         setAdvisors(a => a.slice(0, -1))
         setPhase('plannerPick')
+
         break
+
       case 'plannerPick':
         if (advisors.length > 0) {
           setAdvisors(a => a.slice(0, -1))
         } else {
           setPhase('plannerCount')
         }
+
         break
+
       default:
         break
     }
   }
 
   const isCountPhase = phase === 'plannerCount' || phase === 'reviewerCount'
+
   const title =
     phase === 'plannerCount'
       ? 'How many models should plan the task? (1–5)'
@@ -229,6 +249,7 @@ function FusionSetupDialog({
                 {visibleModels.map(model => {
                   const price: ModelPricing | undefined = pricing[model]
                   const warning = warnings[model]
+
                   return (
                     <CommandItem
                       className="flex items-center gap-2 pl-6 font-mono"

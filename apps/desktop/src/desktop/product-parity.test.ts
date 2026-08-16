@@ -2,20 +2,20 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   addArtifactVersion,
+  type AdvancedComposerState,
+  type ArtifactCardState,
   artifactPreviewVersion,
   createCrashHandoff,
   layoutPaneIds,
   lockArtifactPreview,
   normalizeLayoutTree,
   PluginContributionRegistry,
+  type QuickEntryState,
   rankComposerSuggestions,
   reduceQuickEntry,
   reduceVoiceWake,
   updateCrashHandoffItem,
   upsertComposerReference,
-  type AdvancedComposerState,
-  type ArtifactCardState,
-  type QuickEntryState,
   type VoiceWakeState
 } from './product-parity'
 
@@ -55,6 +55,7 @@ describe('desktop product parity contracts', () => {
         kind: 'tabs'
       }
     })
+
     expect(tree).toMatchObject({ ratio: 0.9, second: { activeId: 'review' } })
     expect(layoutPaneIds(tree)).toEqual(['chat', 'review', 'board'])
   })
@@ -68,9 +69,11 @@ describe('desktop product parity contracts', () => {
 
   it('deduplicates references and suggestion providers deterministically', () => {
     const first = upsertComposerReference(composerState, { id: 'readme', kind: 'file', label: 'README', value: '/README.md' })
+
     const second = upsertComposerReference(first, {
       id: 'readme', kind: 'file', label: 'README locked', locked: true, value: '/README.md'
     })
+
     expect(second.references).toHaveLength(1)
     expect(second.chips).toEqual([{ id: 'reference:readme', label: 'README locked', referenceId: 'readme', tone: 'locked' }])
     expect(rankComposerSuggestions([
@@ -83,12 +86,14 @@ describe('desktop product parity contracts', () => {
   it('loads plugin pages/widgets/commands/settings atomically and unloads deterministically', () => {
     const registry = new PluginContributionRegistry()
     const run = vi.fn()
+
     const dispose = registry.load('delivery', [
       { id: 'today', kind: 'page', route: '/delivery', title: 'Delivery' },
       { area: 'rail', id: 'status', kind: 'widget', title: 'Status' },
       { id: 'ship', kind: 'command', run, title: 'Ship' },
       { defaultValue: false, id: 'confirm', key: 'confirm', kind: 'setting', title: 'Confirm' }
     ])
+
     expect(registry.list().map(item => item.kind)).toEqual(['command', 'page', 'setting', 'widget'])
     expect(dispose()).toEqual(['command:ship', 'page:today', 'setting:confirm', 'widget:status'])
     expect(registry.list()).toEqual([])
@@ -102,10 +107,13 @@ describe('desktop product parity contracts', () => {
       title: 'Report',
       versions: [{ createdAt: 1, id: 'v1', label: 'v1', mimeType: 'text/markdown', sourceMessageId: null, url: 'v1.md' }]
     }
+
     const locked = lockArtifactPreview(state, 'v1')
+
     const updated = addArtifactVersion(locked, {
       createdAt: 2, id: 'v2', label: 'v2', mimeType: 'text/markdown', sourceMessageId: 'm2', url: 'v2.md'
     })
+
     expect(updated.currentVersionId).toBe('v2')
     expect(artifactPreviewVersion(updated)?.id).toBe('v1')
   })
@@ -120,11 +128,13 @@ describe('desktop product parity contracts', () => {
       wakeEnabled: false,
       wakePhrase: 'Hey Clio'
     }
+
     expect(reduceVoiceWake(voice, { type: 'arm' })).toMatchObject({ mode: 'disabled', wakeEnabled: false })
 
     const handoff = createCrashHandoff({ at: 7, clean: false, reason: 'renderer gone' }, [
       { id: 's1', title: 'Build' }, { id: 's1', title: 'Duplicate' }, { id: 's2', title: 'Test' }
     ])
+
     expect(handoff?.items).toHaveLength(2)
     const continued = updateCrashHandoffItem(handoff!, 's1', 'continued')
     const duplicateSignal = updateCrashHandoffItem(continued, 's1', 'failed', 'late failure')

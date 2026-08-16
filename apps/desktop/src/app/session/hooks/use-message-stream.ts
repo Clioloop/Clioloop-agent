@@ -139,6 +139,7 @@ export function fusionStatusMessageBody(fusion: FusionStatusPayload | undefined)
     revising: '🔁 ',
     working: '🛠️ '
   }
+
   const prefix = phasePrefixes[fusion.phase]
 
   if (prefix === undefined) {
@@ -970,6 +971,7 @@ export function useMessageStream({
           // panel phases as persistent system lines so planner/reviewer/judge
           // progress and degraded states are visible after the turn.
           const body = fusionStatusMessageBody(event.payload as FusionStatusPayload | undefined)
+
           if (body) {
             updateSessionState(sessionId, state => ({
               ...state,
