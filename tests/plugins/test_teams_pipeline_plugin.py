@@ -16,6 +16,12 @@ from plugins.teams_pipeline.store import TeamsPipelineStore
 from plugins.teams_pipeline.models import MeetingArtifact
 
 
+@pytest.fixture
+def anyio_backend():
+    """The Teams pipeline uses asyncio Graph clients and subprocess helpers."""
+    return "asyncio"
+
+
 class FakeGraphClient:
     def __init__(self) -> None:
         self.downloaded = False

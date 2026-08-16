@@ -310,6 +310,7 @@ gateway:
     label_output_tokens:      "출력 토큰: {count}"
     label_total:              "합계: {count}"
     label_api_calls:          "API 호출: {count}"
+    label_tool_calls:         "도구 호출: {count}"
     label_cost:               "비용: {prefix}${amount}"
     label_cost_included:      "비용: 포함됨"
     label_context:            "컨텍스트: {used} / {total} ({pct}%)"

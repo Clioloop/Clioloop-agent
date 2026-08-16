@@ -383,7 +383,11 @@ class PluginContext:
         self._owner = manifest.key or manifest.name
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
-        self.state = NamespacedState(manager._state_root, self._owner)
+        state_root = Path(
+            getattr(manager, "_state_root", None)
+            or (get_clio_home() / "plugin-state")
+        )
+        self.state = NamespacedState(state_root, self._owner)
         self.config = NamespacedConfig(self._owner)
 
     @property

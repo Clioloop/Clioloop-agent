@@ -310,6 +310,7 @@ gateway:
     label_output_tokens:      "Ausgabetokens: {count}"
     label_total:              "Gesamt: {count}"
     label_api_calls:          "API-Aufrufe: {count}"
+    label_tool_calls:         "Tool-Aufrufe: {count}"
     label_cost:               "Kosten: {prefix}${amount}"
     label_cost_included:      "Kosten: inbegriffen"
     label_context:            "Kontext: {used} / {total} ({pct}%)"

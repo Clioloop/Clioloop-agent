@@ -8,6 +8,12 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_o
 from gateway.platforms.msgraph_webhook import AIOHTTP_AVAILABLE, MSGraphWebhookAdapter
 
 
+@pytest.fixture
+def anyio_backend():
+    """The gateway adapter is asyncio/aiohttp-native; do not run it under Trio."""
+    return "asyncio"
+
+
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
     extra = {
         "host": "127.0.0.1",

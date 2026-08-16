@@ -17,6 +17,12 @@ from tools.microsoft_graph_auth import (
 )
 
 
+@pytest.fixture
+def anyio_backend():
+    """The token provider deliberately uses asyncio locking and gathering."""
+    return "asyncio"
+
+
 class TestGraphCredentials:
     def test_from_env_raises_for_missing_required_values(self):
         with pytest.raises(MicrosoftGraphConfigError) as exc:

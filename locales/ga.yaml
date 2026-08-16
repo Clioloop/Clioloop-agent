@@ -314,6 +314,7 @@ gateway:
     label_output_tokens:      "Comharthaí aschuir: {count}"
     label_total:              "Iomlán: {count}"
     label_api_calls:          "Glaonna API: {count}"
+    label_tool_calls:         "Glaonna uirlisí: {count}"
     label_cost:               "Costas: {prefix}${amount}"
     label_cost_included:      "Costas: san áireamh"
     label_context:            "Comhthéacs: {used} / {total} ({pct}%)"

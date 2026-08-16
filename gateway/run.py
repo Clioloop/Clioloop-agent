@@ -6547,8 +6547,9 @@ class GatewayRunner:
 
             self._running = False
             self._draining = True
-            if self._reliability_lifecycle is not None:
-                self._reliability_lifecycle.start_drain("gateway stopping")
+            reliability_lifecycle = getattr(self, "_reliability_lifecycle", None)
+            if reliability_lifecycle is not None:
+                reliability_lifecycle.start_drain("gateway stopping")
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -14399,8 +14400,10 @@ class GatewayRunner:
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
-            if getattr(agent, "session_tool_calls", 0) > 0:
-                lines.append(t("gateway.usage.label_tool_calls", count=agent.session_tool_calls))
+            raw_tool_calls = getattr(agent, "session_tool_calls", 0)
+            tool_calls = raw_tool_calls if isinstance(raw_tool_calls, int) else 0
+            if tool_calls > 0:
+                lines.append(t("gateway.usage.label_tool_calls", count=tool_calls))
 
             # Cost estimation
             try:

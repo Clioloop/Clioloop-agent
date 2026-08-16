@@ -310,6 +310,7 @@ gateway:
     label_output_tokens:      "Kimeneti tokenek: {count}"
     label_total:              "Összesen: {count}"
     label_api_calls:          "API-hívások: {count}"
+    label_tool_calls:         "Eszközhívások: {count}"
     label_cost:               "Költség: {prefix}${amount}"
     label_cost_included:      "Költség: belefoglalva"
     label_context:            "Kontextus: {used} / {total} ({pct}%)"

@@ -1,27 +1,24 @@
 """Tests for session_tool_calls counter — per-session tool function call tracking."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_session_tool_calls_init():
     """session_tool_calls starts at 0 after reset_session_state."""
-    import sys
-    sys.path.insert(0, "/home/gjw/Clioloop-agent-main")
-
     # We can't easily instantiate a full AIAgent, but we can verify
     # the attribute is defined in reset_session_state by checking the
     # source has the initialization.
-    from pathlib import Path
-    source = Path("/home/gjw/Clioloop-agent-main/run_agent.py").read_text()
+    source = (PROJECT_ROOT / "run_agent.py").read_text()
     assert "self.session_tool_calls = 0" in source
 
 
 def test_tool_executor_concurrent_increments():
     """execute_tool_calls_concurrent should increment session_tool_calls."""
-    import sys
-    sys.path.insert(0, "/home/gjw/Clioloop-agent-main")
-
     from agent.tool_executor import execute_tool_calls_concurrent
 
     # Create a mock agent with session_tool_calls
@@ -66,9 +63,6 @@ def test_tool_executor_concurrent_increments():
 
 def test_tool_executor_sequential_increments():
     """execute_tool_calls_sequential should increment session_tool_calls."""
-    import sys
-    sys.path.insert(0, "/home/gjw/Clioloop-agent-main")
-
     from agent.tool_executor import execute_tool_calls_sequential
 
     agent = MagicMock()
@@ -96,9 +90,6 @@ def test_tool_executor_sequential_increments():
 
 def test_tool_calls_not_incremented_when_agent_lacks_attr():
     """If agent doesn't have session_tool_calls, no error should occur."""
-    import sys
-    sys.path.insert(0, "/home/gjw/Clioloop-agent-main")
-
     from agent.tool_executor import execute_tool_calls_sequential
 
     agent = MagicMock()
@@ -128,23 +119,20 @@ def test_tool_calls_not_incremented_when_agent_lacks_attr():
 
 def test_locale_has_tool_calls_label():
     """English locale should have the label_tool_calls string."""
-    from pathlib import Path
-    source = Path("/home/gjw/Clioloop-agent-main/locales/en.yaml").read_text()
+    source = (PROJECT_ROOT / "locales" / "en.yaml").read_text()
     assert "label_tool_calls:" in source
     assert "Tool calls:" in source
 
 
 def test_gateway_has_tool_calls_display():
     """Gateway /usage should reference session_tool_calls."""
-    from pathlib import Path
-    source = Path("/home/gjw/Clioloop-agent-main/gateway/run.py").read_text()
+    source = (PROJECT_ROOT / "gateway" / "run.py").read_text()
     assert "session_tool_calls" in source
     assert "label_tool_calls" in source
 
 
 def test_cli_has_tool_calls_display():
     """CLI /usage should display tool calls count."""
-    from pathlib import Path
-    source = Path("/home/gjw/Clioloop-agent-main/cli.py").read_text()
+    source = (PROJECT_ROOT / "cli.py").read_text()
     assert "session_tool_calls" in source
     assert "Tool calls:" in source

@@ -310,6 +310,7 @@ gateway:
     label_output_tokens:      "輸出 token：{count}"
     label_total:              "總計：{count}"
     label_api_calls:          "API 呼叫次數：{count}"
+    label_tool_calls:         "工具呼叫: {count}"
     label_cost:               "費用：{prefix}${amount}"
     label_cost_included:      "費用：已包含"
     label_context:            "上下文：{used} / {total}（{pct}%）"

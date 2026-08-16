@@ -1445,6 +1445,10 @@ def _get_platform_tools(
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
+        explicit_platform_selection = (
+            platform in platform_toolsets
+            and isinstance(platform_toolsets.get(platform), list)
+        )
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
@@ -1452,8 +1456,11 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
-            elif pts not in known_for_platform:
-                # New plugin not yet seen by clio tools — default enabled
+            elif pts not in known_for_platform and not explicit_platform_selection:
+                # New plugins default on only before the user saves a platform
+                # selection. Once a list exists it is an authoritative allowlist,
+                # so installing/discovering another plugin cannot silently widen
+                # that platform's tool access.
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 

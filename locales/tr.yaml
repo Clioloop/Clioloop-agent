@@ -310,6 +310,7 @@ gateway:
     label_output_tokens:      "Çıktı token'ları: {count}"
     label_total:              "Toplam: {count}"
     label_api_calls:          "API çağrıları: {count}"
+    label_tool_calls:         "Araç çağrıları: {count}"
     label_cost:               "Maliyet: {prefix}${amount}"
     label_cost_included:      "Maliyet: dahil"
     label_context:            "Bağlam: {used} / {total} ({pct}%)"
