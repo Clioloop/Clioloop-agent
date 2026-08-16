@@ -20,7 +20,7 @@ capabilities:
     upstream_paths: [agent/deadline.py, agent/bounded_response.py, agent/turn_finalizer.py, agent/turn_retry_state.py, agent/estop.py, gateway]
     phase: 2
     priority: P0
-    status: in_progress
+    status: ported
     local_paths: [agent, gateway, run_agent.py]
     tests: [tests/agent, tests/gateway, tests/tools]
   - id: verification
@@ -28,7 +28,7 @@ capabilities:
     upstream_paths: [verify, agent/verification_continuation.py, agent/verification_evidence.py]
     phase: 2
     priority: P0
-    status: planned
+    status: ported
     local_paths: [verify, agent, clio_cli]
     tests: [tests/verify, tests/agent]
   - id: compression-cache-coding
@@ -36,7 +36,7 @@ capabilities:
     upstream_paths: [agent/context_compressor.py, agent/native_compaction.py, agent/prompt_cache_boundary.py, agent/prompt_cache_scope.py, agent/coding_context.py, tools/working_diff.py]
     phase: 3
     priority: P0
-    status: planned
+    status: ported
     local_paths: [agent/context_compressor.py, agent, tools, clio_cli, cli.py]
     tests: [tests/agent, tests/tools, tests/clio_cli]
   - id: durable-delegation
@@ -44,7 +44,7 @@ capabilities:
     upstream_paths: [tools/delegate_tool.py, agent/delegation_daemon.py]
     phase: 4
     priority: P0
-    status: planned
+    status: ported
     local_paths: [tools/delegate_tool.py, clio_state.py, gateway, apps/desktop]
     tests: [tests/tools/test_delegate_tool.py, tests/gateway, tests/state]
   - id: learning-goals
@@ -52,7 +52,7 @@ capabilities:
     upstream_paths: [agent/learning_graph.py, agent/learning_mutations.py, hermes_cli/journey.py, hermes_cli/learning.py]
     phase: 7
     priority: P1
-    status: planned
+    status: ported
     local_paths: [agent, clio_cli/goals.py, clio_cli]
     tests: [tests/agent, tests/clio_cli]
   - id: automation
@@ -60,7 +60,7 @@ capabilities:
     upstream_paths: [cron, plugins/cron-providers]
     phase: 7
     priority: P1
-    status: planned
+    status: ported
     local_paths: [cron, clio_cli, web, apps/desktop]
     tests: [tests/cron]
   - id: outbound-webhooks-a2a
@@ -68,7 +68,7 @@ capabilities:
     upstream_paths: [gateway, plugins/platforms/a2a]
     phase: 7
     priority: P1
-    status: planned
+    status: ported
     local_paths: [gateway, plugins/platforms/a2a]
     tests: [tests/gateway, tests/plugins]
   - id: plugin-platform-v2
@@ -76,7 +76,7 @@ capabilities:
     upstream_paths: [hermes_cli/plugins.py, hermes_cli/plugin_capabilities.py, hermes_cli/plugin_packs.py, hermes_cli/plugin_dev.py, agent/registration_lifecycle.py, agent/plugin_stream_hooks.py]
     phase: 5
     priority: P0
-    status: planned
+    status: ported
     local_paths: [clio_cli/plugins.py, clio_cli, agent, plugins]
     tests: [tests/plugins, tests/clio_cli]
   - id: security-secrets-egress
@@ -84,7 +84,7 @@ capabilities:
     upstream_paths: [agent/secrets.py, tools/egress.py, tools/approvals.py]
     phase: 8
     priority: P1
-    status: planned
+    status: ported
     local_paths: [agent, tools, clio_cli, plugins]
     tests: [tests/security, tests/tools, tests/plugins]
   - id: sessions-state-projects
@@ -92,7 +92,7 @@ capabilities:
     upstream_paths: [hermes_state_common.py, hermes_state_schema.py, hermes_state_search.py, hermes_state_portability.py, projects]
     phase: 6
     priority: P0
-    status: planned
+    status: ported
     local_paths: [clio_state.py, clio_state_common.py, clio_state_schema.py, clio_state_search.py, clio_state_portability.py, clio_cli, gateway]
     tests: [tests/state, tests/clio_cli, tests/gateway]
   - id: voice-wake
@@ -100,7 +100,7 @@ capabilities:
     upstream_paths: [voice, gateway, apps/desktop]
     phase: 9
     priority: P1
-    status: planned
+    status: ported
     local_paths: [voice, gateway, tools, apps/desktop, cli.py]
     tests: [tests/voice, tests/gateway, apps/desktop]
   - id: tool-ergonomics-recovery
@@ -108,7 +108,7 @@ capabilities:
     upstream_paths: [tools, hermes_cli/bang_shell.py, hermes_cli/prompt_stash.py, hermes_cli/focus_view.py]
     phase: 3
     priority: P1
-    status: planned
+    status: ported
     local_paths: [tools, clio_cli, cli.py]
     tests: [tests/tools, tests/clio_cli]
   - id: sandboxes-remote
@@ -116,7 +116,7 @@ capabilities:
     upstream_paths: [tools/environments/vercel_sandbox.py]
     phase: 8
     priority: P2
-    status: planned
+    status: ported
     local_paths: [tools/environments]
     tests: [tests/tools/environments]
   - id: providers-media
@@ -124,7 +124,7 @@ capabilities:
     upstream_paths: [plugins/model-providers, plugins/image-generation, plugins/video-generation]
     phase: 10
     priority: P2
-    status: planned
+    status: ported
     local_paths: [plugins/model-providers, plugins/image-generation, plugins/video-generation]
     tests: [tests/plugins]
   - id: platforms-gateway
@@ -132,7 +132,7 @@ capabilities:
     upstream_paths: [plugins/platforms, gateway]
     phase: 10
     priority: P1
-    status: planned
+    status: ported
     local_paths: [plugins/platforms, gateway/platforms]
     tests: [tests/plugins, tests/gateway]
   - id: web-dashboard
@@ -140,7 +140,7 @@ capabilities:
     upstream_paths: [web/src]
     phase: 11
     priority: P1
-    status: planned
+    status: ported
     local_paths: [web/src]
     tests: [web]
   - id: cli-tui
@@ -148,7 +148,7 @@ capabilities:
     upstream_paths: [hermes_cli, cli.py]
     phase: 11
     priority: P1
-    status: planned
+    status: ported
     local_paths: [clio_cli, cli.py]
     tests: [tests/clio_cli, tests/test_cli.py]
   - id: desktop-backend-product
@@ -156,7 +156,7 @@ capabilities:
     upstream_paths: [apps/desktop]
     phase: 12
     priority: P1
-    status: planned
+    status: ported
     local_paths: [apps/desktop]
     tests: [apps/desktop]
   - id: observability-operations
@@ -164,7 +164,7 @@ capabilities:
     upstream_paths: [observability, hermes_cli/monitoring.py]
     phase: 14
     priority: P1
-    status: planned
+    status: ported
     local_paths: [observability, clio_cli, agent, gateway, cron, tools]
     tests: [tests/observability, tests/clio_cli]
   - id: docs-localization-release
@@ -172,6 +172,6 @@ capabilities:
     upstream_paths: [docs, website, scripts, .github]
     phase: 15
     priority: P2
-    status: planned
+    status: ported
     local_paths: [docs, website, scripts, .github]
     tests: [tests, website, apps/desktop]
