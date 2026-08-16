@@ -4,6 +4,11 @@ export const DEFAULT_LOCALE: Locale = 'en'
 
 export const LOCALE_OPTIONS = [
   {
+    id: 'ar',
+    name: 'العربية',
+    configValue: 'ar'
+  },
+  {
     id: 'en',
     name: 'English',
     configValue: 'en'
@@ -23,6 +28,9 @@ export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
 ) as Record<Locale, { name: string }>
 
 const LOCALE_ALIASES: Record<string, Locale> = {
+  ar: 'ar',
+  'ar-sa': 'ar',
+  ar_sa: 'ar',
   en: 'en',
   'en-us': 'en',
   en_us: 'en',

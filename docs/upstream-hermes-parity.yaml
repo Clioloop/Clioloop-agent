@@ -173,5 +173,5 @@ capabilities:
     phase: 15
     priority: P2
     status: ported
-    local_paths: [docs, website, scripts, .github]
-    tests: [tests, website, apps/desktop]
+    local_paths: [docs, scripts, config, .github, web/src/i18n, apps/desktop/src/i18n]
+    tests: [tests/test_release_closure_scripts.py, apps/desktop/src/i18n]

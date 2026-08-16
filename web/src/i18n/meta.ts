@@ -8,6 +8,7 @@ import type { Locale } from "./types";
 // any single jurisdiction). Endonyms are unambiguous and avoid the political
 // mismapping that flag pairings inevitably create.
 export const LOCALE_META: Record<Locale, { name: string }> = {
+  ar: { name: "العربية" },
   af: { name: "Afrikaans" },
   de: { name: "Deutsch" },
   en: { name: "English" },

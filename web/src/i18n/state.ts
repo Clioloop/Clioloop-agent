@@ -1,6 +1,7 @@
 import { createContext } from "react";
 
 import { af } from "./af";
+import { ar } from "./ar";
 import { de } from "./de";
 import { en } from "./en";
 import { es } from "./es";
@@ -19,6 +20,7 @@ import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
 
 export const TRANSLATIONS: Record<Locale, Translations> = {
+  ar,
   af,
   de,
   en,

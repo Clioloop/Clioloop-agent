@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "shards": [
+    {"id": "agent", "paths": ["tests/agent", "tests/tools"], "timeout_minutes": 25},
+    {"id": "gateway", "paths": ["tests/gateway", "tests/cron"], "timeout_minutes": 25},
+    {"id": "core", "paths": ["tests"], "exclude": ["tests/agent", "tests/tools", "tests/gateway", "tests/cron"], "timeout_minutes": 30},
+    {"id": "web", "command": "npm --workspace web run build", "timeout_minutes": 15},
+    {"id": "desktop", "command": "npm --workspace apps/desktop run test:ui -- --run", "timeout_minutes": 20}
+  ]
+}

@@ -92,6 +92,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
+    document.documentElement.lang = locale
+    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
   }, [locale])
 
   useEffect(() => {

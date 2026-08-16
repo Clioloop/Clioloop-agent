@@ -1,0 +1,32 @@
+name: Weekly upstream parity report
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# Audit only: no issue, PR, commit, artifact, or repository write permission.
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out Hermes read-only
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: upstream-hermes
+          persist-credentials: false
+      - name: Produce machine-readable report (stdout only)
+        run: python scripts/scan_upstream_parity.py --local . --upstream upstream-hermes
+      - name: Verify release closure
+        run: |
+          python scripts/generate_references.py --check
+          python scripts/lint_skills.py
+          python scripts/verify_dependency_policy.py
+          python scripts/verify_release_metadata.py

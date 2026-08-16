@@ -1097,6 +1097,12 @@ clone_repo() {
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
+            # Transaction boundary for installer/update rollback. User edits
+            # are stashed below; this pair restores the managed checkout.
+            local previous_head previous_branch
+            previous_head=$(git rev-parse HEAD)
+            previous_branch=$(git symbolic-ref --quiet --short HEAD || true)
+
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
                 local stash_name
@@ -1106,9 +1112,19 @@ clone_repo() {
                 autostash_ref="stash@{0}"
             fi
 
-            git fetch origin
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
+            if ! { git fetch origin && git checkout "$BRANCH" && git pull --ff-only origin "$BRANCH"; }; then
+                log_error "Update failed; rolling back to $previous_head"
+                if [ -n "$previous_branch" ]; then
+                    git checkout -f "$previous_branch" >/dev/null 2>&1 || true
+                else
+                    git checkout --detach -f "$previous_head" >/dev/null 2>&1 || true
+                fi
+                git reset --hard "$previous_head" >/dev/null 2>&1 || true
+                if [ -n "$autostash_ref" ]; then
+                    log_info "Your local changes remain preserved in $autostash_ref"
+                fi
+                exit 1
+            fi
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"

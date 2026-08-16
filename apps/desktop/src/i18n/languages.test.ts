@@ -16,6 +16,7 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
     expect(normalizeLocale(' zh_hans_cn ')).toBe('zh')
+    expect(normalizeLocale('ar-SA')).toBe('ar')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -34,5 +35,6 @@ describe('desktop i18n languages', () => {
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
     expect(localeConfigValue('zh')).toBe('zh')
+    expect(localeConfigValue('ar')).toBe('ar')
   })
 })

@@ -59,13 +59,22 @@ _nb_get_link_dir() {
 
 _nb_node_major() {
     local v
-    v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+    v=$(node --version 2>/dev/null) || { echo 0; return; }
+    v=${v#v}
+    v=${v%%.*}
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
-    [ "$(_nb_node_major)" -ge "$CLIO_NODE_MIN_VERSION" ]
+    [ "$(_nb_node_major)" -ge "$CLIO_NODE_MIN_VERSION" ] || return 1
+    # A version string alone is insufficient after an interrupted runtime
+    # update: execute Node and npm so corrupt managed installs are healed.
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' \
+        >/dev/null 2>&1 || return 1
+    command -v npm >/dev/null 2>&1 || return 1
+    npm --version >/dev/null 2>&1 || return 1
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -196,8 +205,17 @@ _nb_install_bundled_node() {
     fi
 
     mkdir -p "$CLIO_HOME"
-    rm -rf "$CLIO_HOME/node"
-    mv "$extracted" "$CLIO_HOME/node"
+    # Atomic runtime replacement: keep the old tree until the new Node and npm
+    # pass health checks, so an interrupted self-heal remains reversible.
+    local node_staging="$CLIO_HOME/node.new.$$"
+    local node_backup="$CLIO_HOME/node.rollback.$$"
+    rm -rf "$node_staging" "$node_backup"
+    mv "$extracted" "$node_staging"
+    [ ! -e "$CLIO_HOME/node" ] || mv "$CLIO_HOME/node" "$node_backup"
+    mv "$node_staging" "$CLIO_HOME/node" || {
+        [ ! -e "$node_backup" ] || mv "$node_backup" "$CLIO_HOME/node"
+        rm -rf "$tmp"; return 1
+    }
     rm -rf "$tmp"
 
     local _link_dir
@@ -208,7 +226,12 @@ _nb_install_bundled_node() {
     ln -sf "$CLIO_HOME/node/bin/npx"  "$_link_dir/npx"
     export PATH="$CLIO_HOME/node/bin:$PATH"
 
-    _nb_have_modern_node || return 1
+    if ! _nb_have_modern_node; then
+        rm -rf "$CLIO_HOME/node"
+        [ ! -e "$node_backup" ] || mv "$node_backup" "$CLIO_HOME/node"
+        return 1
+    fi
+    rm -rf "$node_backup"
     _nb_ok "Node $(node --version) installed to $CLIO_HOME/node/"
     return 0
 }
@@ -233,6 +256,7 @@ ensure_node() {
             CLIO_NODE_AVAILABLE=true
             return 0
         fi
+        _nb_warn "Clio-managed Node runtime is unhealthy; attempting repair"
     fi
 
     # Version managers first — respect the user's existing setup.

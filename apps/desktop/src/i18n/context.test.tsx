@@ -56,6 +56,19 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('Language')
   })
 
+  it('sets Arabic language and RTL direction on the shared document surface', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="ar-SA">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('ar')
+    expect(screen.getByTestId('label').textContent).toBe('اللغة')
+    expect(document.documentElement.lang).toBe('ar')
+    expect(document.documentElement.dir).toBe('rtl')
+  })
+
   it('loads the initial locale from display.language config', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'zh-Hans' } }),

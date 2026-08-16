@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import {
   getInitialLocale,
@@ -11,6 +11,12 @@ import type { Locale } from "./types";
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.lang = locale;
+    root.dir = locale === "ar" ? "rtl" : "ltr";
+  }, [locale]);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);

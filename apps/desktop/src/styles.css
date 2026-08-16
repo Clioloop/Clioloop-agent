@@ -788,7 +788,7 @@ canvas {
    virtualized items unmount, so :nth-last-child can't fire reliably. */
 
 [data-slot='aui_assistant-message-content'] {
-  padding-left: var(--message-text-indent);
+  padding-inline-start: var(--message-text-indent);
   font-size: var(--conversation-text-font-size);
   line-height: 1.5;
 }

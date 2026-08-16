@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "project": "Clio Agent",
+  "owner": "Omni Loop Labs",
+  "license": "MIT",
+  "upstreams": [
+    {
+      "name": "Hermes Agent",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "revision": "165c889e5b4277b56dadd42949a4112c1e6175a6",
+      "license": "MIT",
+      "usage": "behavioral parity audit; changes are manually reviewed and Clio-branded, never auto-merged"
+    }
+  ]
+}

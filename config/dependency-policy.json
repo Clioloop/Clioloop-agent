@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "python": {
+    "require_exact_direct": true,
+    "allowed_ranges": ["fastapi", "uvicorn", "ptyprocess", "pywinpty"]
+  },
+  "npm": {
+    "forbid_tags": ["latest", "next", "beta", "canary"],
+    "allowed_tags": ["@clioloop-agent/ui"],
+    "allowed_protocols": ["file:", "workspace:"]
+  }
+}
