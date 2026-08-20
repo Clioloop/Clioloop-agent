@@ -17,13 +17,14 @@ No user-authored ``SOUL.md`` file is ever changed by Bot Mode.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import hashlib
 import ipaddress
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,8 @@ ROOM_MAX_VISIBLE_PER_SEND = 10
 ROOM_HISTORY_LIMIT = 24
 ROOM_MAX_ATTACHMENTS = 12
 ROOM_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+ROOM_REMOTE_ATTACHMENT_BYTES = 7 * 1024 * 1024
+PEER_MAX_RESPONSE_BYTES = 1024 * 1024
 ROOM_SOFT_TIMEOUT_SECONDS = 90.0
 ROOM_HARD_TIMEOUT_SECONDS = 300.0
 WORKER_ACTIVE_SECONDS = 120.0
@@ -59,6 +62,11 @@ _SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 _MENTION_RE = re.compile(r"(?<![\w@])@([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})")
 _PASS_RE = re.compile(r"^\s*\(?\s*pass\s*\)?\s*[.!]?\s*$", re.I)
+_ROOM_STAGING_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+_MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$")
+_ROOM_ATTACHMENT_MIME_TYPES = frozenset(
+    {"application/pdf", "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown"}
+)
 _ROOM_LOCK = threading.RLock()
 _CRON_LOCK = threading.RLock()
 
@@ -119,6 +127,41 @@ def _validate_source(name: str) -> str:
     normalized = str(name or "local").strip().lower()
     if not _SOURCE_RE.fullmatch(normalized):
         raise ValueError(f"Invalid Bot source: {name!r}")
+    return normalized
+
+
+def _validate_room_staging_id(room_id: str) -> str:
+    normalized = str(room_id or "").strip().lower()
+    if not _ROOM_STAGING_RE.fullmatch(normalized):
+        raise ValueError("Invalid Bot room attachment identifier")
+    return normalized
+
+
+def _validate_attachment_name(name: Any) -> str:
+    if not isinstance(name, str):
+        raise ValueError("Attachment name must be a string")
+    normalized = name.strip()
+    if (
+        not normalized
+        or len(normalized) > 200
+        or normalized in {".", ".."}
+        or Path(normalized).name != normalized
+        or "/" in normalized
+        or "\\" in normalized
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise ValueError("Attachment name must be a plain filename of at most 200 characters")
+    return normalized
+
+
+def _validate_attachment_mime(mime_type: Any) -> str:
+    if not isinstance(mime_type, str):
+        raise ValueError("Attachment MIME type must be a string")
+    normalized = mime_type.strip().lower()
+    if not _MIME_RE.fullmatch(normalized):
+        raise ValueError("Attachment MIME type is invalid")
+    if normalized not in _ROOM_ATTACHMENT_MIME_TYPES and not normalized.startswith("image/"):
+        raise ValueError(f"Unsupported room attachment type: {normalized}")
     return normalized
 
 
@@ -856,19 +899,118 @@ def _prepare_attachments(attachments: Optional[Sequence[Mapping[str, Any]]]) -> 
         return []
     if len(attachments) > ROOM_MAX_ATTACHMENTS:
         raise ValueError(f"At most {ROOM_MAX_ATTACHMENTS} attachments are allowed")
-    allowed_mime = {"application/pdf", "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown"}
     clean: List[Dict[str, Any]] = []
     for item in attachments:
+        if not isinstance(item, Mapping):
+            raise ValueError("Each room attachment must be an object")
         path = str(item.get("path") or "").strip()
-        name = str(item.get("name") or Path(path).name or "attachment").strip()[:200]
-        mime = str(item.get("mime_type") or item.get("mime") or "application/octet-stream").lower()
-        size = int(item.get("size") or (Path(path).stat().st_size if path and Path(path).is_file() else 0))
-        if size < 0 or size > ROOM_MAX_ATTACHMENT_BYTES:
+        if not path:
+            raise ValueError("Room attachment path is required")
+        source = Path(path).expanduser().resolve()
+        if not source.is_file():
+            raise ValueError(f"Room attachment does not exist: {source}")
+        name = _validate_attachment_name(item.get("name") or source.name)
+        mime = _validate_attachment_mime(item.get("mime_type") or item.get("mime") or "")
+        size = source.stat().st_size
+        if size > ROOM_MAX_ATTACHMENT_BYTES:
             raise ValueError(f"Attachment {name!r} exceeds the 25 MiB limit")
-        if mime not in allowed_mime and not mime.startswith("image/"):
-            raise ValueError(f"Unsupported room attachment type: {mime}")
-        clean.append({"name": name, "path": path, "mime_type": mime, "size": size})
+        clean.append({"name": name, "path": str(source), "mime_type": mime, "size": size})
     return clean
+
+
+def _room_staging_root(profile: str, room_id: str) -> Path:
+    """Create an owner-only, non-symlink staging directory for one profile/room."""
+    home = profile_home(profile).expanduser().resolve()
+    destination = home
+    for component in ("tmp", "bot_rooms", _validate_room_staging_id(room_id)):
+        destination = destination / component
+        if destination.is_symlink():
+            raise BotModeError(f"Refusing symlinked Bot room attachment directory: {destination}")
+        destination.mkdir(mode=0o700, exist_ok=True)
+        resolved = destination.resolve()
+        if resolved != home and home not in resolved.parents:
+            raise BotModeError("Bot room attachment directory escapes the target profile")
+        os.chmod(resolved, 0o700)
+        destination = resolved
+    return destination
+
+
+def _attachment_suffix(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    return suffix if re.fullmatch(r"\.[a-z0-9]{1,15}", suffix) else ""
+
+
+def _write_staged_attachment(destination_root: Path, name: str, payload: bytes) -> Path:
+    """Write bytes to a random, exclusively-created owner-only file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    for _attempt in range(10):
+        destination = destination_root / f"{uuid.uuid4().hex}{_attachment_suffix(name)}"
+        try:
+            fd = os.open(destination, flags, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(destination, 0o600)
+            return destination
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+    raise BotModeError("Could not allocate a random Bot room attachment path")
+
+
+def stage_received_room_attachment(
+    profile: str,
+    room_id: str,
+    *,
+    name: Any,
+    mime_type: Any,
+    size: Any,
+    base64_data: Any,
+) -> Dict[str, Any]:
+    """Strictly decode and stage one authenticated peer attachment.
+
+    No sender-provided path is accepted or used. The returned path is meaningful
+    only on this receiving host and always lives below the target profile.
+    """
+    profile = _validate_profile(profile)
+    room_id = _validate_room_staging_id(room_id)
+    clean_name = _validate_attachment_name(name)
+    clean_mime = _validate_attachment_mime(mime_type)
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise ValueError("Attachment size must be an integer")
+    if size < 0 or size > ROOM_REMOTE_ATTACHMENT_BYTES:
+        raise ValueError("Remote Bot room attachments are limited to 7 MiB each")
+    if not isinstance(base64_data, str):
+        raise ValueError("Attachment base64_data must be a string")
+    max_encoded = 4 * ((ROOM_REMOTE_ATTACHMENT_BYTES + 2) // 3)
+    if len(base64_data) > max_encoded:
+        raise ValueError("Remote Bot room attachment Base64 payload exceeds the 7 MiB limit")
+    try:
+        encoded = base64_data.encode("ascii", "strict")
+        payload = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+        raise ValueError("Attachment base64_data is not strict Base64") from exc
+    if base64.b64encode(payload).decode("ascii") != base64_data:
+        raise ValueError("Attachment base64_data is not canonical Base64")
+    if len(payload) != size:
+        raise ValueError(f"Attachment declared size {size} does not match decoded size {len(payload)}")
+    destination = _write_staged_attachment(
+        _room_staging_root(profile, room_id),
+        clean_name,
+        payload,
+    )
+    return {
+        "name": clean_name,
+        "mime_type": clean_mime,
+        "size": size,
+        "path": str(destination),
+    }
 
 
 def _stage_attachments_for_member(
@@ -881,38 +1023,27 @@ def _stage_attachments_for_member(
         return []
     if member["source"] != "local":
         return [
-            {
-                "name": str(item["name"]),
-                "mime_type": str(item["mime_type"]),
-                "size": int(item["size"]),
-                "path": "",
-            }
+            upload_peer_room_attachment(
+                member["source"],
+                member["profile"],
+                room_id,
+                item,
+            )
             for item in attachments
         ]
-    destination_root = profile_home(member["profile"]) / "tmp" / "bot_rooms" / _slug(room_id)
-    destination_root.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(destination_root, 0o700)
-    except OSError:
-        pass
+    destination_root = _room_staging_root(member["profile"], room_id)
     staged: List[Dict[str, Any]] = []
     for item in attachments:
-        source_text = str(item.get("path") or "").strip()
-        row = dict(item)
-        if not source_text:
-            row["path"] = ""
-            staged.append(row)
-            continue
-        source = Path(source_text).expanduser().resolve()
+        source = Path(str(item.get("path") or "")).expanduser().resolve()
         if not source.is_file():
             raise ValueError(f"Room attachment does not exist: {source}")
-        suffix = source.suffix[:16]
-        destination = destination_root / f"{uuid.uuid4().hex[:12]}{suffix}"
-        shutil.copy2(source, destination)
-        try:
-            os.chmod(destination, 0o600)
-        except OSError:
-            pass
+        with source.open("rb") as handle:
+            payload = handle.read(ROOM_MAX_ATTACHMENT_BYTES + 1)
+        if len(payload) > ROOM_MAX_ATTACHMENT_BYTES:
+            raise ValueError(f"Attachment {item['name']!r} exceeds the 25 MiB limit")
+        destination = _write_staged_attachment(destination_root, str(item["name"]), payload)
+        row = dict(item)
+        row["size"] = len(payload)
         row["path"] = str(destination)
         staged.append(row)
     return staged
@@ -1002,6 +1133,17 @@ def send_room_message(
         room = store["rooms"].get(room_id)
         if not isinstance(room, dict):
             raise KeyError(room_id)
+        if any(member.get("source") != "local" for member in room.get("members") or []):
+            oversized = [
+                str(item["name"])
+                for item in clean_attachments
+                if int(item["size"]) > ROOM_REMOTE_ATTACHMENT_BYTES
+            ]
+            if oversized:
+                raise ValueError(
+                    "Remote Bot room attachments are limited to 7 MiB each; "
+                    f"too large: {', '.join(oversized)}"
+                )
         epoch = int(room.get("active_epoch") or 0) + 1
         room["active_epoch"] = epoch
         room["state"] = "running"
@@ -1365,6 +1507,13 @@ def peer_secret(name: str) -> str:
     return str(value or "").strip()
 
 
+class _NoPeerRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never replay a peer bearer credential to a redirect destination."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
 def _peer_request(url: str, key: str, *, method: str = "GET", body: Optional[Mapping[str, Any]] = None, timeout: float = 30.0) -> Dict[str, Any]:
     data = json.dumps(dict(body)).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
@@ -1373,12 +1522,88 @@ def _peer_request(url: str, key: str, *, method: str = "GET", body: Optional[Map
         method=method,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "clio-peer/1"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - explicitly registered URL
-        payload = response.read().decode("utf-8", "replace")
+    opener = urllib.request.build_opener(_NoPeerRedirectHandler())
+    with opener.open(request, timeout=timeout) as response:  # noqa: S310 - explicitly registered peer URL
+        payload_bytes = response.read(PEER_MAX_RESPONSE_BYTES + 1)
+    if len(payload_bytes) > PEER_MAX_RESPONSE_BYTES:
+        raise BotModeError("Peer response exceeds the 1 MiB limit")
+    payload = payload_bytes.decode("utf-8", "replace")
     parsed = json.loads(payload)
     if not isinstance(parsed, dict):
         raise BotModeError("Peer returned a non-object response")
     return parsed
+
+
+def upload_peer_room_attachment(
+    peer_name: str,
+    profile: str,
+    room_id: str,
+    attachment: Mapping[str, Any],
+    *,
+    timeout: float = 60.0,
+) -> Dict[str, Any]:
+    """Upload one local room file to an authenticated peer without redirects."""
+    peer_name = _validate_source(peer_name)
+    profile = _validate_profile(profile)
+    room_id = _validate_room_staging_id(room_id)
+    peer = load_peers().get(peer_name)
+    if not isinstance(peer, dict) or not peer.get("url"):
+        raise BotModeError(f"No peer named '{peer_name}'")
+    parsed = urllib.parse.urlsplit(str(peer["url"]).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        raise BotModeError(f"Peer '{peer_name}' has an invalid URL")
+    key = peer_secret(peer_name)
+    if not key:
+        raise BotModeError(f"No API key configured for peer '{peer_name}' ({_peer_key_env(peer_name)})")
+
+    source = Path(str(attachment.get("path") or "")).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"Room attachment does not exist: {source}")
+    name = _validate_attachment_name(attachment.get("name") or source.name)
+    mime_type = _validate_attachment_mime(attachment.get("mime_type") or "")
+    with source.open("rb") as handle:
+        payload = handle.read(ROOM_REMOTE_ATTACHMENT_BYTES + 1)
+    if len(payload) > ROOM_REMOTE_ATTACHMENT_BYTES:
+        raise ValueError(f"Remote Bot room attachment {name!r} exceeds the 7 MiB per-file limit")
+
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    try:
+        result = _peer_request(
+            f"{base}/api/bots/{urllib.parse.quote(profile, safe='')}/attachments",
+            key,
+            method="POST",
+            body={
+                "room_id": room_id,
+                "name": name,
+                "mime_type": mime_type,
+                "size": len(payload),
+                "base64_data": base64.b64encode(payload).decode("ascii"),
+            },
+            timeout=max(0.1, float(timeout)),
+        )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(1001)[:1000].decode("utf-8", "replace")
+        raise BotModeError(
+            f"Peer rejected room attachment (HTTP {exc.code}); redirects are not followed: {detail}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise BotModeError(f"Could not upload room attachment to peer '{peer_name}': {exc}") from exc
+
+    received = result.get("attachment")
+    if not isinstance(received, dict) or not isinstance(received.get("path"), str) or not received["path"]:
+        raise BotModeError(f"Peer '{peer_name}' returned no receiver-local attachment path")
+    if (
+        received.get("name") != name
+        or received.get("mime_type") != mime_type
+        or received.get("size") != len(payload)
+    ):
+        raise BotModeError(f"Peer '{peer_name}' returned mismatched attachment metadata")
+    return {
+        "name": name,
+        "mime_type": mime_type,
+        "size": len(payload),
+        "path": received["path"],
+    }
 
 
 def fetch_peer_roster(
@@ -1524,6 +1749,9 @@ __all__ = [
     "BOT_CANONICAL_KEY",
     "BOT_CHAT_TITLE",
     "BOT_PROTOCOL_VERSION",
+    "ROOM_MAX_ATTACHMENTS",
+    "ROOM_MAX_ATTACHMENT_BYTES",
+    "ROOM_REMOTE_ATTACHMENT_BYTES",
     "BotAddress",
     "BotModeError",
     "RoomTurnResult",
@@ -1549,6 +1777,8 @@ __all__ = [
     "run_profile_turn",
     "save_peer",
     "send_room_message",
+    "stage_received_room_attachment",
     "source_qualified_roster",
     "update_bot_metadata",
+    "upload_peer_room_attachment",
 ]

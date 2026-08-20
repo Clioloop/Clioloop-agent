@@ -414,6 +414,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_post("/api/bots/{profile}/attachments", adapter._handle_bot_attachment)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -429,6 +430,63 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+class TestBotAttachmentEndpoint:
+    @pytest.mark.asyncio
+    async def test_requires_auth_before_staging(self, auth_adapter, monkeypatch):
+        stage = MagicMock()
+        monkeypatch.setattr("clio_bot_mode.stage_received_room_attachment", stage)
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/bots/alpha/attachments",
+                json={"room_id": "room-1", "name": "x.txt"},
+            )
+        assert response.status == 401
+        stage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stages_authenticated_attachment_and_rejects_invalid_input(
+        self, auth_adapter, monkeypatch
+    ):
+        staged = {
+            "name": "x.txt",
+            "mime_type": "text/plain",
+            "size": 1,
+            "path": "/receiver/profile/tmp/bot_rooms/room-1/random.txt",
+        }
+        stage = MagicMock(return_value=staged)
+        monkeypatch.setattr("clio_bot_mode.stage_received_room_attachment", stage)
+        app = _create_app(auth_adapter)
+        headers = {"Authorization": "Bearer sk-secret"}
+        payload = {
+            "room_id": "room-1",
+            "name": "x.txt",
+            "mime_type": "text/plain",
+            "size": 1,
+            "base64_data": "eA==",
+        }
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/bots/alpha/attachments", json=payload, headers=headers
+            )
+            assert response.status == 201
+            assert (await response.json())["attachment"] == staged
+            stage.side_effect = ValueError("bad attachment")
+            invalid = await cli.post(
+                "/api/bots/alpha/attachments", json=payload, headers=headers
+            )
+            assert invalid.status == 400
+            assert (await invalid.json())["error"]["code"] == "invalid_bot_attachment"
+        stage.assert_called_with(
+            "alpha",
+            "room-1",
+            name="x.txt",
+            mime_type="text/plain",
+            size=1,
+            base64_data="eA==",
+        )
 
 
 # ---------------------------------------------------------------------------

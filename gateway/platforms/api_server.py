@@ -17,6 +17,7 @@ Exposes an HTTP server with endpoints:
 - GET  /api/bots                   — list profile-backed Bot roster
 - GET  /api/bots/{profile}         — read Bot metadata and canonical chat id
 - POST /api/bots/{profile}/dm      — deliver an attributed Bot turn
+- POST /api/bots/{profile}/attachments — stage one authenticated room attachment
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -1127,6 +1128,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_streaming": True,
                 "session_fork": True,
                 "bot_mode": True,
+                "bot_room_attachments": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1162,6 +1164,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "bots": {"method": "GET", "path": "/api/bots"},
                 "bot": {"method": "GET", "path": "/api/bots/{profile}"},
                 "bot_dm": {"method": "POST", "path": "/api/bots/{profile}/dm"},
+                "bot_attachment": {"method": "POST", "path": "/api/bots/{profile}/attachments"},
                 "bot_rooms": {"method": "GET|POST", "path": "/api/bot-rooms"},
                 "bot_room": {"method": "GET|DELETE", "path": "/api/bot-rooms/{room_id}"},
                 "bot_room_send": {"method": "POST", "path": "/api/bot-rooms/{room_id}/messages"},
@@ -1225,6 +1228,36 @@ class APIServerAdapter(BasePlatformAdapter):
         except (BotModeError, FileNotFoundError, OSError, ValueError) as exc:
             return web.json_response(_openai_error(str(exc), code="bot_delivery_failed"), status=400)
         return web.json_response({"object": "clio.bot.dm", **result})
+
+    async def _handle_bot_attachment(self, request: "web.Request") -> "web.Response":
+        """POST /api/bots/{profile}/attachments — stage one bounded peer file."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from clio_bot_mode import stage_received_room_attachment
+
+        try:
+            attachment = await asyncio.to_thread(
+                stage_received_room_attachment,
+                request.match_info["profile"],
+                body.get("room_id"),
+                name=body.get("name"),
+                mime_type=body.get("mime_type"),
+                size=body.get("size"),
+                base64_data=body.get("base64_data"),
+            )
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_bot_attachment"),
+                status=400,
+            )
+        return web.json_response(
+            {"object": "clio.bot.attachment", "attachment": attachment},
+            status=201,
+        )
 
     async def _handle_list_bot_rooms(self, request: "web.Request") -> "web.Response":
         auth_err = self._check_auth(request)
@@ -4252,6 +4285,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/bots", self._handle_list_bots)
             self._app.router.add_get("/api/bots/{profile}", self._handle_get_bot)
             self._app.router.add_post("/api/bots/{profile}/dm", self._handle_bot_dm)
+            self._app.router.add_post("/api/bots/{profile}/attachments", self._handle_bot_attachment)
             self._app.router.add_get("/api/bot-rooms", self._handle_list_bot_rooms)
             self._app.router.add_post("/api/bot-rooms", self._handle_create_bot_room)
             self._app.router.add_get("/api/bot-rooms/{room_id}", self._handle_get_bot_room)

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import subprocess
 import threading
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -262,6 +265,119 @@ def test_room_failure_truth_and_attachment_profile_staging(bot_env, tmp_path):
     assert staged["alpha"].read_text(encoding="utf-8") == "evidence"
     assert any(item["state"] == "failed" and "beta failed" in item["error"] for item in (result.activity or []))
     assert all(message.get("author") != "beta" for message in result.messages)
+
+
+def test_received_attachment_is_strict_confined_and_owner_only(bot_env, tmp_path, monkeypatch):
+    homes, _root = bot_env
+    payload = b"peer evidence"
+    attachment = bots.stage_received_room_attachment(
+        "alpha",
+        "room-123",
+        name="evidence.txt",
+        mime_type="text/plain",
+        size=len(payload),
+        base64_data=base64.b64encode(payload).decode("ascii"),
+    )
+    staged = Path(attachment["path"])
+    assert homes["alpha"].resolve() in staged.parents
+    assert staged.read_bytes() == payload
+    assert os.stat(staged).st_mode & 0o777 == 0o600
+    assert os.stat(staged.parent).st_mode & 0o777 == 0o700
+
+    invalid = {
+        "name": "evidence.txt",
+        "mime_type": "text/plain",
+        "size": 1,
+        "base64_data": "Zg==",
+    }
+    for override, message in (
+        ({"base64_data": "Zh=="}, "canonical Base64"),
+        ({"base64_data": "@@=="}, "strict Base64"),
+        ({"size": 2}, "does not match"),
+        ({"size": True}, "integer"),
+        ({"name": "../escape.txt"}, "plain filename"),
+        ({"mime_type": "application/zip"}, "Unsupported"),
+        ({"mime_type": "text/plain; charset=utf-8"}, "invalid"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bots.stage_received_room_attachment("alpha", "room-123", **(invalid | override))
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (homes["beta"] / "tmp").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(bots.BotModeError, match="symlinked"):
+        bots.stage_received_room_attachment("beta", "room-123", **invalid)
+    assert list(outside.iterdir()) == []
+
+    source = tmp_path / "sender.txt"
+    source.write_bytes(payload)
+    captured = {}
+
+    def peer_request(url, key, **kwargs):
+        captured.update(url=url, key=key, **kwargs)
+        body = kwargs["body"]
+        return {
+            "attachment": {
+                "name": body["name"],
+                "mime_type": body["mime_type"],
+                "size": body["size"],
+                "path": "/receiver-local/random.txt",
+            }
+        }
+
+    monkeypatch.setattr(bots, "load_peers", lambda: {"lab": {"url": "https://lab.example/base/"}})
+    monkeypatch.setattr(bots, "peer_secret", lambda _name: "peer-secret")
+    monkeypatch.setattr(bots, "_peer_request", peer_request)
+    uploaded = bots.upload_peer_room_attachment(
+        "lab",
+        "alpha",
+        "room-123",
+        {"path": str(source), "name": "sender.txt", "mime_type": "text/plain"},
+    )
+    assert uploaded["path"] == "/receiver-local/random.txt"
+    assert captured["url"] == "https://lab.example/base/api/bots/alpha/attachments"
+    assert captured["key"] == "peer-secret"
+    assert "path" not in captured["body"]
+    assert base64.b64decode(captured["body"]["base64_data"], validate=True) == payload
+
+
+def test_peer_requests_never_redirect_and_bound_response_reads(bot_env):
+    class PeerHandler(BaseHTTPRequestHandler):
+        requests: list[tuple[str, str | None]] = []
+
+        def do_GET(self):  # noqa: N802 - stdlib handler contract
+            type(self).requests.append((self.path, self.headers.get("Authorization")))
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/credential-target")
+                self.end_headers()
+                return
+            body = b"x" * (bots.PEER_MAX_RESPONSE_BYTES + 1)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), PeerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as redirect_error:
+            bots._peer_request(f"{base}/redirect", "peer-secret")
+        assert redirect_error.value.code == 302
+        with pytest.raises(bots.BotModeError, match="1 MiB"):
+            bots._peer_request(f"{base}/large", "peer-secret")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    assert PeerHandler.requests == [
+        ("/redirect", "Bearer peer-secret"),
+        ("/large", "Bearer peer-secret"),
+    ]
 
 
 def test_new_room_send_supersedes_stale_reply(bot_env):
