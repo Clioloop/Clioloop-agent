@@ -101,6 +101,36 @@ def test_omni_loop_raw_image_response_is_saved(monkeypatch, tmp_path):
     assert Path(result["image"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_omni_loop_rejects_input_images_before_network(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_resolve_omni_loop_image_gateway",
+        lambda: (_ for _ in ()).throw(AssertionError("gateway should not be resolved")),
+    )
+    result = json.loads(image_generation_tool.omni_loop_image_generate_tool(
+        "edit the character", input_images=["/tmp/person.png"], action="edit",
+    ))
+    assert result["success"] is False
+    assert result["error_type"] == "reference_images_unsupported"
+
+
+def test_omni_loop_rejects_edit_without_input(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(
+        image_generation_tool,
+        "_resolve_omni_loop_image_gateway",
+        lambda: (_ for _ in ()).throw(AssertionError("gateway should not be resolved")),
+    )
+    result = json.loads(image_generation_tool.omni_loop_image_generate_tool(
+        "edit the character", action="edit",
+    ))
+    assert result["success"] is False
+    assert result["error_type"] == "invalid_argument"
+
+
 def test_legacy_clioloop_provider_dispatches_to_omni_loop(monkeypatch):
     from tools import image_generation_tool
 
@@ -108,7 +138,7 @@ def test_legacy_clioloop_provider_dispatches_to_omni_loop(monkeypatch):
     monkeypatch.setattr(
         image_generation_tool,
         "omni_loop_image_generate_tool",
-        lambda prompt, aspect_ratio: json.dumps(
+        lambda prompt, aspect_ratio, **kwargs: json.dumps(
             {
                 "success": True,
                 "image": "/tmp/omni.png",

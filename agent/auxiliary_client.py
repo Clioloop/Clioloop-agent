@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -224,7 +225,12 @@ def _fixed_temperature_for_model(
     return None
 
 
-def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
+def _compression_threshold_for_model(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    context_length: Optional[int] = None,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
     The threshold is the fraction of the model's context window that must be
@@ -233,8 +239,51 @@ def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
+    Provider is considered where the same slug has different effective limits
+    on different backends.
     """
     normalized = (model or "").strip().lower()
+    normalized_provider = (provider or "").strip().lower()
+    if base_url:
+        parsed_base = urlparse(base_url)
+        if (
+            (parsed_base.hostname or "").lower() == "chatgpt.com"
+            and "/backend-api/codex" in (parsed_base.path or "").lower()
+        ):
+            normalized_provider = "openai-codex"
+    try:
+        from agent.model_metadata import (
+            _codex_max_context_opted_in,
+            _strip_provider_prefix,
+        )
+
+        canonical_model = _strip_provider_prefix(model or "").strip().lower()
+    except Exception:
+        canonical_model = normalized
+        _codex_max_context_opted_in = None
+
+    if canonical_model == "gpt-5.6-sol" and normalized_provider == "openai-codex":
+        max_context_enabled = bool(
+            _codex_max_context_opted_in
+            and _codex_max_context_opted_in(model or "")
+        )
+        if max_context_enabled:
+            # Keep the trigger at or below 820K and preserve at least 52K of
+            # account-specific input headroom if the live ceiling changes.
+            try:
+                resolved_context = int(context_length or 872_000)
+            except (TypeError, ValueError):
+                resolved_context = 872_000
+            target_tokens = min(
+                820_000,
+                max(64_000, resolved_context - 52_000),
+            )
+            ratio = target_tokens / resolved_context
+            # Consumers reconstruct the absolute gate with int(ctx * ratio).
+            # Nudge upward only when float rounding would undershoot by 1.
+            while int(resolved_context * ratio) < target_tokens:
+                ratio = math.nextafter(ratio, 1.0)
+            return min(1.0, ratio)
     if "qwen3.8-27b-q5xl" in normalized:
         # This local harness profile keeps a 65K safety window but compresses
         # early to avoid the hybrid attention decode slowdown at long context.

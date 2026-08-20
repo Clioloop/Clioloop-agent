@@ -32,6 +32,14 @@ def _reset_registry():
 
 
 class TestRegisterProvider:
+    def test_default_capabilities_are_text_generation_only(self):
+        provider = _FakeProvider("fake")
+        assert provider.capabilities() == {
+            "modalities": ["text"],
+            "operations": ["generate"],
+            "max_reference_images": 0,
+        }
+
     def test_register_and_lookup(self):
         provider = _FakeProvider("fake")
         image_gen_registry.register_provider(provider)

@@ -118,6 +118,17 @@ def _ra():
     return run_agent
 
 
+def _update_context_engine_for_runtime_limit(agent: Any, context_length: int) -> None:
+    """Apply a provider-reported context limit and recalibrate its policy."""
+    from agent.agent_runtime_helpers import update_context_engine_runtime
+
+    update_context_engine_runtime(
+        agent,
+        context_length,
+        sync_primary_runtime=True,
+    )
+
+
 def _managed_entitlement_message(capability: str) -> str:
     try:
         from clio_cli.portal_account import (
@@ -2783,13 +2794,8 @@ def run_conversation(
                     compressor = agent.context_compressor
                     old_ctx = compressor.context_length
                     if old_ctx > _reduced_ctx:
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=_reduced_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
+                        _update_context_engine_for_runtime_limit(
+                            agent, _reduced_ctx
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
@@ -3094,13 +3100,8 @@ def run_conversation(
 
                     if new_ctx is not None:
                         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
-                        compressor.update_model(
-                            model=agent.model,
-                            context_length=new_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
+                        _update_context_engine_for_runtime_limit(
+                            agent, new_ctx
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This

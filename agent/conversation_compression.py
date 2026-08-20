@@ -185,6 +185,16 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent.context_compressor.threshold_percent = (
                     new_threshold / main_ctx
                 )
+            # The primary snapshot is restored after any turn-scoped fallback.
+            # Keep it synchronized with this legitimate safety correction so a
+            # later fallback/restore cycle cannot resurrect the oversized gate.
+            if not getattr(agent, "_fallback_activated", False):
+                _primary_rt = getattr(agent, "_primary_runtime", None)
+                if isinstance(_primary_rt, dict):
+                    _primary_rt["compressor_threshold_tokens"] = new_threshold
+                    _primary_rt["compressor_threshold_percent"] = getattr(
+                        agent.context_compressor, "threshold_percent", None
+                    )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can

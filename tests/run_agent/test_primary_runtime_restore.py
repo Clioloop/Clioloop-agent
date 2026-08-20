@@ -81,6 +81,7 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["compressor_model"] == cc.model
         assert rt["compressor_provider"] == cc.provider
         assert rt["compressor_context_length"] == cc.context_length
+        assert rt["compressor_threshold_percent"] == cc.threshold_percent
         assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
 
     def test_snapshot_includes_anthropic_state_when_applicable(self):
@@ -170,8 +171,10 @@ class TestRestorePrimaryRuntime:
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
-        original_ctx_len = agent.context_compressor.context_length
-        original_threshold = agent.context_compressor.threshold_tokens
+        cc = getattr(agent, "context_compressor")
+        original_ctx_len = cc.context_length
+        original_threshold_percent = cc.threshold_percent
+        original_threshold = cc.threshold_tokens
 
         # Simulate fallback modifying compressor
         mock_client = _mock_resolve()
@@ -179,14 +182,19 @@ class TestRestorePrimaryRuntime:
             agent._try_activate_fallback()
 
         # Manually simulate compressor being changed (as _try_activate_fallback does)
-        agent.context_compressor.context_length = 32000
-        agent.context_compressor.threshold_tokens = 25600
+        cc.context_length = 32_000
+        cc.threshold_percent = 0.20
+        cc.threshold_tokens = 25_600
+        # Simulate fallback compression completing its lazy aux-model check.
+        setattr(agent, "_compression_feasibility_checked", True)
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
-        assert agent.context_compressor.context_length == original_ctx_len
-        assert agent.context_compressor.threshold_tokens == original_threshold
+        assert cc.context_length == original_ctx_len
+        assert cc.threshold_percent == original_threshold_percent
+        assert cc.threshold_tokens == original_threshold
+        assert getattr(agent, "_compression_feasibility_checked") is False
 
     def test_restores_prompt_caching_flag(self):
         agent = _make_agent()

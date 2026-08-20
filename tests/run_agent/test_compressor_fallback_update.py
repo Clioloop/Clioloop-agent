@@ -1,14 +1,15 @@
 """Tests that _try_activate_fallback updates the context compressor."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
-def _make_agent_with_compressor() -> AIAgent:
+def _make_agent_with_compressor() -> Any:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
-    agent = AIAgent.__new__(AIAgent)
+    agent: Any = AIAgent.__new__(AIAgent)
 
     # Primary model settings
     agent.model = "primary-model"
@@ -38,6 +39,7 @@ def _make_agent_with_compressor() -> AIAgent:
         quiet_mode=True,
     )
     agent.context_compressor = compressor
+    agent._compression_feasibility_checked = True
 
     return agent
 
@@ -70,6 +72,7 @@ def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     assert c.provider == "openai"
     assert c.context_length == 128_000
     assert c.threshold_tokens == int(128_000 * c.threshold_percent)
+    assert agent._compression_feasibility_checked is False
 
 
 @patch("agent.auxiliary_client.resolve_provider_client")

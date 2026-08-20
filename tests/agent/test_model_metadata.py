@@ -235,8 +235,20 @@ class TestCodexOAuthContextLength:
 
     def setup_method(self):
         import agent.model_metadata as mm
-        mm._codex_oauth_context_cache = {}
-        mm._codex_oauth_context_cache_time = 0.0
+        mm._codex_oauth_context_caches = {}
+
+    def test_max_context_opt_in_is_exact_model_scoped(self):
+        from agent.model_metadata import _codex_max_context_opted_in
+
+        with patch(
+            "clio_cli.config.load_config_readonly",
+            return_value={
+                "model": {"codex_max_context_models": "gpt-5.6-sol"}
+            },
+        ):
+            assert _codex_max_context_opted_in("gpt-5.6-sol") is True
+            assert _codex_max_context_opted_in("openai-codex:gpt-5.6-sol") is True
+            assert _codex_max_context_opted_in("gpt-5.5") is False
 
     def test_fallback_table_used_without_token(self):
         """With no access token, the hardcoded Codex fallback table wins
@@ -300,6 +312,226 @@ class TestCodexOAuthContextLength:
             )
         assert ctx_55 == 300_000
         assert ctx_54 == 400_000
+
+    def test_max_context_opt_in_uses_live_account_ceiling(self):
+        """An explicitly opted-in Codex model uses max_context_window,
+        while the ordinary context_window remains the safe default.
+        """
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length") as mock_save, \
+             patch("agent.model_metadata._codex_max_context_opted_in", return_value=True):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+
+        assert ctx == 872_000
+        mock_save.assert_not_called()
+
+    def test_max_context_opt_in_bypasses_cached_default(self):
+        """A pre-existing 272K cache entry must not mask a new max opt-in."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get, \
+             patch("agent.model_metadata.get_cached_context_length", return_value=272_000), \
+             patch("agent.model_metadata.save_context_length"), \
+             patch("agent.model_metadata._codex_max_context_opted_in", return_value=True):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+
+        assert ctx == 872_000
+        mock_get.assert_called_once()
+
+    def test_max_context_catalog_cache_is_scoped_per_oauth_credential(self):
+        """Credential-pool rotation must not reuse another account's ceiling."""
+        from agent.model_metadata import get_model_context_length
+
+        response_a = MagicMock(status_code=200)
+        response_a.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+        response_b = MagicMock(status_code=200)
+        response_b.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 500_000,
+            }]
+        }
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=[response_a, response_b],
+        ) as mock_get, patch(
+            "agent.model_metadata.get_cached_context_length", return_value=None
+        ), patch(
+            "agent.model_metadata.save_context_length"
+        ), patch(
+            "agent.model_metadata._codex_max_context_opted_in", return_value=True
+        ):
+            ctx_a = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-a",
+                provider="openai-codex",
+            )
+            ctx_b = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-b",
+                provider="openai-codex",
+            )
+            ctx_a_cached = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-a",
+                provider="openai-codex",
+            )
+
+        assert (ctx_a, ctx_b, ctx_a_cached) == (872_000, 500_000, 872_000)
+        assert mock_get.call_count == 2
+
+    def test_failed_catalog_probe_is_shared_by_waiting_callers(self):
+        """A failed first probe is briefly cached to prevent retry stampedes."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from agent.model_metadata import _fetch_codex_oauth_context_limits
+
+        probe_calls = 0
+
+        def _failed_probe(_token):
+            nonlocal probe_calls
+            probe_calls += 1
+            time.sleep(0.02)
+            return {}, {}
+
+        with patch(
+            "agent.model_metadata._probe_codex_oauth_context_limits",
+            side_effect=_failed_probe,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(
+                    executor.map(
+                        _fetch_codex_oauth_context_limits,
+                        ["same-token", "same-token"],
+                    )
+                )
+
+        assert results == [({}, {}), ({}, {})]
+        assert probe_calls == 1
+
+    def test_expired_catalog_entries_are_pruned_across_credentials(self):
+        """Rotated token fingerprints must not accumulate for process lifetime."""
+        import agent.model_metadata as mm
+
+        mm._codex_oauth_context_caches = {
+            "stale-fingerprint": (0.0, {"old": 1}, {"old": 1})
+        }
+        with patch(
+            "agent.model_metadata._probe_codex_oauth_context_limits",
+            return_value=({}, {}),
+        ), patch(
+            "agent.model_metadata.time.time",
+            return_value=mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1.0,
+        ):
+            mm._fetch_codex_oauth_context_limits("new-token")
+
+        assert "stale-fingerprint" not in mm._codex_oauth_context_caches
+
+    def test_opt_out_invalidates_stale_max_when_provider_is_inferred(self):
+        """The Codex URL path must be authoritative even with provider=''."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock(status_code=200)
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+        with patch(
+            "agent.model_metadata.requests.get", return_value=fake_response
+        ), patch(
+            "agent.model_metadata.get_cached_context_length",
+            return_value=872_000,
+        ), patch(
+            "agent.model_metadata._invalidate_cached_context_length"
+        ) as mock_invalidate, patch(
+            "agent.model_metadata.save_context_length"
+        ), patch(
+            "agent.model_metadata._codex_max_context_opted_in",
+            return_value=False,
+        ):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="token-a",
+                provider="",
+            )
+
+        assert ctx == 272_000
+        mock_invalidate.assert_called_once()
+
+    def test_max_context_field_is_ignored_without_opt_in(self):
+        """The tuned 272K default remains active unless explicitly enabled."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"), \
+             patch("agent.model_metadata._codex_max_context_opted_in", return_value=False):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+
+        assert ctx == 272_000
 
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return

@@ -9313,6 +9313,21 @@ class GatewayRunner:
                     config_context_length=_hyg_config_context_length,
                     provider=_hyg_provider or "",
                 )
+                # Keep pre-agent hygiene aligned with the provider/model policy
+                # after resolving the account-specific context ceiling.
+                try:
+                    from agent.auxiliary_client import _compression_threshold_for_model
+
+                    _hyg_model_threshold = _compression_threshold_for_model(
+                        _hyg_model,
+                        _hyg_provider,
+                        context_length=_hyg_context_length,
+                        base_url=_hyg_base_url,
+                    )
+                    if _hyg_model_threshold is not None:
+                        _hyg_threshold_pct = _hyg_model_threshold
+                except Exception:
+                    pass
                 _compress_token_threshold = int(
                     _hyg_context_length * _hyg_threshold_pct
                 )

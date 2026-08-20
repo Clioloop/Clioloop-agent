@@ -9,6 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -363,15 +364,85 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+    def test_schema_exposes_generation_and_edit_fields(self, image_tool):
+        """The agent can supply references and choose generation vs editing;
+        model selection remains a user-level config choice."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "input_images", "action"}
+        assert props["input_images"]["type"] == "array"
+        assert props["input_images"]["items"] == {"type": "string"}
+        assert props["input_images"]["maxItems"] == 4
+        assert props["action"]["enum"] == ["auto", "generate", "edit"]
+        assert props["action"]["default"] == "auto"
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+
+class TestImageEditHandlerValidation:
+    def test_rejects_non_array_input_images(self, image_tool):
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit this", "input_images": "/tmp/image.png", "action": "edit",
+        }))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_rejects_blank_input_image(self, image_tool):
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit this", "input_images": ["  "], "action": "edit",
+        }))
+        assert result["success"] is False
+        assert "input_images[0]" in result["error"]
+
+    def test_rejects_more_than_four_input_images(self, image_tool):
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit these", "input_images": [f"/tmp/{i}.png" for i in range(5)],
+            "action": "edit",
+        }))
+        assert result["success"] is False
+        assert "at most 4" in result["error"]
+
+    def test_rejects_invalid_action(self, image_tool):
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "draw this", "action": "remix",
+        }))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_edit_requires_input_image(self, image_tool):
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit this", "action": "edit",
+        }))
+        assert result["success"] is False
+        assert "requires at least one" in result["error"]
+
+    def test_forwards_valid_edit_request(self, image_tool, monkeypatch):
+        captured = {}
+
+        def fake_dispatch(prompt, aspect_ratio, *, input_images, action):
+            captured.update({
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "input_images": input_images,
+                "action": action,
+            })
+            return json.dumps({"success": True, "image": "/tmp/edited.png"})
+
+        monkeypatch.setattr(image_tool, "_dispatch_to_plugin_provider", fake_dispatch)
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "  move them to a beach  ",
+            "aspect_ratio": "portrait",
+            "input_images": [" /tmp/person.png "],
+            "action": "EDIT",
+        }))
+        assert result["success"] is True
+        assert captured == {
+            "prompt": "move them to a beach",
+            "aspect_ratio": "portrait",
+            "input_images": ["/tmp/person.png"],
+            "action": "edit",
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ import base64
 import json
 import logging
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1241,6 +1242,8 @@ _VIDEO_MIME_TYPES = {
 
 _MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
+_DEFAULT_VIDEO_SAMPLE_COUNT = 12
+_MAX_VIDEO_SAMPLE_COUNT = 24
 
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
@@ -1255,6 +1258,113 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     encoded = base64.b64encode(data).decode("ascii")
     mime = mime_type or _VIDEO_MIME_TYPES.get(video_path.suffix.lower(), "video/mp4")
     return f"data:{mime};base64,{encoded}"
+
+
+def _resolve_video_analysis_route(explicit_model: Optional[str] = None) -> tuple[str, str, bool]:
+    """Return ``(provider, model, native_video)`` for the vision task.
+
+    GPT-5.6 and other OpenAI text/vision models accept images but not native
+    video. Gemini models retain the existing native-video path. Unknown routes
+    keep legacy behavior for backward compatibility.
+    """
+    provider = ""
+    configured_model = ""
+    try:
+        from clio_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        vision = cfg_get(cfg, "auxiliary", "vision", default={})
+        if isinstance(vision, dict):
+            provider = str(vision.get("provider") or "").strip().lower()
+            configured_model = str(vision.get("model") or "").strip()
+    except Exception:
+        pass
+    effective_model = str(explicit_model or configured_model or "").strip()
+    model_lc = effective_model.lower()
+    if "gemini" in model_lc:
+        return provider, effective_model, True
+    if (
+        provider in {"openai", "openai-api", "openai-codex"}
+        or model_lc.startswith(("gpt-", "o1", "o3", "o4"))
+    ):
+        return provider, effective_model, False
+    return provider, effective_model, True
+
+
+def _probe_video_duration(video_path: Path) -> float:
+    completed = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=nw=1:nk=1", str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    duration = float(completed.stdout.strip())
+    if duration <= 0:
+        raise ValueError("video duration is zero or unavailable")
+    return duration
+
+
+def _sample_video_frames(
+    video_path: Path,
+    output_dir: Path,
+    sample_count: int,
+) -> list[tuple[float, Path]]:
+    """Extract uniformly spaced JPEG frames for image-only vision models."""
+    count = max(4, min(_MAX_VIDEO_SAMPLE_COUNT, int(sample_count)))
+    duration = _probe_video_duration(video_path)
+    end_time = max(0.0, duration - (1.0 / 24.0))
+    timestamps = [end_time * index / max(1, count - 1) for index in range(count)]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames: list[tuple[float, Path]] = []
+    for index, timestamp in enumerate(timestamps, start=1):
+        target = output_dir / f"frame_{index:02d}.jpg"
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{timestamp:.6f}", "-i", str(video_path),
+                "-frames:v", "1", "-vf",
+                "scale='min(1024,iw)':-2", "-q:v", "3", str(target),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        frames.append((timestamp, target))
+    return frames
+
+
+def _sampled_video_messages(
+    video_path: Path,
+    user_prompt: str,
+    output_dir: Path,
+    sample_count: int,
+) -> tuple[list[Dict[str, Any]], list[tuple[float, Path]]]:
+    frames = _sample_video_frames(video_path, output_dir, sample_count)
+    content: list[Dict[str, Any]] = [{
+        "type": "text",
+        "text": (
+            f"{user_prompt}\n\nThe model does not accept native video. The following {len(frames)} "
+            "timestamped frames are uniformly sampled in chronological order. Compare adjacent "
+            "frames for motion, identity drift, geometry changes, object pops, captions, cuts, "
+            "and temporal artifacts. Audio is not included in this frame-sampling analysis."
+        ),
+    }]
+    for index, (timestamp, frame_path) in enumerate(frames, start=1):
+        encoded = base64.b64encode(frame_path.read_bytes()).decode("ascii")
+        content.append({
+            "type": "text",
+            "text": f"Frame {index}/{len(frames)} at {timestamp:.3f} seconds",
+        })
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+        })
+    return [{"role": "user", "content": content}], frames
 
 
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -1334,7 +1444,8 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
 async def video_analyze_tool(
     video_url: str,
     user_prompt: str,
-    model: str = None,
+    model: Optional[str] = None,
+    sample_count: int = _DEFAULT_VIDEO_SAMPLE_COUNT,
 ) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
@@ -1344,6 +1455,7 @@ async def video_analyze_tool(
             "video_url": video_url,
             "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
             "model": model,
+            "sample_count": sample_count,
         },
         "error": None,
         "success": False,
@@ -1353,6 +1465,8 @@ async def video_analyze_tool(
     }
 
     temp_video_path = None
+    temp_frame_dir = None
+    sampled_frames: list[tuple[float, Path]] = []
     should_cleanup = True
 
     try:
@@ -1400,35 +1514,51 @@ async def video_analyze_tool(
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
             logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)
 
-        video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
-        data_size_mb = len(video_data_url) / (1024 * 1024)
+        provider_name, effective_model, native_video = _resolve_video_analysis_route(model)
+        debug_call_data["analysis_mode"] = "native_video" if native_video else "sampled_frames"
+        debug_call_data["resolved_provider"] = provider_name
+        debug_call_data["resolved_model"] = effective_model
 
-        if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
-            raise ValueError(
-                f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
-                f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                f"Compress or trim the video and retry."
+        if native_video:
+            video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
+            data_size_mb = len(video_data_url) / (1024 * 1024)
+
+            if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
+                raise ValueError(
+                    f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
+                    f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
+                    f"Compress or trim the video and retry."
+                )
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_data_url},
+                        },
+                    ],
+                }
+            ]
+        else:
+            try:
+                resolved_sample_count = int(sample_count)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("sample_count must be an integer") from exc
+            resolved_sample_count = max(4, min(_MAX_VIDEO_SAMPLE_COUNT, resolved_sample_count))
+            temp_frame_dir = get_clio_dir("cache/video", "sampled_video_frames") / f"frames_{uuid.uuid4().hex}"
+            messages, sampled_frames = _sampled_video_messages(
+                temp_video_path,
+                user_prompt,
+                temp_frame_dir,
+                resolved_sample_count,
             )
+            debug_call_data["sampled_frames"] = len(sampled_frames)
+            debug_call_data["sample_timestamps"] = [round(item[0], 3) for item in sampled_frames]
 
         debug_call_data["video_size_bytes"] = video_size_bytes
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": user_prompt,
-                    },
-                    {
-                        "type": "video_url",
-                        "video_url": {
-                            "url": video_data_url,
-                        },
-                    },
-                ],
-            }
-        ]
 
         vision_timeout = 180.0
         vision_temperature = 0.1
@@ -1469,6 +1599,9 @@ async def video_analyze_tool(
         result = {
             "success": True,
             "analysis": analysis or "There was a problem with the request and the video could not be analyzed.",
+            "analysis_mode": debug_call_data.get("analysis_mode", "native_video"),
+            "sampled_frame_count": len(sampled_frames),
+            "model": debug_call_data.get("resolved_model") or model,
         }
 
         debug_call_data["success"] = True
@@ -1528,6 +1661,17 @@ async def video_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     finally:
+        if temp_frame_dir and temp_frame_dir.exists():
+            try:
+                for frame_path in temp_frame_dir.iterdir():
+                    if frame_path.is_file():
+                        frame_path.unlink()
+                temp_frame_dir.rmdir()
+                logger.debug("Cleaned up sampled video frames")
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Could not delete sampled video frames: %s", cleanup_error, exc_info=True
+                )
         if should_cleanup and temp_video_path and temp_video_path.exists():
             try:
                 temp_video_path.unlink()
@@ -1542,10 +1686,10 @@ VIDEO_ANALYZE_SCHEMA = {
     "name": "video_analyze",
     "description": (
         "Analyze a video from a URL or local file path using a multimodal AI model. "
-        "Sends the video to a video-capable model (e.g. Gemini) for understanding. "
-        "Use this for video files — for images, use vision_analyze instead. "
-        "Supports mp4, webm, mov, avi, mkv, mpeg formats. "
-        "Note: large videos (>20 MB) may be slow; max ~50 MB."
+        "Native-video models receive the video directly; image-only vision models such as GPT-5.6 "
+        "receive uniformly sampled timestamped frames for scene and motion QC. Use this for video "
+        "files; for images, use vision_analyze instead. Supports mp4, webm, mov, avi, mkv and "
+        "mpeg formats. Large native-video inputs (>20 MB) may be slow; max ~50 MB."
     ),
     "parameters": {
         "type": "object",
@@ -1557,6 +1701,16 @@ VIDEO_ANALYZE_SCHEMA = {
             "question": {
                 "type": "string",
                 "description": "Your specific question about the video. The AI will describe what happens in the video and answer your question.",
+            },
+            "sample_count": {
+                "type": "integer",
+                "minimum": 4,
+                "maximum": _MAX_VIDEO_SAMPLE_COUNT,
+                "default": _DEFAULT_VIDEO_SAMPLE_COUNT,
+                "description": (
+                    "Number of chronological frames to inspect when the selected model does not "
+                    "support native video. Use 12 for short clips and 20-24 for dense final QC."
+                ),
             },
         },
         "required": ["video_url", "question"],
@@ -1573,7 +1727,8 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         f"transitions. Then answer the following question:\n\n{question}"
     )
     model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return video_analyze_tool(video_url, full_prompt, model)
+    sample_count = args.get("sample_count", _DEFAULT_VIDEO_SAMPLE_COUNT)
+    return video_analyze_tool(video_url, full_prompt, model, sample_count=sample_count)
 
 
 registry.register(

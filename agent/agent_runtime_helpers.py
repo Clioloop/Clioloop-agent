@@ -11,6 +11,7 @@ Methods covered:
 * ``repair_message_sequence`` — enforce alternation invariants
 * ``strip_think_blocks`` — remove inline reasoning from stored content
 * ``recover_with_credential_pool`` — rotate pool entries on 429
+* ``recalibrate_codex_context_after_credential_change`` — refresh account limits
 * ``try_recover_primary_transport`` — re-create OpenAI client after rate-limit
 * ``drop_thinking_only_and_merge_users`` — Anthropic-style cleanup
 * ``restore_primary_runtime`` — un-do fallback activation
@@ -50,6 +51,146 @@ def _ra():
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "session_search", "memory", "clarify", "delegate_task"}
 )
+
+
+def update_context_engine_runtime(
+    agent: Any,
+    context_length: int,
+    *,
+    sync_primary_runtime: bool = False,
+) -> None:
+    """Update a context engine with the active model's scoped policy.
+
+    Built-in compression uses the configured baseline whenever no model policy
+    applies and retains Clio's 64K absolute floor. Plugin engines return to the
+    baseline captured at initialization and remain authoritative over their own
+    absolute token budgets after ``update_model()``.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return
+
+    try:
+        from agent.auxiliary_client import _compression_threshold_for_model
+
+        policy_threshold = _compression_threshold_for_model(
+            getattr(agent, "model", ""),
+            getattr(agent, "provider", ""),
+            context_length=context_length,
+            base_url=getattr(agent, "base_url", ""),
+        )
+    except Exception:
+        policy_threshold = None
+
+    is_builtin = getattr(compressor, "name", "") == "compressor"
+    if policy_threshold is None:
+        if is_builtin:
+            active_threshold = float(
+                getattr(
+                    agent,
+                    "_compression_threshold_config",
+                    getattr(compressor, "threshold_percent", 0.50),
+                )
+            )
+        else:
+            active_threshold = float(
+                getattr(
+                    agent,
+                    "_context_engine_base_threshold_percent",
+                    getattr(compressor, "threshold_percent", 0.50),
+                )
+            )
+    else:
+        active_threshold = float(policy_threshold)
+
+    if hasattr(compressor, "threshold_percent"):
+        compressor.threshold_percent = active_threshold
+    compressor.update_model(
+        model=getattr(agent, "model", ""),
+        context_length=context_length,
+        base_url=getattr(agent, "base_url", ""),
+        api_key=getattr(agent, "api_key", ""),
+        provider=getattr(agent, "provider", ""),
+        api_mode=getattr(agent, "api_mode", ""),
+    )
+    if is_builtin and hasattr(compressor, "threshold_tokens"):
+        compressor.threshold_tokens = max(
+            int(context_length * active_threshold),
+            64_000,
+        )
+
+    agent._compression_feasibility_checked = False
+    if sync_primary_runtime and not getattr(agent, "_fallback_activated", False):
+        runtime = getattr(agent, "_primary_runtime", None)
+        if isinstance(runtime, dict):
+            runtime["compressor_context_length"] = context_length
+            runtime["compressor_threshold_percent"] = getattr(
+                compressor, "threshold_percent", None
+            )
+            runtime["compressor_threshold_tokens"] = getattr(
+                compressor, "threshold_tokens", 0
+            )
+
+
+def recalibrate_codex_context_after_credential_change(agent: Any) -> None:
+    """Re-resolve account-specific Codex limits after token rotation.
+
+    ``max_context_window`` is tied to the authenticated ChatGPT account, so a
+    refreshed or rotated OAuth credential can change the safe runtime context.
+    Recalibrate both the active compressor and (when the primary is active) its
+    per-turn restoration snapshot. A fallback credential must never overwrite
+    the primary snapshot.
+    """
+    if getattr(agent, "provider", "") != "openai-codex":
+        return
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return
+
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        api_key = getattr(agent, "api_key", "")
+        base_url = str(getattr(agent, "base_url", "") or "")
+        provider = str(getattr(agent, "provider", "") or "")
+        context_length = get_model_context_length(
+            getattr(agent, "model", ""),
+            base_url=base_url,
+            api_key=api_key if isinstance(api_key, str) else "",
+            provider=provider,
+            config_context_length=getattr(agent, "_config_context_length", None),
+            custom_providers=getattr(agent, "_custom_providers", None),
+        )
+        update_context_engine_runtime(
+            agent,
+            context_length,
+            sync_primary_runtime=True,
+        )
+
+        if not getattr(agent, "_fallback_activated", False):
+            runtime = getattr(agent, "_primary_runtime", None)
+            if isinstance(runtime, dict):
+                runtime.update({
+                    "api_key": api_key,
+                    "base_url": getattr(agent, "base_url", None),
+                    "client_kwargs": dict(getattr(agent, "_client_kwargs", {})),
+                    "compressor_api_key": getattr(compressor, "api_key", api_key),
+                    "compressor_base_url": getattr(
+                        compressor, "base_url", getattr(agent, "base_url", None)
+                    ),
+                    "compressor_context_length": context_length,
+                    "compressor_threshold_percent": getattr(
+                        compressor, "threshold_percent", None
+                    ),
+                    "compressor_threshold_tokens": getattr(
+                        compressor, "threshold_tokens", 0
+                    ),
+                })
+    except Exception as exc:  # Re-auth must not fail solely on metadata probing.
+        logger.warning(
+            "Failed to recalibrate Codex context after credential change: %s",
+            exc,
+        )
 
 
 def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
@@ -955,6 +1096,12 @@ def restore_primary_runtime(agent) -> bool:
 
         # ── Restore context engine state ──
         cc = agent.context_compressor
+        _primary_threshold_percent = rt.get("compressor_threshold_percent")
+        if (
+            _primary_threshold_percent is not None
+            and hasattr(cc, "threshold_percent")
+        ):
+            cc.threshold_percent = float(_primary_threshold_percent)
         cc.update_model(
             model=rt["compressor_model"],
             context_length=rt["compressor_context_length"],
@@ -963,6 +1110,18 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"],
             api_mode=rt.get("compressor_api_mode", ""),
         )
+        if rt.get("compressor_threshold_tokens") and hasattr(
+            cc, "threshold_tokens"
+        ):
+            # Restore the exact gate as well as the percentage. This preserves
+            # plugin floors and any post-init safety adjustment recorded in the
+            # primary snapshot while update_model recalculates derived budgets.
+            cc.threshold_tokens = int(rt["compressor_threshold_tokens"])
+
+        # A feasibility result obtained while the fallback was active is tied
+        # to that fallback's context/threshold. Re-probe lazily for the restored
+        # primary before its next compression attempt.
+        agent._compression_feasibility_checked = False
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1530,6 +1689,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # context_length overrides are honored when switching to a
         # custom provider mid-session (closes #15779).
         _sm_custom_providers = None
+        _sm_cfg = {}
         try:
             from clio_cli.config import load_config, get_compatible_custom_providers
             _sm_cfg = load_config()
@@ -1550,14 +1710,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
         )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
-            base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
+        update_context_engine_runtime(agent, new_context_length)
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
@@ -1579,6 +1732,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
+        "compressor_threshold_percent": getattr(_cc, "threshold_percent", None) if _cc else None,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
     if api_mode == "anthropic_messages":

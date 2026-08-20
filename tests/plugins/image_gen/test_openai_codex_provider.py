@@ -67,6 +67,13 @@ class TestMetadata:
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
 
+    def test_capabilities_include_multi_reference_editing(self, provider):
+        assert provider.capabilities() == {
+            "modalities": ["text", "image"],
+            "operations": ["generate", "edit"],
+            "max_reference_images": 4,
+        }
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -129,11 +136,13 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, input_image_urls=None, action="auto"):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                input_image_urls=input_image_urls,
+                action=action,
             ))
             return _b64_png()
 
@@ -146,7 +155,9 @@ class TestGenerate:
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
-        assert captured["input"][0]["content"][0]["type"] == "input_text"
+        assert captured["input"][0]["content"] == [
+            {"type": "input_text", "text": "a cat"},
+        ]
         assert captured["tool_choice"]["type"] == "allowed_tools"
         assert captured["tool_choice"]["mode"] == "required"
         assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
@@ -159,6 +170,86 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+        assert tool["action"] == "auto"
+
+    def test_edit_payload_contains_ordered_input_images(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "character.png"
+        from PIL import Image
+        Image.new("RGB", (8, 12), (20, 40, 60)).save(source)
+        captured = {}
+
+        def _collect(token, **kwargs):
+            captured.update(kwargs)
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        result = provider.generate(
+            "Keep the same person and move them to a moonlit rooftop",
+            aspect_ratio="portrait",
+            input_images=[str(source), "https://example.com/costume.jpg"],
+            action="edit",
+        )
+
+        assert result["success"] is True
+        assert result["action"] == "edit"
+        assert result["input_image_count"] == 2
+        assert captured["action"] == "edit"
+        assert captured["input_image_urls"][0].startswith("data:image/png;base64,")
+        assert captured["input_image_urls"][1] == "https://example.com/costume.jpg"
+        payload = codex_plugin._build_responses_payload(
+            prompt=captured["prompt"], size=captured["size"], quality=captured["quality"],
+            input_image_urls=captured["input_image_urls"], action=captured["action"],
+        )
+        assert payload["input"][0]["content"][0]["type"] == "input_text"
+        assert payload["input"][0]["content"][1]["type"] == "input_image"
+        assert payload["input"][0]["content"][2]["image_url"] == "https://example.com/costume.jpg"
+        assert payload["tools"][0]["action"] == "edit"
+
+    def test_edit_requires_input_image(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.generate("change it", action="edit")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_invalid_action_rejected_before_stream(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin, "_collect_image_b64",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("stream must not run")),
+        )
+        result = provider.generate("change it", action="remix")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_more_than_four_inputs_rejected(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.generate(
+            "edit", input_images=[f"/tmp/{i}.png" for i in range(5)], action="edit",
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_missing_local_input_rejected_before_stream(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin, "_collect_image_b64",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("stream must not run")),
+        )
+        result = provider.generate("edit", input_images=["/definitely/missing.png"], action="edit")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_data_url_is_validated_and_normalized(self):
+        import base64
+        import io
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (2, 2), (1, 2, 3)).save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        ref = codex_plugin._input_image_reference(f"data:image/png;base64,{encoded}")
+        assert ref == f"data:image/png;base64,{encoded}"
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""

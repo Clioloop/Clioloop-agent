@@ -1,6 +1,7 @@
 import sys
 import types
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1026,6 +1027,108 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_codex_singleton_refresh_recalibrates_account_context(monkeypatch):
+    agent: Any = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        return {
+            "api_key": "rotated-account-token" if force_refresh else agent.api_key,
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+    monkeypatch.setattr(
+        "clio_cli.auth.resolve_codex_runtime_credentials",
+        _fake_resolve,
+    )
+    monkeypatch.setattr(
+        agent,
+        "_replace_primary_openai_client",
+        lambda *, reason: True,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 500_000,
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client._compression_threshold_for_model",
+        lambda *args, **kwargs: 448_000 / 500_000,
+    )
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True
+    assert agent.api_key == "rotated-account-token"
+    assert agent.context_compressor.api_key == "rotated-account-token"
+    assert agent.context_compressor.context_length == 500_000
+    assert agent.context_compressor.threshold_tokens == 448_000
+    assert agent._compression_feasibility_checked is False
+    assert agent._primary_runtime["api_key"] == "rotated-account-token"
+    assert agent._primary_runtime["compressor_context_length"] == 500_000
+    assert agent._primary_runtime["compressor_threshold_tokens"] == 448_000
+
+
+def test_codex_pool_swap_recalibrates_account_context(monkeypatch):
+    agent: Any = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    monkeypatch.setattr(
+        agent,
+        "_replace_primary_openai_client",
+        lambda *, reason: True,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 400_000,
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client._compression_threshold_for_model",
+        lambda *args, **kwargs: 348_000 / 400_000,
+    )
+    entry = SimpleNamespace(
+        runtime_api_key="pool-account-token",
+        runtime_base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    agent._swap_credential(entry)
+
+    assert agent.api_key == "pool-account-token"
+    assert agent.context_compressor.api_key == "pool-account-token"
+    assert agent.context_compressor.context_length == 400_000
+    assert agent.context_compressor.threshold_tokens == 348_000
+    assert agent._primary_runtime["api_key"] == "pool-account-token"
+    assert agent._primary_runtime["compressor_context_length"] == 400_000
+
+
+def test_codex_fallback_pool_swap_does_not_overwrite_primary_snapshot(monkeypatch):
+    agent: Any = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent._fallback_activated = True
+    primary_before = dict(agent._primary_runtime)
+    monkeypatch.setattr(
+        agent,
+        "_replace_primary_openai_client",
+        lambda *, reason: True,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 360_000,
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client._compression_threshold_for_model",
+        lambda *args, **kwargs: 308_000 / 360_000,
+    )
+    entry = SimpleNamespace(
+        runtime_api_key="fallback-account-token",
+        runtime_base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    agent._swap_credential(entry)
+
+    assert agent.context_compressor.context_length == 360_000
+    assert agent.context_compressor.threshold_tokens == 308_000
+    assert agent._primary_runtime == primary_before
 
 
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):

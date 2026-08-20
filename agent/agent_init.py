@@ -1227,13 +1227,10 @@ def init_agent(
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
-    try:
-        from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
-        _model_cthresh = _cthresh_fn(agent.model)
-        if _model_cthresh is not None:
-            compression_threshold = _model_cthresh
-    except Exception:
-        pass
+    # Preserve the user's provider-agnostic baseline so in-session model
+    # switches and fallback activation can restore it after a model-specific
+    # threshold override (for example Codex 1M or the local Qwen3.8 profile).
+    agent._compression_threshold_config = compression_threshold
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -1467,6 +1464,52 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
+
+    # Preserve the engine's own baseline before any provider/model-specific
+    # override is applied, so a later model switch can remove that override.
+    agent._context_engine_base_threshold_percent = float(
+        getattr(agent.context_compressor, "threshold_percent", compression_threshold)
+    )
+
+    # Apply provider/model policy only after the account-specific context
+    # ceiling has been resolved. This keeps the Codex trigger at an absolute
+    # 820K (or 52K below a smaller live ceiling) instead of baking in an 872K
+    # assumption. Context-engine plugins that expose the standard threshold
+    # attributes receive the same policy.
+    try:
+        from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
+
+        _resolved_context = int(
+            getattr(agent.context_compressor, "context_length", 0) or 0
+        )
+        _model_cthresh = _cthresh_fn(
+            agent.model,
+            agent.provider,
+            context_length=_resolved_context,
+            base_url=agent.base_url,
+        )
+        if _model_cthresh is not None:
+            if hasattr(agent.context_compressor, "threshold_percent"):
+                agent.context_compressor.threshold_percent = float(_model_cthresh)
+            if hasattr(agent.context_compressor, "update_model"):
+                agent.context_compressor.update_model(
+                    model=agent.model,
+                    context_length=_resolved_context,
+                    base_url=agent.base_url,
+                    api_key=getattr(agent, "api_key", ""),
+                    provider=agent.provider,
+                    api_mode=agent.api_mode,
+                )
+            if (
+                getattr(agent.context_compressor, "name", "") == "compressor"
+                and hasattr(agent.context_compressor, "threshold_tokens")
+            ):
+                agent.context_compressor.threshold_tokens = max(
+                    int(_resolved_context * _model_cthresh),
+                    MINIMUM_CONTEXT_LENGTH,
+                )
+    except Exception:
+        pass
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required
@@ -1605,7 +1648,10 @@ def init_agent(
 
     if not agent.quiet_mode:
         if compression_enabled:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _active_threshold = float(
+                getattr(agent.context_compressor, "threshold_percent", compression_threshold)
+            )
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
@@ -1643,6 +1689,7 @@ def init_agent(
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),
         "compressor_context_length": _cc.context_length,
+        "compressor_threshold_percent": getattr(_cc, "threshold_percent", None),
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
     if agent.api_mode == "anthropic_messages":

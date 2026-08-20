@@ -63,7 +63,13 @@ from tools.fal_common import (
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
 )
-from agent.image_gen_provider import save_b64_image, save_url_image
+from agent.image_gen_provider import (
+    DEFAULT_IMAGE_ACTION,
+    MAX_INPUT_IMAGES,
+    VALID_IMAGE_ACTIONS,
+    save_b64_image,
+    save_url_image,
+)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
@@ -553,9 +559,15 @@ def omni_loop_image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     *,
+    input_images: Optional[list[str]] = None,
+    action: str = DEFAULT_IMAGE_ACTION,
     steps: Optional[int] = None,
 ) -> str:
-    """Generate an image through the Omni Loop Portal self-hosted gateway."""
+    """Generate an image through the Omni Loop Portal self-hosted gateway.
+
+    The current managed endpoint is text-to-image only. Reference/edit calls
+    fail explicitly so an input image is never silently ignored.
+    """
     start_time = datetime.datetime.now()
     prompt = (prompt or "").strip()
     aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
@@ -580,6 +592,23 @@ def omni_loop_image_generate_tool(
 
     if not prompt:
         return _failure("Prompt is required and must be a non-empty string", "invalid_argument")
+
+    action_lc = str(action or DEFAULT_IMAGE_ACTION).strip().lower()
+    if action_lc not in VALID_IMAGE_ACTIONS:
+        return _failure(
+            f"action must be one of: {', '.join(VALID_IMAGE_ACTIONS)}",
+            "invalid_argument",
+        )
+    refs = list(input_images or [])
+    if action_lc == "edit" and not refs:
+        return _failure("action='edit' requires at least one input image", "invalid_argument")
+    if refs:
+        return _failure(
+            "The Omni Loop image gateway is currently text-to-image only. "
+            "Select an edit-capable provider such as `openai-codex` in "
+            "`clio tools` → Image Generation.",
+            "reference_images_unsupported",
+        )
 
     managed_gateway = _resolve_omni_loop_image_gateway()
     if managed_gateway is None:
@@ -1066,24 +1095,47 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
-        "backend (Omni Loop Portal, OpenAI, etc.) and model are "
-        "user-configured and not selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "Generate or edit high-quality images. With no input_images this is text-to-image. "
+        "With input_images, an edit-capable backend can preserve people, characters, wardrobe, "
+        "objects, composition, or style while creating a new scene. Input images may be local "
+        "paths, HTTP(S) URLs, or data URLs and are ordered (the first is the primary reference). "
+        "Use action='edit' when identity preservation matters. The underlying backend and model "
+        "are user-configured and not selectable by the agent. Returns either a URL or an absolute "
+        "file path in the `image` field; display it with markdown ![description](url-or-path) and "
+        "the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": "Describe the desired image or exact edit. For edits, explicitly state what must remain unchanged.",
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "description": "The output aspect ratio: landscape (16:9), portrait (9:16), or square (1:1). For character-scene assets, match the target video orientation.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "input_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": MAX_INPUT_IMAGES,
+                "description": (
+                    "Optional ordered reference/edit images (maximum 4). Each item may be an "
+                    "absolute/local path, HTTP(S) URL, or data:image/... URL. The first image "
+                    "is the primary identity/composition reference."
+                ),
+            },
+            "action": {
+                "type": "string",
+                "enum": list(VALID_IMAGE_ACTIONS),
+                "default": DEFAULT_IMAGE_ACTION,
+                "description": (
+                    "auto lets the backend choose; generate forces a new image; edit forces an "
+                    "edit and requires at least one input image. Use edit for consistent people "
+                    "or recurring characters across scenes."
+                ),
             },
         },
         "required": ["prompt"],
@@ -1149,15 +1201,29 @@ def _should_use_omni_loop_image_provider(configured_provider: Optional[str]) -> 
     return False
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    *,
+    input_images: Optional[list[str]] = None,
+    action: str = DEFAULT_IMAGE_ACTION,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` when no explicit provider
     is configured and the caller should use the Omni Loop Portal default.
+    Reference/edit requests are capability-gated so providers cannot silently
+    ignore the images and report an unrelated generation as success.
     """
+    refs = list(input_images or [])
     configured = _read_configured_image_provider()
     if _should_use_omni_loop_image_provider(configured):
-        return omni_loop_image_generate_tool(prompt, aspect_ratio)
+        return omni_loop_image_generate_tool(
+            prompt,
+            aspect_ratio,
+            input_images=refs,
+            action=action,
+        )
     if not configured:
         return None
 
@@ -1212,7 +1278,48 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        capabilities = provider.capabilities()
+    except Exception as exc:
+        logger.warning("Image gen provider '%s' capabilities() failed: %s", configured, exc)
+        capabilities = {}
+    operations = set(capabilities.get("operations") or ["generate"])
+    try:
+        max_references = int(capabilities.get("max_reference_images") or 0)
+    except (TypeError, ValueError):
+        max_references = 0
+
+    if refs and max_references <= 0:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Image provider '{configured}' does not support input/reference images.",
+            "error_type": "reference_images_unsupported",
+        })
+    if len(refs) > max_references:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                f"Image provider '{configured}' accepts at most {max_references} "
+                f"input image(s); received {len(refs)}."
+            ),
+            "error_type": "invalid_argument",
+        })
+    if action == "edit" and "edit" not in operations:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Image provider '{configured}' does not support edit operations.",
+            "error_type": "operation_unsupported",
+        })
+
+    try:
+        kwargs = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "input_images": refs,
+            "action": action,
+        }
         if configured_model:
             kwargs["model"] = configured_model
         result = provider.generate(**kwargs)
@@ -1239,17 +1346,78 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
-    if not prompt:
-        return tool_error("prompt is required for image generation")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return tool_error(
+            "prompt is required for image generation",
+            success=False,
+            image=None,
+            error_type="invalid_argument",
+        )
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+
+    raw_images = args.get("input_images")
+    if raw_images is None:
+        input_images: list[str] = []
+    elif not isinstance(raw_images, list):
+        return tool_error(
+            "input_images must be an array of image paths or URLs",
+            success=False,
+            image=None,
+            error_type="invalid_argument",
+        )
+    else:
+        input_images = []
+        for index, value in enumerate(raw_images):
+            if not isinstance(value, str) or not value.strip():
+                return tool_error(
+                    f"input_images[{index}] must be a non-empty string",
+                    success=False,
+                    image=None,
+                    error_type="invalid_argument",
+                )
+            input_images.append(value.strip())
+    if len(input_images) > MAX_INPUT_IMAGES:
+        return tool_error(
+            f"input_images accepts at most {MAX_INPUT_IMAGES} images",
+            success=False,
+            image=None,
+            error_type="invalid_argument",
+        )
+
+    action = args.get("action", DEFAULT_IMAGE_ACTION)
+    if not isinstance(action, str) or action.strip().lower() not in VALID_IMAGE_ACTIONS:
+        return tool_error(
+            f"action must be one of: {', '.join(VALID_IMAGE_ACTIONS)}",
+            success=False,
+            image=None,
+            error_type="invalid_argument",
+        )
+    action = action.strip().lower()
+    if action == "edit" and not input_images:
+        return tool_error(
+            "action='edit' requires at least one input image",
+            success=False,
+            image=None,
+            error_type="invalid_argument",
+        )
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt.strip(),
+        aspect_ratio,
+        input_images=input_images,
+        action=action,
+    )
     if dispatched is not None:
         return dispatched
 
-    return omni_loop_image_generate_tool(prompt=prompt, aspect_ratio=aspect_ratio)
+    return omni_loop_image_generate_tool(
+        prompt=prompt.strip(),
+        aspect_ratio=aspect_ratio,
+        input_images=input_images,
+        action=action,
+    )
 
 
 registry.register(

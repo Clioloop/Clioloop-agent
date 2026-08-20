@@ -10,6 +10,7 @@ from tools.vision_tools import (
     _video_to_base64_data_url,
     _handle_video_analyze,
     _MAX_VIDEO_BASE64_BYTES,
+    _resolve_video_analysis_route,
     video_analyze_tool,
     VIDEO_ANALYZE_SCHEMA,
 )
@@ -97,6 +98,26 @@ class TestVideoToBase64DataUrl:
         assert result.startswith("data:video/mp4;base64,")
 
 
+class TestVideoAnalysisRoute:
+    def test_gpt_5_6_uses_sampled_frames(self):
+        with patch("clio_cli.config.load_config", return_value={
+            "auxiliary": {"vision": {"provider": "openai-codex", "model": "gpt-5.6-sol"}},
+        }):
+            provider, model, native = _resolve_video_analysis_route()
+        assert provider == "openai-codex"
+        assert model == "gpt-5.6-sol"
+        assert native is False
+
+    def test_gemini_keeps_native_video(self):
+        with patch("clio_cli.config.load_config", return_value={
+            "auxiliary": {"vision": {"provider": "gemini", "model": "google/gemini-2.5-flash"}},
+        }):
+            provider, model, native = _resolve_video_analysis_route()
+        assert provider == "gemini"
+        assert model == "google/gemini-2.5-flash"
+        assert native is True
+
+
 # ---------------------------------------------------------------------------
 # Schema validation
 # ---------------------------------------------------------------------------
@@ -112,6 +133,9 @@ class TestVideoAnalyzeSchema:
         params = VIDEO_ANALYZE_SCHEMA["parameters"]
         assert "video_url" in params["properties"]
         assert "question" in params["properties"]
+        assert "sample_count" in params["properties"]
+        assert params["properties"]["sample_count"]["default"] == 12
+        assert params["properties"]["sample_count"]["maximum"] == 24
         assert params["required"] == ["video_url", "question"]
 
     def test_schema_description_mentions_video(self):
@@ -164,6 +188,16 @@ class TestHandleVideoAnalyze:
             args = mock_tool.call_args[0]
             assert args[2] == "google/gemini-flash"
 
+    def test_passes_requested_sample_count(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "")
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True, "analysis": "ok"})
+            asyncio.get_event_loop().run_until_complete(_handle_video_analyze({
+                "video_url": "/tmp/test.mp4", "question": "test", "sample_count": 20,
+            }))
+            assert mock_tool.call_args.kwargs["sample_count"] == 20
+
 
 # ---------------------------------------------------------------------------
 # video_analyze_tool — integration-style tests with mocked LLM
@@ -192,6 +226,40 @@ class TestVideoAnalyzeTool:
         data = json.loads(result)
         assert data["success"] is True
         assert "demo" in data["analysis"].lower()
+
+    def test_gpt_route_uses_sampled_frame_messages(self, tmp_path):
+        video = tmp_path / "demo.mp4"
+        video.write_bytes(b"\x00" * 1024)
+        sampled_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "sampled timeline"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+            ],
+        }]
+        captured = {}
+
+        async def capture_llm(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("tools.vision_tools._resolve_video_analysis_route", return_value=("openai-codex", "gpt-5.6-sol", False)):
+            with patch(
+                "tools.vision_tools._sampled_video_messages",
+                return_value=(sampled_messages, [(0.0, tmp_path / "a.jpg"), (1.0, tmp_path / "b.jpg")]),
+            ):
+                with patch("tools.vision_tools.async_call_llm", side_effect=capture_llm):
+                    with patch("tools.vision_tools.extract_content_or_reasoning", return_value="Frame analysis OK"):
+                        result = self._run(video_analyze_tool(
+                            str(video), "Inspect continuity", model="gpt-5.6-sol", sample_count=16,
+                        ))
+
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["analysis_mode"] == "sampled_frames"
+        assert data["sampled_frame_count"] == 2
+        assert data["model"] == "gpt-5.6-sol"
+        assert captured["messages"] == sampled_messages
 
     def test_local_file_not_found(self, tmp_path):
         """Non-existent file raises appropriate error."""

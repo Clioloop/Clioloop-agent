@@ -3510,6 +3510,7 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False
 
+        self._recalibrate_codex_context_after_credential_change()
         return True
 
     def _try_refresh_managed_client_credentials(
@@ -3676,6 +3677,14 @@ class AIAgent:
             else:
                 self._client_kwargs.pop("default_headers", None)
 
+    def _recalibrate_codex_context_after_credential_change(self) -> None:
+        """Forwarder — see the implementation in ``agent_runtime_helpers``."""
+        from agent.agent_runtime_helpers import (
+            recalibrate_codex_context_after_credential_change,
+        )
+
+        recalibrate_codex_context_after_credential_change(self)
+
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
@@ -3704,7 +3713,8 @@ class AIAgent:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         self._apply_client_headers_for_base_url(self.base_url)
-        self._replace_primary_openai_client(reason="credential_rotation")
+        if self._replace_primary_openai_client(reason="credential_rotation"):
+            self._recalibrate_codex_context_after_credential_change()
 
     def _recover_with_credential_pool(
         self,

@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
+VALID_IMAGE_ACTIONS: Tuple[str, ...] = ("auto", "generate", "edit")
+DEFAULT_IMAGE_ACTION = "auto"
+MAX_INPUT_IMAGES = 4
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +78,19 @@ class ImageGenProvider(abc.ABC):
         (providers with no external dependencies are always available).
         """
         return True
+
+    def capabilities(self) -> Dict[str, Any]:
+        """Describe supported input modalities and operations.
+
+        The conservative default is text-to-image generation only. Providers
+        that genuinely consume reference images or perform edits must override
+        this method; the dispatcher uses it to prevent silent no-op edits.
+        """
+        return {
+            "modalities": ["text"],
+            "operations": ["generate"],
+            "max_reference_images": 0,
+        }
 
     def list_models(self) -> List[Dict[str, Any]]:
         """Return catalog entries for ``clio tools`` model picker.
@@ -137,9 +153,18 @@ class ImageGenProvider(abc.ABC):
         """Generate an image.
 
         Implementations should return the dict from :func:`success_response`
-        or :func:`error_response`. ``kwargs`` may contain forward-compat
-        parameters future versions of the schema will expose — implementations
-        should ignore unknown keys.
+        or :func:`error_response`. Two canonical forward-compatible keyword
+        arguments are now part of the provider contract:
+
+        ``input_images``
+            Ordered list of local paths, HTTP(S) URLs, or data URLs supplied as
+            edit/reference images.
+        ``action``
+            ``auto``, ``generate``, or ``edit``.
+
+        Providers must either honor those arguments or explicitly reject them;
+        silently ignoring reference images can produce a successful but
+        unrelated output. Other unknown ``kwargs`` may still be ignored.
         """
 
 

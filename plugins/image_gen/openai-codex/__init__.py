@@ -19,12 +19,20 @@ Output is saved as PNG under ``$CLIO_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlsplit
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
+    DEFAULT_IMAGE_ACTION,
+    MAX_INPUT_IMAGES,
+    VALID_IMAGE_ACTIONS,
     ImageGenProvider,
     error_response,
     resolve_aspect_ratio,
@@ -76,9 +84,17 @@ _SIZES = {
 _CODEX_CHAT_MODEL = "gpt-5.4"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
-    "You are an assistant that must fulfill image generation requests by "
-    "using the image_generation tool when provided."
+    "You are an assistant that must fulfill image generation and editing requests by "
+    "using the image_generation tool when provided. For edits, preserve every subject, "
+    "identity, face, wardrobe, and object the user asks to keep unchanged."
 )
+_MAX_INPUT_IMAGE_BYTES = 10 * 1024 * 1024
+_SUPPORTED_INPUT_FORMATS = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +159,111 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
-    """Build the Codex Responses request body for an image_generation call."""
+def _validate_image_bytes(raw: bytes, *, declared_mime: Optional[str] = None) -> str:
+    """Validate supported raster bytes and return the canonical MIME type."""
+    if not raw:
+        raise ValueError("input image is empty")
+    if len(raw) > _MAX_INPUT_IMAGE_BYTES:
+        raise ValueError(
+            f"input image exceeds the {_MAX_INPUT_IMAGE_BYTES // (1024 * 1024)} MB limit"
+        )
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as image:
+            image_format = str(image.format or "").upper()
+            if image_format == "GIF" and int(getattr(image, "n_frames", 1)) > 1:
+                raise ValueError("animated GIF input images are not supported")
+            image.verify()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"input is not a valid supported image: {exc}") from exc
+    mime = _SUPPORTED_INPUT_FORMATS.get(image_format)
+    if not mime:
+        raise ValueError(
+            "input image format is unsupported; use PNG, JPEG, WebP, or a non-animated GIF"
+        )
+    if declared_mime:
+        normalized = declared_mime.lower().replace("image/jpg", "image/jpeg")
+        if normalized != mime:
+            raise ValueError(
+                f"input image MIME type {declared_mime!r} does not match its {image_format} bytes"
+            )
+    return mime
+
+
+def _input_image_reference(reference: str) -> str:
+    """Convert one local/URL/data reference to a Responses ``image_url`` value."""
+    ref = str(reference or "").strip()
+    if not ref:
+        raise ValueError("input image reference must be a non-empty string")
+
+    parsed = urlsplit(ref)
+    scheme = parsed.scheme.lower()
+    if scheme in {"http", "https"}:
+        if not parsed.hostname:
+            raise ValueError("input image URL has no hostname")
+        if parsed.username or parsed.password:
+            raise ValueError("input image URLs containing credentials are not supported")
+        return ref
+
+    if scheme == "data":
+        header, separator, payload = ref.partition(",")
+        if not separator or not header.lower().startswith("data:image/") or ";base64" not in header.lower():
+            raise ValueError("input data URL must be base64-encoded image data")
+        declared_mime = header[5:].split(";", 1)[0].lower()
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("input image data URL contains invalid base64") from exc
+        mime = _validate_image_bytes(raw, declared_mime=declared_mime)
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+    if scheme == "file":
+        if parsed.netloc not in {"", "localhost"}:
+            raise ValueError("remote file:// input image references are not supported")
+        path = Path(unquote(parsed.path)).expanduser().resolve()
+    elif scheme:
+        raise ValueError(f"unsupported input image URL scheme: {scheme}")
+    else:
+        path = Path(ref).expanduser().resolve()
+
+    if not path.is_file():
+        raise ValueError("local input image does not exist or is not a regular file")
+    if path.stat().st_size > _MAX_INPUT_IMAGE_BYTES:
+        raise ValueError(
+            f"input image exceeds the {_MAX_INPUT_IMAGE_BYTES // (1024 * 1024)} MB limit"
+        )
+    raw = path.read_bytes()
+    mime = _validate_image_bytes(raw)
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_image_urls: Optional[List[str]] = None,
+    action: str = DEFAULT_IMAGE_ACTION,
+) -> Dict[str, Any]:
+    """Build the Codex Responses request body for image generation/editing."""
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    content.extend(
+        {"type": "input_image", "image_url": image_url, "detail": "auto"}
+        for image_url in (input_image_urls or [])
+    )
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+        "action": action,
+    }
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
@@ -152,17 +271,9 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
-        "tools": [{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        "tools": [tool],
         "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
@@ -242,7 +353,15 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
-def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_image_urls: Optional[List[str]] = None,
+    action: str = DEFAULT_IMAGE_ACTION,
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
@@ -253,7 +372,13 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     })
-    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        input_image_urls=input_image_urls,
+        action=action,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     image_b64: Optional[str] = None
@@ -300,6 +425,13 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             return False
         return True
 
+    def capabilities(self) -> Dict[str, Any]:
+        return {
+            "modalities": ["text", "image"],
+            "operations": ["generate", "edit"],
+            "max_reference_images": MAX_INPUT_IMAGES,
+        }
+
     def list_models(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -319,7 +451,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required",
+            "tag": "gpt-image-2 generation + multi-reference editing via ChatGPT/Codex OAuth",
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `clio auth codex` (or `clio setup` → Codex) "
@@ -341,6 +473,66 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 error="Prompt is required and must be a non-empty string",
                 error_type="invalid_argument",
                 provider="openai-codex",
+                aspect_ratio=aspect,
+            )
+
+        raw_images = kwargs.get("input_images")
+        if raw_images is None:
+            input_images: List[str] = []
+        elif not isinstance(raw_images, list):
+            return error_response(
+                error="input_images must be an array of image paths or URLs",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        else:
+            input_images = list(raw_images)
+        if len(input_images) > MAX_INPUT_IMAGES:
+            return error_response(
+                error=f"input_images accepts at most {MAX_INPUT_IMAGES} images",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        if any(not isinstance(value, str) or not value.strip() for value in input_images):
+            return error_response(
+                error="every input_images item must be a non-empty string",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        action = kwargs.get("action", DEFAULT_IMAGE_ACTION)
+        if not isinstance(action, str) or action.strip().lower() not in VALID_IMAGE_ACTIONS:
+            return error_response(
+                error=f"action must be one of: {', '.join(VALID_IMAGE_ACTIONS)}",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        action = action.strip().lower()
+        if action == "edit" and not input_images:
+            return error_response(
+                error="action='edit' requires at least one input image",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        try:
+            input_image_urls = [_input_image_reference(value) for value in input_images]
+        except ValueError as exc:
+            return error_response(
+                error=f"Invalid input image: {exc}",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
                 aspect_ratio=aspect,
             )
 
@@ -388,6 +580,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                input_image_urls=input_image_urls,
+                action=action,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -428,7 +622,12 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "action": action,
+                "input_image_count": len(input_image_urls),
+            },
         )
 
 

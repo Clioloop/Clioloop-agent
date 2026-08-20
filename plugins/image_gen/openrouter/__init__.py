@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from agent.image_gen_provider import (
-    DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio,
-    save_b64_image, save_url_image, success_response,
+    DEFAULT_ASPECT_RATIO, DEFAULT_IMAGE_ACTION, ImageGenProvider, error_response,
+    resolve_aspect_ratio, save_b64_image, save_url_image, success_response,
 )
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -73,7 +73,9 @@ class OpenRouterImageGenProvider(ImageGenProvider):
                               "url": "https://openrouter.ai/keys"}]}
 
     def generate(self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-                 image_url: str | None = None, reference_image_urls: list[str] | None = None, **kwargs: Any):
+                 image_url: str | None = None, reference_image_urls: list[str] | None = None,
+                 input_images: list[str] | None = None, action: str = DEFAULT_IMAGE_ACTION,
+                 **kwargs: Any):
         import requests
         key = os.getenv("OPENROUTER_API_KEY", "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
@@ -81,7 +83,23 @@ class OpenRouterImageGenProvider(ImageGenProvider):
         if not key:
             return error_response(error="OPENROUTER_API_KEY is not set", error_type="auth_required",
                                   provider=self.name, model=model, prompt=prompt, aspect_ratio=aspect)
-        refs = ([image_url] if image_url else []) + list(reference_image_urls or kwargs.get("reference_images") or [])
+        refs = (
+            ([image_url] if image_url else [])
+            + list(input_images or [])
+            + list(reference_image_urls or kwargs.get("reference_images") or [])
+        )
+        if len(refs) > 3:
+            return error_response(
+                error="OpenRouter image provider accepts at most 3 reference images",
+                error_type="invalid_argument", provider=self.name, model=model,
+                prompt=prompt, aspect_ratio=aspect,
+            )
+        if action == "edit" and not refs:
+            return error_response(
+                error="action='edit' requires at least one input image",
+                error_type="invalid_argument", provider=self.name, model=model,
+                prompt=prompt, aspect_ratio=aspect,
+            )
         content = [{"type": "text", "text": prompt}]
         try:
             content.extend({"type": "image_url", "image_url": {"url": _image_ref(ref)}} for ref in refs[:3])

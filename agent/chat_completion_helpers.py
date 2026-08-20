@@ -1247,14 +1247,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-            agent.context_compressor.update_model(
-                model=agent.model,
-                context_length=fb_context_length,
-                base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
-                provider=agent.provider,
-                api_mode=agent.api_mode,
-            )
+            from agent.agent_runtime_helpers import update_context_engine_runtime
+
+            update_context_engine_runtime(agent, fb_context_length)
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "

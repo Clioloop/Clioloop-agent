@@ -1,5 +1,5 @@
 name: openai-codex
-version: 1.0.0
-description: "OpenAI image generation backed by ChatGPT/Codex OAuth (gpt-image-2 via the Responses image_generation tool). Saves generated images to $CLIO_HOME/cache/images/."
+version: 1.1.0
+description: "OpenAI image generation and multi-reference editing backed by ChatGPT/Codex OAuth (gpt-image-2 via the Responses image_generation tool). Saves outputs to $CLIO_HOME/cache/images/."
 author: Omni Loop Labs
 kind: backend

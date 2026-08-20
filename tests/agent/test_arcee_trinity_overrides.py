@@ -12,6 +12,7 @@ Arcee models like trinity-large-preview or trinity-mini.
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from agent.auxiliary_client import (
     _compression_threshold_for_model,
@@ -70,6 +71,59 @@ def test_compression_threshold_for_trinity_thinking() -> None:
 def test_compression_threshold_for_local_qwen38_harness() -> None:
     assert _compression_threshold_for_model("qwen3.8-27b-q5xl") == 0.20
     assert _compression_threshold_for_model("local/qwen3.8-27b-q5xl") == 0.20
+
+
+def test_compression_threshold_for_codex_sol_max_context() -> None:
+    with patch(
+        "agent.model_metadata._codex_max_context_opted_in", return_value=True
+    ):
+        threshold = _compression_threshold_for_model(
+            "gpt-5.6-sol", "openai-codex", context_length=872_000
+        )
+    assert threshold is not None
+    assert threshold == 820_000 / 872_000
+    assert int(872_000 * threshold) == 820_000
+
+
+@pytest.mark.parametrize(
+    ("context_length", "expected_tokens"),
+    [
+        (900_000, 820_000),
+        (872_000, 820_000),
+        (800_000, 748_000),
+    ],
+)
+def test_codex_sol_threshold_tracks_live_account_ceiling(
+    context_length: int,
+    expected_tokens: int,
+) -> None:
+    with patch(
+        "agent.model_metadata._codex_max_context_opted_in", return_value=True
+    ):
+        threshold = _compression_threshold_for_model(
+            "openai-codex:gpt-5.6-sol",
+            "openai-codex",
+            context_length=context_length,
+        )
+    assert threshold is not None
+    assert int(context_length * threshold) == expected_tokens
+
+
+def test_codex_sol_threshold_is_provider_and_opt_in_scoped() -> None:
+    with patch(
+        "agent.model_metadata._codex_max_context_opted_in", return_value=False
+    ):
+        assert (
+            _compression_threshold_for_model("gpt-5.6-sol", "openai-codex")
+            is None
+        )
+    with patch(
+        "agent.model_metadata._codex_max_context_opted_in", return_value=True
+    ):
+        assert (
+            _compression_threshold_for_model("gpt-5.6-sol", "openrouter")
+            is None
+        )
 
 
 def test_compression_threshold_default_none_for_other_models() -> None:

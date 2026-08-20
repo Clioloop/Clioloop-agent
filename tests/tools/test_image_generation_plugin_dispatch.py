@@ -19,6 +19,13 @@ class _FakeCodexProvider(ImageGenProvider):
     def name(self) -> str:
         return "codex"
 
+    def capabilities(self):
+        return {
+            "modalities": ["text", "image"],
+            "operations": ["generate", "edit"],
+            "max_reference_images": 4,
+        }
+
     def generate(self, prompt, aspect_ratio="landscape", **kwargs):
         return {
             "success": True,
@@ -51,6 +58,64 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["image"] == "/tmp/codex-test.png"
         assert payload["aspect_ratio"] == "square"
+
+    def test_dispatch_forwards_input_images_and_edit_action(self, monkeypatch):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from clio_cli import plugins as plugins_module
+
+        provider = _FakeCodexProvider()
+        captured = {}
+
+        def fake_generate(prompt, aspect_ratio="landscape", **kwargs):
+            captured.update({"prompt": prompt, "aspect_ratio": aspect_ratio, **kwargs})
+            return {"success": True, "image": "/tmp/edited.png", "provider": "codex"}
+
+        provider.generate = fake_generate
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-high")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "move them to a beach",
+            "portrait",
+            input_images=["/tmp/base.png", "https://example.com/ref.jpg"],
+            action="edit",
+        )
+        assert dispatched is not None
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert captured == {
+            "prompt": "move them to a beach",
+            "aspect_ratio": "portrait",
+            "input_images": ["/tmp/base.png", "https://example.com/ref.jpg"],
+            "action": "edit",
+            "model": "gpt-image-high",
+        }
+
+    def test_dispatch_rejects_references_for_text_only_provider(self, monkeypatch):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from clio_cli import plugins as plugins_module
+
+        class _TextOnlyProvider(_FakeCodexProvider):
+            def capabilities(self):
+                return {"modalities": ["text"], "operations": ["generate"], "max_reference_images": 0}
+
+        provider = _TextOnlyProvider()
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "edit", "square", input_images=["/tmp/base.png"], action="edit",
+        )
+        assert dispatched is not None
+        payload = json.loads(dispatched)
+        assert payload["success"] is False
+        assert payload["error_type"] == "reference_images_unsupported"
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
