@@ -14,6 +14,7 @@ import { getSessionMessages, listAllProfileSessions, type SessionInfo } from '..
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { toggleCommandPalette } from '../store/command-palette'
+import { openGatewayForProfile } from '../store/gateway'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -643,7 +644,12 @@ export function DesktopController() {
   })
 
   const openBotChat = useCallback(
-    (profile: string, sessionId: string, displayName: string) => {
+    async (profile: string, sessionId: string, displayName: string) => {
+      // Wake the Bot's profile backend before navigating. resumeSession will
+      // activate the already-open route and its owner-pinned RPC prevents a
+      // concurrent profile switch from stealing the resume request.
+      await openGatewayForProfile(profile)
+
       setSessions(current => {
         if (current.some(session => session.id === sessionId)) {
           return current

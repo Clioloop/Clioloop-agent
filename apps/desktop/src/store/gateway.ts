@@ -1,5 +1,5 @@
 import type { ConnectionState, GatewayEvent } from '@clio/shared'
-import { atom } from 'nanostores'
+import { atom, batch } from 'nanostores'
 
 import { ClioGateway } from '@/clio'
 import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
@@ -19,12 +19,18 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
-const isOpen = (gateway: ClioGateway | null): boolean => gateway?.connectionState === 'open'
+const isOpen = (gateway: ClioGateway | null): gateway is ClioGateway => gateway?.connectionState === 'open'
 
 // The active gateway instance, exposed for inline message-stream components
 // (e.g. inline ClarifyTool, model overlays) that call gateway methods without
 // the instance threaded down through props.
 export const $gateway = atom<ClioGateway | null>(null)
+
+// The gateway registry owns the active profile as well as the active socket.
+// Publishing both from setActive() prevents a stale profile atom from claiming
+// one backend while outbound RPCs use another.
+export const $activeGatewayRoute = atom<string>('default')
+export const $activeGatewayProfile = $activeGatewayRoute
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
@@ -48,6 +54,7 @@ export function setPrimaryGateway(gateway: ClioGateway | null, profile = 'defaul
 // ── Secondary (pool) backends ──────────────────────────────────────────────
 interface Secondary {
   profile: string
+  connectPromise: Promise<void> | null
   gateway: ClioGateway
   offEvent: () => void
   offState: () => void
@@ -67,12 +74,16 @@ export function isActivePrimary(): boolean {
   return activeKey === primaryProfile
 }
 
+export function activeGatewayProfileKey(): string {
+  return $activeGatewayRoute.get()
+}
+
 export function activeGateway(): ClioGateway | null {
   if (activeKey === primaryProfile) {
     return primaryGateway
   }
 
-  return secondaries.get(activeKey)?.gateway ?? primaryGateway
+  return secondaries.get(activeKey)?.gateway ?? null
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -90,10 +101,20 @@ export function reportPrimaryGatewayState(state: ConnectionState): void {
 }
 
 function setActive(profile: string): void {
-  activeKey = normKey(profile)
-  const gateway = activeGateway()
-  $gateway.set(gateway)
-  setGatewayState(gateway?.connectionState ?? 'closed')
+  const key = normKey(profile)
+  const gateway = key === primaryProfile ? primaryGateway : (secondaries.get(key)?.gateway ?? null)
+
+  if (!isOpen(gateway)) {
+    throw new Error(`Clio gateway unavailable for profile "${key}"`)
+  }
+
+  activeKey = key
+
+  batch(() => {
+    $activeGatewayRoute.set(key)
+    $gateway.set(gateway)
+    setGatewayState(gateway.connectionState)
+  })
 }
 
 function clearTimer(entry: Secondary): void {
@@ -104,16 +125,43 @@ function clearTimer(entry: Secondary): void {
 }
 
 async function openSecondary(entry: Secondary): Promise<void> {
-  const desktop = window.clioDesktop
-
-  if (!desktop) {
+  if (isOpen(entry.gateway)) {
     return
   }
 
-  const conn = await desktop.getConnection(entry.profile)
-  const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-  await entry.gateway.connect(wsUrl)
-  void desktop.touchBackend?.(entry.profile).catch(() => undefined)
+  if (entry.connectPromise) {
+    return entry.connectPromise
+  }
+
+  const desktop = window.clioDesktop
+
+  if (!desktop) {
+    throw new Error('Desktop IPC bridge is unavailable')
+  }
+
+  const pending = (async () => {
+    const conn = await desktop.getConnection(entry.profile)
+    const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+
+    await entry.gateway.connect(wsUrl)
+
+    if (!entry.wantOpen) {
+      entry.gateway.close()
+      throw new Error(`Gateway profile "${entry.profile}" was retired while connecting.`)
+    }
+
+    void desktop.touchBackend?.(entry.profile).catch(() => undefined)
+  })()
+
+  entry.connectPromise = pending
+
+  try {
+    await pending
+  } finally {
+    if (entry.connectPromise === pending) {
+      entry.connectPromise = null
+    }
+  }
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -156,6 +204,7 @@ function createSecondary(profile: string): Secondary {
 
   const entry: Secondary = {
     profile,
+    connectPromise: null,
     gateway,
     offEvent: () => {},
     offState: () => {},
@@ -182,15 +231,15 @@ function createSecondary(profile: string): Secondary {
   return entry
 }
 
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+async function gatewayForProfile(profile: string): Promise<ClioGateway> {
   const key = normKey(profile)
 
   if (key === primaryProfile) {
-    setActive(key)
+    if (!isOpen(primaryGateway)) {
+      throw new Error(`Clio gateway unavailable for profile "${key}"`)
+    }
 
-    return
+    return primaryGateway
   }
 
   let entry = secondaries.get(key)
@@ -207,12 +256,41 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
     try {
       await openSecondary(entry)
-    } catch {
+    } catch (error) {
       scheduleReconnect(entry)
+      throw error
     }
   }
 
+  return entry.gateway
+}
+
+/** Open a profile's owning socket without changing the foreground/API home. */
+export async function openGatewayForProfile(profile: string): Promise<void> {
+  await gatewayForProfile(profile)
+}
+
+// Make `profile` the active gateway, lazily opening its socket if needed. The
+// previous active route remains published when lookup/connection fails.
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  await gatewayForProfile(key)
   setActive(key)
+}
+
+/** Dispatch directly on a profile's owning socket without moving the active route. */
+export async function requestGatewayForProfile<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
+): Promise<T> {
+  const gateway = await gatewayForProfile(profile)
+
+  return timeoutMs === undefined
+    ? gateway.request<T>(method, params)
+    : gateway.request<T>(method, params, timeoutMs)
 }
 
 // Reconnect the active gateway after a transient request failure. Primary
@@ -278,6 +356,8 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
 }
 
 export function closeSecondaryGateways(): void {
+  const activeWasSecondary = activeKey !== primaryProfile
+
   for (const entry of secondaries.values()) {
     entry.wantOpen = false
     clearTimer(entry)
@@ -287,4 +367,8 @@ export function closeSecondaryGateways(): void {
   }
 
   secondaries.clear()
+
+  if (activeWasSecondary && isOpen(primaryGateway)) {
+    setActive(primaryProfile)
+  }
 }

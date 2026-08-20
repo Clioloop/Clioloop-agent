@@ -11,7 +11,11 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
+import {
+  $activeGatewayProfile,
+  $gateway,
+  ensureGatewayForProfile as activateGatewayForProfile
+} from '@/store/gateway'
 import type { ProfileInfo } from '@/types/clio'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -135,9 +139,9 @@ export async function switchProfile(name: string): Promise<void> {
 // gateway to that profile's backend (spawned on demand by the Electron pool).
 // A single-profile user never triggers a swap, so their path is unchanged.
 
-// The profile the live gateway WebSocket is currently connected to. Initialized
-// to the primary (window) backend's profile on boot.
-export const $activeGatewayProfile = atom<string>('default')
+// Routing truth is owned by the gateway registry so profile and socket cannot
+// diverge. Keep the established import surface for profile-aware UI modules.
+export { $activeGatewayProfile } from '@/store/gateway'
 
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
@@ -198,7 +202,10 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   const target = normalizeProfileKey(profile)
 
-  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+  if (
+    normalizeProfileKey($activeGatewayProfile.get()) === target &&
+    $gateway.get()?.connectionState === 'open'
+  ) {
     return
   }
 
@@ -207,24 +214,28 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   if (gatewaySwitch) {
     await gatewaySwitch.catch(() => undefined)
 
-    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    if (
+      normalizeProfileKey($activeGatewayProfile.get()) === target &&
+      $gateway.get()?.connectionState === 'open'
+    ) {
       return
     }
   }
 
   $gatewaySwapTarget.set(target)
-  gatewaySwitch = (async () => {
-    // ensureGatewayForProfile opens (or reuses) the target's socket and points
-    // the active gateway at it — without closing the profile you came from.
-    await ensureGatewayForProfile(target)
-    $activeGatewayProfile.set(target)
-  })()
+  // The registry connects first, then publishes socket/profile together. A
+  // failed wake rejects and leaves the previous route intact.
+  const activation = activateGatewayForProfile(target)
+
+  gatewaySwitch = activation
 
   try {
-    await gatewaySwitch
+    await activation
   } finally {
-    gatewaySwitch = null
-    $gatewaySwapTarget.set(null)
+    if (gatewaySwitch === activation) {
+      gatewaySwitch = null
+      $gatewaySwapTarget.set(null)
+    }
   }
 }
 

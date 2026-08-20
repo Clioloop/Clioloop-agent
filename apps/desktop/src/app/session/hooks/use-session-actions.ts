@@ -42,6 +42,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/clio'
 
@@ -445,6 +446,12 @@ export function useSessionActions({
       const sessionProfile = storedForProfile?.profile
       await ensureGatewayProfile(sessionProfile)
 
+      // Resolve the owner again at dispatch time. Another navigation can move
+      // the active gateway after the wake await; session RPCs must still reach
+      // the backend that owns this stored session.
+      const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
+        requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
+
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -463,7 +470,7 @@ export function useSessionActions({
         clearComposerAttachments()
 
         try {
-          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+          const usage = await requestForSession<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
           if (!isCurrentResume()) {
             return
@@ -536,7 +543,7 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
+        const resumed = await requestForSession<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
           // Owning profile: in app-global remote mode one backend serves every

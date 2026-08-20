@@ -87,7 +87,7 @@ interface BotTurnResult {
 }
 
 interface BotsViewProps {
-  onOpenBotChat: (profile: string, sessionId: string, displayName: string) => void
+  onOpenBotChat: (profile: string, sessionId: string, displayName: string) => Promise<void> | void
   requestGateway: GatewayRequest
 }
 
@@ -206,7 +206,7 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
 
     try {
       const response = await requestGateway<{ bot: BotDetail }>('bot.get', { profile: bot.profile })
-      onOpenBotChat(bot.profile, response.bot.session_id, bot.display_name)
+      await onOpenBotChat(bot.profile, response.bot.session_id, bot.display_name)
     } catch (nextError) {
       setError(errorMessage(nextError))
     } finally {

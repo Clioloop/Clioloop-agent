@@ -324,11 +324,12 @@ export function useGatewayBoot({
         try {
           const pref = await desktop.profile?.get?.()
           const profileKey = (pref?.profile ?? '').trim() || 'default'
-          $activeGatewayProfile.set(profileKey)
+
           setPrimaryGateway(gateway, profileKey)
-          void ensureGatewayForProfile(profileKey)
+          await ensureGatewayForProfile(profileKey)
         } catch {
-          $activeGatewayProfile.set('default')
+          setPrimaryGateway(gateway, 'default')
+          await ensureGatewayForProfile('default')
         }
 
         setDesktopBootStep({
