@@ -77,9 +77,21 @@ def read_preview(start: int = 0, count: int = 12000) -> str:
     return _request("preview.read", {"start": start, "count": count}, "read the preview")
 
 
-_DRIVE_ACTIONS = ("inventory", "click", "hover", "type", "press", "scroll", "back", "forward")
+_DRIVE_ACTIONS = (
+    "inventory",
+    "click",
+    "hover",
+    "type",
+    "press",
+    "scroll",
+    "strobe",
+    "back",
+    "forward",
+    "reload",
+)
 _DRIVE_TARGET_ACTIONS = {"click", "hover", "type", "press"}
 _SCROLL_DESTINATIONS = {"top", "bottom"}
+_STROBE_MAX_ELEMENTS = 32
 
 
 def drive_preview(
@@ -126,6 +138,11 @@ def drive_preview(
             payload[name] = value
     if verb == "inventory":
         payload.update({"full": bool(full), "max": bounded_limit})
+    elif verb == "strobe":
+        # A strobe is a short read-only burst of page scans in the selected
+        # preview runtime, not a desktop theme/effect. Bound each scan here as
+        # well as in the renderer so malformed callers cannot amplify it.
+        payload["max"] = min(bounded_limit, _STROBE_MAX_ELEMENTS)
     elif verb == "type":
         payload.update({"submit": bool(submit), "text": text})
     elif verb == "press":
@@ -251,7 +268,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "drive_preview": {
         "name": "drive_preview",
-        "description": "Inventory and interact with the active Clio Desktop preview. Start with inventory; its durable refs survive re-renders but are invalidated by navigation. Actions return inventory deltas. Clicks, typing, key presses, hovering, and scrolling use trusted Electron input and fail explicitly when the preview cannot accept real input.",
+        "description": "Inventory and interact with the active Clio Desktop preview. Start with inventory; its durable refs survive re-renders but are invalidated by navigation. Actions return inventory deltas. Clicks, typing, key presses, hovering, and scrolling use trusted Electron input and fail explicitly when the preview cannot accept real input. reload refreshes only the selected session's active preview. strobe performs a fixed, bounded read-only scan burst; it sends no input and never changes the page or desktop theme.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -263,7 +280,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
                 "submit": {"type": "boolean", "default": False},
                 "amount": {"type": "integer", "description": "Scroll distance in pixels; negative scrolls up."},
                 "to": {"type": "string", "enum": sorted(_SCROLL_DESTINATIONS)},
-                "max": {"type": "integer", "minimum": 1, "maximum": 120, "default": 120},
+                "max": {"type": "integer", "minimum": 1, "maximum": 120, "default": 120, "description": "Inventory cap. strobe applies its own lower safety cap."},
                 "full": {"type": "boolean", "default": False, "description": "Request a full inventory instead of a delta."},
             },
             "required": ["action"],

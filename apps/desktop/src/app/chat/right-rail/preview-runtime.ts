@@ -23,6 +23,7 @@ export interface PreviewRuntime {
   back: () => Promise<void> | void
   focus: () => void
   forward: () => Promise<void> | void
+  reload: () => Promise<void> | void
   run: (code: string) => Promise<unknown>
   send: (event: PreviewInputEvent) => Promise<void>
 }
@@ -52,6 +53,8 @@ export interface PreviewAnnotateRequest {
 }
 
 const runtimes = new Map<string, PreviewRuntime>()
+const STROBE_PASSES = 3
+const STROBE_MAX_ELEMENTS = 32
 
 export function previewRuntimeKey(sessionId: string, tabId: string): string {
   return `${sessionId.trim()}\u0000${tabId}`
@@ -162,10 +165,38 @@ export async function driveActivePreview(request: PreviewDriveRequest): Promise<
       })
     }
 
-    if (action === 'back' || action === 'forward') {
+    if (action === 'back' || action === 'forward' || action === 'reload') {
       await runtime[action]()
 
-      return { acted: `navigated ${action}`, success: true }
+      return {
+        acted: action === 'reload' ? 'reloaded the preview' : `navigated ${action}`,
+        note: 'Page is loading — run inventory to see the current page.',
+        success: true
+      }
+    }
+
+    if (action === 'strobe') {
+      const requestedMax = typeof request.max === 'number' && Number.isFinite(request.max) ? request.max : STROBE_MAX_ELEMENTS
+      const max = Math.max(1, Math.min(Math.floor(requestedMax), STROBE_MAX_ELEMENTS))
+      let snapshot: PreviewActResult = { success: true }
+
+      // This deliberately samples rather than flashes: source parity keeps the
+      // strobe verb, but Clio does not install a page overlay or mutate a visual
+      // theme. Both pass count and inventory size are fixed safety bounds.
+      for (let pass = 0; pass < STROBE_PASSES; pass++) {
+        snapshot = await runAct(runtime, { kind: 'elements', max })
+
+        if (!snapshot.success) {
+          return snapshot
+        }
+      }
+
+      return {
+        ...snapshot,
+        acted: `strobed the preview with ${STROBE_PASSES} bounded read-only scans`,
+        note: 'No input was sent and no page or desktop theme was changed.',
+        success: true
+      }
     }
 
     if (action === 'scroll') {

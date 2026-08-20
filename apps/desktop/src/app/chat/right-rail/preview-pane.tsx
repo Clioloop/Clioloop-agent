@@ -603,6 +603,7 @@ export function PreviewPane({
           back: () => webview.goBack?.(),
           focus: () => webview.focus(),
           forward: () => webview.goForward?.(),
+          reload: reloadPreview,
           run: code => {
             if (!webview.executeJavaScript) {
               return Promise.reject(new Error('Preview page scripting is unavailable'))
@@ -630,7 +631,7 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, isWebPreview, runtimeKey, target.url])
+  }, [appendConsoleEntry, consoleState, isWebPreview, reloadPreview, runtimeKey, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">

@@ -5,6 +5,7 @@ import pytest
 from gateway.session_context import clear_session_vars, set_session_vars
 from tools import desktop_ui
 from tools.desktop_ui_tools import (
+    _SCHEMAS,
     _normalize_preview_target,
     annotate_preview,
     apply_layout,
@@ -30,6 +31,16 @@ def test_preview_target_normalization():
     assert _normalize_preview_target("localhost:5174/app") == "http://localhost:5174/app"
     assert _normalize_preview_target("example.com/docs") == "https://example.com/docs"
     assert _normalize_preview_target("/work/demo.html") == "/work/demo.html"
+
+
+def test_preview_drive_schema_exposes_reload_and_read_only_strobe():
+    schema = _SCHEMAS["drive_preview"]
+    actions = schema["parameters"]["properties"]["action"]["enum"]
+
+    assert "reload" in actions
+    assert "strobe" in actions
+    assert "bounded read-only scan burst" in schema["description"]
+    assert "theme" in schema["description"]
 
 
 def test_desktop_tools_fail_closed_off_surface():
@@ -123,6 +134,35 @@ def test_preview_drive_and_annotation_route_to_trusted_renderer(monkeypatch):
             "preview.annotate",
             "runtime-preview",
             {"action": "add", "ref": "inp-name", "label": "Author"},
+            8.0,
+        ),
+    ]
+
+
+def test_preview_reload_and_bounded_read_only_strobe_are_session_scoped(monkeypatch):
+    monkeypatch.setenv("CLIO_DESKTOP", "1")
+    calls = []
+
+    def request(action, sid, payload, timeout):
+        calls.append((action, sid, payload, timeout))
+        return {"success": True, "acted": payload["action"]}
+
+    desktop_ui.configure_bridge(emit_callback=None, request_callback=request)
+    tokens = set_session_vars(session_key="stored", ui_session_id="runtime-preview-ops")
+    try:
+        reloaded = json.loads(drive_preview("reload"))
+        strobed = json.loads(drive_preview("strobe", limit=999))
+    finally:
+        clear_session_vars(tokens)
+
+    assert reloaded == {"success": True, "acted": "reload"}
+    assert strobed == {"success": True, "acted": "strobe"}
+    assert calls == [
+        ("preview.drive", "runtime-preview-ops", {"action": "reload"}, 8.0),
+        (
+            "preview.drive",
+            "runtime-preview-ops",
+            {"action": "strobe", "max": 32},
             8.0,
         ),
     ]

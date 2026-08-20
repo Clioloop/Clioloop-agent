@@ -79,7 +79,6 @@ export interface PreviewActAction {
     | 'pin'
     | 'press'
     | 'scroll'
-    | 'strobe'
     | 'type'
     | 'unpin'
   /** locate: also give the target keyboard focus, for a key press that must not

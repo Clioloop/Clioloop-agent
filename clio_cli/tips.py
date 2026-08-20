@@ -69,7 +69,7 @@ TIPS = [
     "clio chat -t web,terminal enables only specific toolsets for a focused session.",
     "clio chat -s github-pr-workflow preloads a skill at launch.",
     "clio chat -q \"query\" runs a single non-interactive query and exits.",
-    "clio chat --max-turns 200 overrides the default 90-iteration limit per turn.",
+    "clio chat --max-turns 200 sets an explicit finite iteration limit; the default is unlimited.",
     "clio chat --checkpoints enables filesystem snapshots before every destructive file change.",
     "clio --yolo bypasses all dangerous command approval prompts for the entire session.",
     "clio chat --source telegram tags the session for filtering in clio sessions list.",

@@ -33,5 +33,8 @@ inventory and operate the active preview tab. Inventory refs remain valid
 across framework re-renders and return compact deltas after the first survey;
 navigation invalidates every ref. Click, hover, type, press, and scroll are sent
 through Electron's trusted input path and fail explicitly when a live webview
-cannot receive real input. `annotate_preview` annotations persist across later
-actions, follow their elements, and are cleared by navigation.
+cannot receive real input. Back, forward, and reload apply only to the active
+preview registered for the addressed UI session. Strobe is a bounded,
+read-only scan burst: it sends no input and does not install a page or desktop
+theme effect. `annotate_preview` annotations persist across later actions,
+follow their elements, and are cleared by navigation.

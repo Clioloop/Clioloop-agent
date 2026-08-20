@@ -10,6 +10,7 @@ function runtime(overrides: Partial<PreviewRuntime> = {}): PreviewRuntime {
     back: vi.fn(),
     focus: vi.fn(),
     forward: vi.fn(),
+    reload: vi.fn(),
     run: vi.fn(async code => {
       if (code.includes('"kind":"locate"')) {
         return {
@@ -64,6 +65,59 @@ describe('active preview drive', () => {
       expect(vi.mocked(selected.send).mock.calls.some(([event]) => event.type === 'mouseDown')).toBe(true)
     } finally {
       unregister()
+    }
+  })
+
+  it('reloads only the selected session preview runtime', async () => {
+    const selected = runtime()
+    const otherSession = runtime()
+    const unregisterSelected = registerPreviewRuntime(previewRuntimeKey('session-1', 'preview'), selected)
+    const unregisterOther = registerPreviewRuntime(previewRuntimeKey('session-2', 'preview'), otherSession)
+
+    try {
+      expect(await driveActivePreview({ action: 'reload' })).toEqual({
+        acted: 'reloaded the preview',
+        note: 'Page is loading — run inventory to see the current page.',
+        success: true
+      })
+      expect(selected.reload).toHaveBeenCalledOnce()
+      expect(otherSession.reload).not.toHaveBeenCalled()
+      expect(selected.run).not.toHaveBeenCalled()
+      expect(selected.send).not.toHaveBeenCalled()
+    } finally {
+      unregisterSelected()
+      unregisterOther()
+    }
+  })
+
+  it('bounds strobe to three read-only scans without input or visual theme changes', async () => {
+    const selected = runtime()
+    const other = runtime()
+    const unregisterSelected = registerPreviewRuntime(previewRuntimeKey('session-1', 'preview'), selected)
+    const unregisterOther = registerPreviewRuntime(previewRuntimeKey('session-1', 'file:other'), other)
+
+    try {
+      const result = await driveActivePreview({ action: 'strobe', max: 999 })
+
+      expect(result).toMatchObject({
+        acted: 'strobed the preview with 3 bounded read-only scans',
+        note: 'No input was sent and no page or desktop theme was changed.',
+        success: true
+      })
+      expect(selected.run).toHaveBeenCalledTimes(3)
+
+      for (const [code] of vi.mocked(selected.run).mock.calls) {
+        expect(code).toContain('"kind":"elements"')
+        expect(code).toContain('"max":32')
+      }
+
+      expect(selected.focus).not.toHaveBeenCalled()
+      expect(selected.send).not.toHaveBeenCalled()
+      expect(selected.reload).not.toHaveBeenCalled()
+      expect(other.run).not.toHaveBeenCalled()
+    } finally {
+      unregisterSelected()
+      unregisterOther()
     }
   })
 
