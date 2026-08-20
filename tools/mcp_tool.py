@@ -1124,7 +1124,7 @@ class MCPServerTask:
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
-        "initialize_result",
+        "initialize_result", "_list_cache_meta",
     )
 
     def __init__(self, name: str):
@@ -1161,6 +1161,21 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        self._list_cache_meta: dict = {}
+
+    def _capture_list_cache_meta(self, result: Any) -> None:
+        """Capture optional SEP-2549 freshness hints without requiring SDK v2."""
+        ttl = getattr(result, "ttlMs", getattr(result, "ttl_ms", None))
+        scope = getattr(result, "cacheScope", getattr(result, "cache_scope", None))
+        meta = getattr(result, "meta", None) or getattr(result, "_meta", None)
+        if isinstance(meta, dict):
+            ttl = meta.get("ttlMs", meta.get("ttl_ms", ttl))
+            scope = meta.get("cacheScope", meta.get("cache_scope", scope))
+        self._list_cache_meta = {}
+        if isinstance(ttl, (int, float)):
+            self._list_cache_meta["ttl_ms"] = ttl
+        if scope:
+            self._list_cache_meta["cache_scope"] = str(scope)
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1244,6 +1259,7 @@ class MCPServerTask:
             # 1. Fetch current tool list from server
             async with self._rpc_lock:
                 tools_result = await self.session.list_tools()
+            self._capture_list_cache_meta(tools_result)
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
@@ -1747,6 +1763,7 @@ class MCPServerTask:
             return
         async with self._rpc_lock:
             tools_result = await self.session.list_tools()
+        self._capture_list_cache_meta(tools_result)
         self._tools = (
             tools_result.tools
             if hasattr(tools_result, "tools")
@@ -1983,6 +2000,13 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+# Servers registered from a schema manifest without spawning. The first
+# handler invocation replaces cached handlers through live discovery.
+_lazy_server_configs: Dict[str, dict] = {}
+_lazy_server_fingerprints: Dict[str, str] = {}
+_lazy_server_tool_names: Dict[str, List[str]] = {}
+_lazy_server_connecting: set[str] = set()
+_lazy_connect_condition = threading.Condition()
 
 # Operator-side trust tier plus server-supplied readOnlyHint metadata. Missing
 # trust preserves v1 full-trust behavior; unknown configured tiers fail closed.
@@ -2629,6 +2653,79 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+
+def _resolve_server_lazy(name: str, config: dict) -> bool:
+    """Return whether a server opts into cache-backed lazy startup."""
+    return _parse_boolish(config.get("lazy", False), default=False)
+
+
+def _ensure_lazy_server_connected(server_name: str) -> bool:
+    """Start one cache-registered server on first use, deduplicated by name."""
+    with _lazy_connect_condition:
+        while server_name in _lazy_server_connecting:
+            _lazy_connect_condition.wait(timeout=0.25)
+            with _lock:
+                connected = _servers.get(server_name)
+            if connected is not None and connected.session is not None:
+                return True
+        with _lock:
+            connected = _servers.get(server_name)
+        if connected is not None and connected.session is not None:
+            return True
+        config = _lazy_server_configs.get(server_name)
+        if not config:
+            return False
+        _lazy_server_connecting.add(server_name)
+
+    try:
+        logger.info("MCP server '%s': lazy start on first invoke", server_name)
+        _ensure_mcp_loop()
+        connect_timeout = float(config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
+        _run_on_mcp_loop(
+            lambda: _discover_and_register_server(server_name, config),
+            timeout=connect_timeout + 30.0,
+        )
+        with _lock:
+            connected = _servers.get(server_name)
+            live_names = set(getattr(connected, "_registered_tool_names", []) or [])
+        cached_names = list(_lazy_server_tool_names.get(server_name, []))
+        if connected is None or connected.session is None:
+            return False
+
+        # A valid fingerprint can still outlive a server-side schema change.
+        # Remove cached phantom tools immediately after the live handshake.
+        from tools.registry import registry
+
+        for stale_name in set(cached_names) - live_names:
+            registry.deregister(stale_name)
+            _forget_mcp_tool_server(stale_name)
+        _lazy_server_configs.pop(server_name, None)
+        _lazy_server_fingerprints.pop(server_name, None)
+        _lazy_server_tool_names.pop(server_name, None)
+        return True
+    except BaseException as exc:
+        logger.warning(
+            "Lazy MCP connect failed for '%s': %s",
+            server_name,
+            _format_connect_error(exc),
+        )
+        return False
+    finally:
+        with _lazy_connect_condition:
+            _lazy_server_connecting.discard(server_name)
+            _lazy_connect_condition.notify_all()
+
+
+def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
+    with _lock:
+        server = _servers.get(server_name)
+    if (server is None or server.session is None) and server_name in _lazy_server_configs:
+        _ensure_lazy_server_connected(server_name)
+        with _lock:
+            server = _servers.get(server_name)
+    return server
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2670,8 +2767,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             _bump_server_error(server_name)
             return json.dumps({
@@ -2785,8 +2881,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         # Resource and prompt utility handlers are intrinsically read-only.
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -2845,8 +2940,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -2904,8 +2998,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         # Resource and prompt utility handlers are intrinsically read-only.
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -2969,8 +3062,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3040,7 +3132,10 @@ def _make_check_fn(server_name: str):
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return server is not None and server.session is not None
+        return (
+            (server is not None and server.session is not None)
+            or server_name in _lazy_server_configs
+        )
 
     return _check
 
@@ -3395,6 +3490,9 @@ def _existing_tool_names() -> List[str]:
         for mcp_tool in server._tools:
             schema = _convert_mcp_schema(server.name, mcp_tool)
             names.append(schema["name"])
+    for server_name, tool_names in _lazy_server_tool_names.items():
+        if server_name not in _servers:
+            names.extend(tool_names)
     return names
 
 
@@ -3464,6 +3562,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],
+            max_result_size_chars=50_000,
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
@@ -3501,13 +3600,157 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            max_result_size_chars=50_000,
         )
         _track_mcp_tool_server(util_name, name)
         registered_names.append(util_name)
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        # Refresh the profile-local, secret-free manifest after every live
+        # discovery (including list_changed refreshes).
+        try:
+            from tools.mcp_schema_cache import config_fingerprint, write_cache_entry
 
+            tools_payload = []
+            for mcp_tool in server._tools:
+                if not _should_register(mcp_tool.name):
+                    continue
+                raw_schema = getattr(mcp_tool, "inputSchema", None)
+                tools_payload.append({
+                    "name": mcp_tool.name,
+                    "description": mcp_tool.description or "",
+                    "inputSchema": raw_schema if isinstance(raw_schema, dict) else {},
+                    "annotations": {
+                        "readOnlyHint": _annotation_read_only_hint(mcp_tool),
+                    },
+                })
+            utility_payload = [
+                {"schema": item["schema"], "handler_key": item["handler_key"]}
+                for item in _select_utility_schemas(name, server, config)
+            ]
+            cache_meta = getattr(server, "_list_cache_meta", {}) or {}
+            write_cache_entry(
+                name,
+                config_fingerprint(config),
+                tools=tools_payload,
+                utility_tools=utility_payload,
+                ttl_ms=cache_meta.get("ttl_ms"),
+                cache_scope=cache_meta.get("cache_scope"),
+            )
+        except Exception as exc:
+            logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
+
+    return registered_names
+
+
+class _CachedMCPTool:
+    """Small MCP Tool-compatible object loaded from a trusted local manifest."""
+
+    __slots__ = ("name", "description", "inputSchema", "annotations")
+
+    def __init__(self, raw: dict):
+        self.name = str(raw.get("name") or "")
+        self.description = str(raw.get("description") or "")
+        schema = raw.get("inputSchema")
+        self.inputSchema = schema if isinstance(schema, dict) else {}
+        annotations = raw.get("annotations")
+        self.annotations = annotations if isinstance(annotations, dict) else None
+
+
+def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
+    """Register cached schemas while deferring all transport work."""
+    from tools.mcp_schema_cache import (
+        config_fingerprint,
+        tools_from_cache_entry,
+        utility_tools_from_cache_entry,
+    )
+    from tools.registry import registry
+
+    registered_names: List[str] = []
+    toolset_name = f"mcp-{name}"
+    timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+    filters = config.get("tools") or {}
+    include = _normalize_name_filter(filters.get("include"), f"mcp_servers.{name}.tools.include")
+    exclude = _normalize_name_filter(filters.get("exclude"), f"mcp_servers.{name}.tools.exclude")
+
+    def selected(tool_name: str) -> bool:
+        if include:
+            return tool_name in include
+        if exclude:
+            return tool_name not in exclude
+        return True
+
+    check_fn = _make_check_fn(name)
+    for raw in tools_from_cache_entry(entry):
+        if not isinstance(raw, dict) or not raw.get("name") or not selected(str(raw["name"])):
+            continue
+        tool = _CachedMCPTool(raw)
+        _scan_mcp_description(name, tool.name, tool.description)
+        schema = _convert_mcp_schema(name, tool)
+        registry_name = schema["name"]
+        existing = registry.get_toolset_for_tool(registry_name)
+        if existing and existing != toolset_name:
+            logger.warning(
+                "MCP server '%s' (lazy): cached tool '%s' collides with '%s'; skipped",
+                name, registry_name, existing,
+            )
+            continue
+        _tool_read_only_hints.setdefault(name, {})[tool.name] = _annotation_read_only_hint(tool)
+        registry.register(
+            name=registry_name,
+            toolset=toolset_name,
+            schema=schema,
+            handler=_make_tool_handler(name, tool.name, timeout),
+            check_fn=check_fn,
+            is_async=False,
+            description=schema["description"],
+            max_result_size_chars=50_000,
+        )
+        _track_mcp_tool_server(registry_name, name)
+        registered_names.append(registry_name)
+
+    factories = {
+        "list_resources": _make_list_resources_handler,
+        "read_resource": _make_read_resource_handler,
+        "list_prompts": _make_list_prompts_handler,
+        "get_prompt": _make_get_prompt_handler,
+    }
+    for raw in utility_tools_from_cache_entry(entry):
+        if not isinstance(raw, dict):
+            continue
+        schema = raw.get("schema")
+        handler_key = raw.get("handler_key")
+        if not isinstance(schema, dict) or handler_key not in factories:
+            continue
+        util_name = schema.get("name")
+        if not util_name:
+            continue
+        existing = registry.get_toolset_for_tool(util_name)
+        if existing and existing != toolset_name:
+            continue
+        registry.register(
+            name=util_name,
+            toolset=toolset_name,
+            schema=schema,
+            handler=factories[handler_key](name, timeout),
+            check_fn=check_fn,
+            is_async=False,
+            description=schema.get("description") or "",
+            max_result_size_chars=50_000,
+        )
+        _track_mcp_tool_server(util_name, name)
+        registered_names.append(util_name)
+
+    if registered_names:
+        registry.register_toolset_alias(name, toolset_name)
+        _lazy_server_configs[name] = dict(config)
+        _lazy_server_fingerprints[name] = config_fingerprint(config)
+        _lazy_server_tool_names[name] = list(registered_names)
+        logger.info(
+            "MCP server '%s' (lazy): registered %d tool(s) from schema cache",
+            name, len(registered_names),
+        )
     return registered_names
 
 
@@ -3574,7 +3817,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if k not in _servers
+            and k not in _lazy_server_configs
+            and _parse_boolish(v.get("enabled", True), default=True)
         }
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
@@ -3584,6 +3829,36 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
     if not new_servers:
+        return _existing_tool_names()
+
+    # A lazy server with a valid manifest contributes normal registry schemas
+    # but causes no event-loop thread, network connection, or child process.
+    eager_servers = dict(new_servers)
+    lazy_registered = 0
+    from tools.mcp_schema_cache import config_fingerprint, get_cached_entry
+
+    for server_name, server_config in new_servers.items():
+        if not _resolve_server_lazy(server_name, server_config):
+            continue
+        fingerprint = config_fingerprint(server_config)
+        entry = get_cached_entry(server_name, fingerprint)
+        if entry is None:
+            continue
+        try:
+            names = _register_from_cache_sync(server_name, server_config, entry)
+        except Exception as exc:
+            logger.warning("Failed lazy MCP registration for '%s': %s", server_name, exc)
+            continue
+        eager_servers.pop(server_name, None)
+        lazy_registered += len(names)
+    new_servers = eager_servers
+
+    if not new_servers:
+        if lazy_registered:
+            logger.info(
+                "MCP: registered %d lazy tool(s) from schema cache (no server started)",
+                lazy_registered,
+            )
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
@@ -3829,6 +4104,16 @@ def shutdown_mcp_servers():
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
     """
+    from tools.registry import registry
+
+    for tool_names in list(_lazy_server_tool_names.values()):
+        for tool_name in tool_names:
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+    _lazy_server_configs.clear()
+    _lazy_server_fingerprints.clear()
+    _lazy_server_tool_names.clear()
+
     with _lock:
         servers_snapshot = list(_servers.values())
 
