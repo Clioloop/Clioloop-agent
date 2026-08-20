@@ -11,7 +11,6 @@ import os
 import sys
 import types
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -444,89 +443,3 @@ def test_quarantine_actionable_warning_when_everything_fails(
     # and tells the user what to do.
     assert "another process" in captured.lower()
     assert "Clio Desktop" in captured or "gateway" in captured.lower()
-
-
-# ---------------------------------------------------------------------------
-# cmd_update integration — concurrent-instance gate
-# ---------------------------------------------------------------------------
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_cmd_update_aborts_on_concurrent_instance(_winp, tmp_path, capsys):
-    """If another clio.exe is running, the update bails out before
-    touching the working tree (exit code 2)."""
-    scripts_dir = tmp_path / "Scripts"
-    scripts_dir.mkdir()
-
-    args = SimpleNamespace(
-        check=False,
-        gateway=False,
-        yes=False,
-        force=False,
-        backup=False,
-        no_backup=True,
-    )
-
-    with patch.object(
-        cli_main, "_venv_scripts_dir", return_value=scripts_dir
-    ), patch.object(
-        cli_main,
-        "_detect_concurrent_clio_instances",
-        return_value=[(4242, "clio.exe")],
-    ), patch.object(
-        cli_main, "_run_pre_update_backup"
-    ) as mock_backup, patch.object(
-        cli_main, "_install_hangup_protection", return_value={}
-    ), patch.object(
-        cli_main, "_finalize_update_output"
-    ):
-        with pytest.raises(SystemExit) as excinfo:
-            cli_main.cmd_update(args)
-
-    assert excinfo.value.code == 2
-    # The pre-update backup runs AFTER the concurrent check; should not have
-    # been invoked.
-    mock_backup.assert_not_called()
-
-    captured = capsys.readouterr().out
-    assert "4242" in captured
-    assert "--force" in captured
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
-    """--force lets the update proceed past the concurrent-instance gate
-    (subsequent steps are mocked so we only verify the gate is skipped)."""
-    scripts_dir = tmp_path / "Scripts"
-    scripts_dir.mkdir()
-
-    args = SimpleNamespace(
-        check=False,
-        gateway=False,
-        yes=False,
-        force=True,  # ← the bypass
-        backup=False,
-        no_backup=True,
-    )
-
-    detect = MagicMock(return_value=[(9, "clio.exe")])
-
-    # Short-circuit out of _cmd_update_impl via a sentinel raise immediately
-    # AFTER the gate. _run_pre_update_backup is the first call after the gate.
-    sentinel = RuntimeError("reached post-gate body")
-    with patch.object(
-        cli_main, "_venv_scripts_dir", return_value=scripts_dir
-    ), patch.object(
-        cli_main, "_detect_concurrent_clio_instances", detect
-    ), patch.object(
-        cli_main, "_run_pre_update_backup", side_effect=sentinel
-    ), patch.object(
-        cli_main, "_install_hangup_protection", return_value={}
-    ), patch.object(
-        cli_main, "_finalize_update_output"
-    ):
-        with pytest.raises(RuntimeError, match="reached post-gate body"):
-            cli_main.cmd_update(args)
-
-    # When --force is set, we should not have even consulted psutil.
-    detect.assert_not_called()

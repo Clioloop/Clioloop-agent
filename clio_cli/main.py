@@ -61,6 +61,7 @@ try:
 except ModuleNotFoundError:
     pass
 
+import math
 import os
 import sys
 
@@ -8053,6 +8054,8 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
 
+    _prepare_windows_dependency_sync()
+
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
     # individually so update does not silently strip working capabilities.
@@ -8702,6 +8705,210 @@ def _run_install_with_heartbeat(
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+_UPDATE_SYNC_REEXEC_ENV = "CLIO_UPDATE_SYNC_REEXEC"
+
+
+class _WindowsUpdateProbeError(RuntimeError):
+    """A Windows holder/handoff probe could not be completed safely."""
+
+
+def _canonical_windows_path(path: object) -> str:
+    try:
+        return os.path.normcase(str(Path(str(path)).resolve()))
+    except (OSError, ValueError):
+        return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _current_install_venv_console_shim() -> Path | None:
+    """Return our parent console shim when launched through this install's venv."""
+    if not _is_windows():
+        return None
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return None
+    try:
+        import psutil
+
+        parent = psutil.Process(os.getpid()).parent()
+        if parent is None:
+            return None
+        parent_exe = parent.exe()
+    except Exception as exc:
+        raise _WindowsUpdateProbeError(
+            f"could not inspect the update launch process: {exc}"
+        ) from exc
+    if not parent_exe:
+        raise _WindowsUpdateProbeError("update launch process has no executable identity")
+    parent_path = _canonical_windows_path(parent_exe)
+    for shim in _clio_exe_shims(scripts_dir):
+        if parent_path == _canonical_windows_path(shim):
+            return shim
+    return None
+
+
+def _wait_for_windows_update_handoff_parent() -> None:
+    """Wait for the old Python + console-shim chain to release its image."""
+    try:
+        import psutil
+
+        parent = psutil.Process(os.getpid()).parent()
+        if parent is None:
+            return
+        parent.wait(timeout=10)
+    except psutil.NoSuchProcess:
+        return
+    except Exception as exc:
+        raise _WindowsUpdateProbeError(
+            f"the original update process did not release its console shim: {exc}"
+        ) from exc
+
+
+def _handoff_windows_update_from_console_shim() -> bool:
+    """Start one direct-Python update worker and let this shim-backed run exit."""
+    shim = _current_install_venv_console_shim()
+    if shim is None:
+        return False
+    env = {**os.environ, _UPDATE_SYNC_REEXEC_ENV: "1"}
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "clio_cli.main", *sys.argv[1:]],
+            cwd=PROJECT_ROOT,
+            env=env,
+            close_fds=False,
+        )
+    except OSError as exc:
+        raise _WindowsUpdateProbeError(f"could not start the update handoff: {exc}") from exc
+    print(f"→ Handing dependency sync off from locked {shim.name}...")
+    return True
+
+
+def _probe_windows_clio_shim_holders(
+    scripts_dir: Path,
+) -> list[tuple[int, float, str]]:
+    """Strictly enumerate PID/create-time identities holding our console shims."""
+    if not _is_windows():
+        return []
+    try:
+        import psutil
+    except Exception as exc:
+        raise _WindowsUpdateProbeError(f"psutil is unavailable: {exc}") from exc
+
+    shim_paths = {_canonical_windows_path(path) for path in _clio_exe_shims(scripts_dir)}
+    try:
+        processes = psutil.process_iter(["pid", "exe", "name", "create_time"])
+    except Exception as exc:
+        raise _WindowsUpdateProbeError(f"could not enumerate processes: {exc}") from exc
+
+    holders: list[tuple[int, float, str]] = []
+    try:
+        for proc in processes:
+            try:
+                info = proc.info
+                pid = int(info["pid"])
+                exe = info.get("exe")
+                if pid == os.getpid() or not exe:
+                    continue
+                if _canonical_windows_path(exe) not in shim_paths:
+                    continue
+                create_time = float(info["create_time"])
+                if not math.isfinite(create_time) or create_time <= 0:
+                    raise ValueError("invalid process creation time")
+                holders.append((pid, create_time, str(info.get("name") or Path(exe).name)))
+            except psutil.NoSuchProcess:
+                continue
+            except Exception as exc:
+                raise _WindowsUpdateProbeError(
+                    f"could not identify a possible console-shim holder: {exc}"
+                ) from exc
+    except _WindowsUpdateProbeError:
+        raise
+    except Exception as exc:
+        # ``process_iter`` is lazy; access-denied and system enumeration
+        # failures can therefore be raised by iteration rather than by the
+        # call above. Never reinterpret a partial roster as authoritative.
+        raise _WindowsUpdateProbeError(f"could not enumerate processes: {exc}") from exc
+    return holders
+
+
+def _prepare_windows_dependency_sync() -> None:
+    """Reap only ledger-proven orphan backends; fail closed for every blocker."""
+    if not _is_windows():
+        return
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return
+    from clio_cli import process_identity
+
+    try:
+        holders = _probe_windows_clio_shim_holders(scripts_dir)
+        if not holders:
+            return
+        classified = process_identity.classify_update_holders(
+            [(pid, create_time) for pid, create_time, _ in holders],
+            project_root=PROJECT_ROOT,
+        )
+        for holder in classified:
+            if not holder.reapable:
+                continue
+            current = process_identity.process_identity_matches(
+                holder.pid, holder.create_time
+            )
+            if current is None:
+                raise _WindowsUpdateProbeError(
+                    f"could not revalidate orphan backend PID {holder.pid}"
+                )
+            if current is False:
+                continue
+            result = subprocess.run(
+                ["taskkill", "/PID", str(holder.pid), "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                after = process_identity.process_identity_matches(
+                    holder.pid, holder.create_time
+                )
+                if after is not False:
+                    detail = (result.stderr or result.stdout or "taskkill failed").strip()
+                    raise _WindowsUpdateProbeError(
+                        f"could not stop orphan backend PID {holder.pid}: {detail}"
+                    )
+            print(
+                f"  ✓ stopped orphan {holder.purpose} backend PID {holder.pid} "
+                "(recorded spawner is dead)"
+            )
+
+        remaining = _probe_windows_clio_shim_holders(scripts_dir)
+        if not remaining:
+            return
+        final = process_identity.classify_update_holders(
+            [(pid, create_time) for pid, create_time, _ in remaining],
+            project_root=PROJECT_ROOT,
+        )
+    except (process_identity.ProcessIdentityProbeError, _WindowsUpdateProbeError) as exc:
+        print(f"✗ Cannot safely inspect Windows processes before dependency sync: {exc}")
+        sys.exit(2)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"✗ Cannot safely prepare Windows dependency sync: {exc}")
+        sys.exit(2)
+
+    blockers = [holder for holder in final if holder.reason != "holder exited"]
+    if not blockers:
+        return
+
+    names = {pid: name for pid, _, name in remaining}
+    print("✗ Clio processes still hold this install's console shims:")
+    for holder in blockers:
+        purpose = holder.purpose or "unknown"
+        print(
+            f"    PID {holder.pid}  {names.get(holder.pid, 'clio.exe')}  "
+            f"purpose={purpose} ({holder.reason})"
+        )
+    print("  Close REPLs/scripts and live supervised backends, then retry.")
+    sys.exit(2)
 
 
 def _venv_scripts_dir() -> Path | None:
@@ -10190,6 +10397,21 @@ def cmd_update(args):
         )
         return
 
+    # A Windows console launcher maps clio.exe for its whole lifetime. Start
+    # one direct-Python worker before mutable update work so that launcher can
+    # exit before the dependency-sync boundary. The worker consumes (rather
+    # than propagates) this marker, making the handoff strictly one-shot.
+    sync_reexec = os.environ.pop(_UPDATE_SYNC_REEXEC_ENV, None) == "1"
+    if _is_windows():
+        try:
+            if sync_reexec:
+                _wait_for_windows_update_handoff_parent()
+            elif _handoff_windows_update_from_console_shim():
+                return
+        except _WindowsUpdateProbeError as exc:
+            print(f"✗ Cannot safely hand off Windows dependency sync: {exc}")
+            sys.exit(2)
+
     gateway_mode = getattr(args, "gateway", False)
 
     # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
@@ -10363,18 +10585,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("∞ Updating Clioloop...")
     print()
-
-    # On Windows, abort early if another clio.exe is holding the venv shim
-    # open. Continuing would result in a string of WinError 32 warnings and
-    # then either a deferred-rename leftover or a failed git-pull fast path
-    # that silently falls back to the slower ZIP route. See issue #26670.
-    if _is_windows() and not getattr(args, "force", False):
-        scripts_dir = _venv_scripts_dir()
-        if scripts_dir is not None:
-            concurrent = _detect_concurrent_clio_instances(scripts_dir)
-            if concurrent:
-                print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
@@ -10728,6 +10938,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
+        _prepare_windows_dependency_sync()
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

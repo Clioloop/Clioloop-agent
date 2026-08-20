@@ -157,6 +157,31 @@ def test_process_identity_matches_create_time_and_fails_closed(monkeypatch):
     assert identity.process_identity_matches(10, 100.0, tolerance=-1) is None
 
 
+def test_update_holder_classification_reaps_only_ledger_proven_orphan(
+    monkeypatch, tmp_path
+):
+    ledger = tmp_path / "spawn-ledger.json"
+    ledger.write_text(json.dumps([_entry(pid=10)]), encoding="utf-8")
+    monkeypatch.setattr(identity, "_ledger_path", lambda project_root=None: ledger)
+    monkeypatch.setattr(identity, "install_id", lambda project_root=None: "abcdef123456")
+    monkeypatch.setattr(
+        identity,
+        "process_identity_matches",
+        lambda pid, create_time, **kwargs: {9: False, 10: True, 11: True}[pid],
+    )
+
+    classified = identity.classify_update_holders(
+        [(10, 100.0), (11, 110.0)], project_root=tmp_path
+    )
+
+    assert classified[0] == identity.HolderClassification(
+        10, 100.0, "serve", True, "spawner is dead"
+    )
+    assert classified[1] == identity.HolderClassification(
+        11, 110.0, None, False, "no matching ledger identity"
+    )
+
+
 def test_windows_job_attachment_is_idempotent(monkeypatch):
     calls = {"create": 0, "assign": 0, "close": 0}
 

@@ -73,6 +73,21 @@ class LedgerEntry:
     argv: str
 
 
+@dataclass(frozen=True)
+class HolderClassification:
+    """Ledger-backed decision for one process holding an install shim."""
+
+    pid: int
+    create_time: float
+    purpose: Optional[str]
+    reapable: bool
+    reason: str
+
+
+class ProcessIdentityProbeError(RuntimeError):
+    """Raised when process/ledger state cannot be proved safely."""
+
+
 def _canonical_path(path: Path) -> str:
     try:
         value = str(path.resolve())
@@ -515,6 +530,116 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
         return None
     alive = process_identity_matches(pid, create, tolerance=_SPAWNER_TIME_TOLERANCE)
     return None if alive is None else not alive
+
+
+def classify_update_holders(
+    holders: list[tuple[int, float]],
+    *,
+    project_root: Optional[Path] = None,
+) -> list[HolderClassification]:
+    """Classify install-shim holders using only positive ledger identity.
+
+    A holder is reapable only when its PID/create-time pair matches exactly one
+    entry for this install, its purpose is a backend purpose, and its recorded
+    spawner is positively proved dead. REPLs, scripts, unknown entries, and
+    backends with a live or incomplete spawner identity remain blockers.
+
+    Probe failures are deliberately different from an ordinary unknown
+    classification: callers must abort rather than treating access denied, a
+    corrupt ledger, or an unavailable create-time probe as absence.
+    """
+    wanted = install_id(project_root)
+    path = _ledger_path(project_root)
+    with _LEDGER_THREAD_LOCK, _interprocess_lock(path) as locked:
+        if not locked:
+            raise ProcessIdentityProbeError("could not lock the process identity ledger")
+        entries = _read_ledger(path)
+        if entries is None:
+            raise ProcessIdentityProbeError("process identity ledger is unreadable")
+
+    classified: list[HolderClassification] = []
+    for pid, create_time in holders:
+        if (
+            not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or not isinstance(create_time, (int, float))
+            or isinstance(create_time, bool)
+            or not math.isfinite(float(create_time))
+            or float(create_time) <= 0
+        ):
+            raise ProcessIdentityProbeError("holder PID/create time is invalid")
+
+        alive = process_identity_matches(pid, create_time)
+        if alive is None:
+            raise ProcessIdentityProbeError(f"could not revalidate holder PID {pid}")
+        if alive is False:
+            classified.append(
+                HolderClassification(pid, float(create_time), None, False, "holder exited")
+            )
+            continue
+
+        matches = [
+            entry
+            for entry in entries
+            if entry["install"] == wanted
+            and entry["pid"] == pid
+            and abs(float(entry["create_time"]) - float(create_time))
+            <= _CREATE_TIME_TOLERANCE
+        ]
+        if len(matches) != 1:
+            reason = "no matching ledger identity" if not matches else "ambiguous ledger identity"
+            classified.append(
+                HolderClassification(pid, float(create_time), None, False, reason)
+            )
+            continue
+
+        entry = matches[0]
+        purpose = str(entry["purpose"])
+        if purpose not in REAPABLE_PURPOSES:
+            classified.append(
+                HolderClassification(
+                    pid,
+                    float(create_time),
+                    purpose,
+                    False,
+                    "interactive or non-backend purpose",
+                )
+            )
+            continue
+
+        spawner_pid = entry.get("spawner_pid")
+        spawner_create = entry.get("spawner_create")
+        if not isinstance(spawner_pid, int) or spawner_pid <= 0 or spawner_create is None:
+            classified.append(
+                HolderClassification(
+                    pid,
+                    float(create_time),
+                    purpose,
+                    False,
+                    "missing spawner identity",
+                )
+            )
+            continue
+        spawner_alive = process_identity_matches(
+            spawner_pid,
+            spawner_create,
+            tolerance=_SPAWNER_TIME_TOLERANCE,
+        )
+        if spawner_alive is None:
+            raise ProcessIdentityProbeError(
+                f"could not revalidate spawner for holder PID {pid}"
+            )
+        classified.append(
+            HolderClassification(
+                pid,
+                float(create_time),
+                purpose,
+                not spawner_alive,
+                "spawner is dead" if not spawner_alive else "spawner is alive",
+            )
+        )
+    return classified
 
 
 def attach_self_to_kill_on_close_job() -> bool:
