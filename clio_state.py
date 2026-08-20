@@ -3986,36 +3986,61 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    def count_prune_candidates(
+        self,
+        older_than_days: int = 90,
+        source: Optional[str] = None,
+        *,
+        include_pinned: bool = False,
+    ) -> int:
+        """Count ended sessions eligible for :meth:`prune_sessions`."""
+        cutoff = time.time() - (older_than_days * 86400)
+        clauses = ["started_at < ?", "ended_at IS NOT NULL"]
+        params: list[Any] = [cutoff]
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if not include_pinned:
+            clauses.append("COALESCE(pinned, 0) = 0")
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        return int(row[0])
+
     def prune_sessions(
         self,
         older_than_days: int = 90,
-        source: str = None,
+        source: Optional[str] = None,
         sessions_dir: Optional[Path] = None,
+        *,
+        include_pinned: bool = False,
     ) -> int:
-        """Delete sessions older than N days. Returns count of deleted sessions.
+        """Delete old, ended sessions and return the number deleted.
 
-        Only prunes ended sessions (not active ones).  Child sessions outside
-        the prune window are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted.  When *sessions_dir* is provided, also removes
-        on-disk transcript files (``.json`` / ``.jsonl`` /
-        ``request_dump_*``) for every pruned session, outside the DB
-        transaction.
+        Pinned sessions are durable keep records and are excluded unless
+        ``include_pinned=True`` is explicitly requested. Active sessions are
+        never pruned. Child sessions outside the prune window are orphaned
+        (``parent_session_id`` set to ``NULL``) rather than cascade-deleted.
+        When *sessions_dir* is provided, matching on-disk transcript files are
+        removed outside the database transaction.
         """
         cutoff = time.time() - (older_than_days * 86400)
         removed_ids: list[str] = []
 
         def _do(conn):
+            clauses = ["started_at < ?", "ended_at IS NOT NULL"]
+            params: list[Any] = [cutoff]
             if source:
-                cursor = conn.execute(
-                    """SELECT id FROM sessions
-                       WHERE started_at < ? AND ended_at IS NOT NULL AND source = ?""",
-                    (cutoff, source),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
-                    (cutoff,),
-                )
+                clauses.append("source = ?")
+                params.append(source)
+            if not include_pinned:
+                clauses.append("COALESCE(pinned, 0) = 0")
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {' AND '.join(clauses)}",
+                params,
+            )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:

@@ -1395,6 +1395,26 @@ class TestDeleteAndExport:
 # =========================================================================
 
 class TestPruneSessions:
+    def test_prune_preserves_pinned_by_default_and_allows_override(self, db):
+        old_ts = time.time() - 200 * 86400
+        for sid, pinned in (("ordinary", 0), ("keep", 1)):
+            db.create_session(session_id=sid, source="cli")
+            db.end_session(sid, end_reason="done")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, pinned = ? WHERE id = ?",
+                (old_ts, pinned, sid),
+            )
+        db._conn.commit()
+
+        assert db.count_prune_candidates(older_than_days=90) == 1
+        assert db.count_prune_candidates(older_than_days=90, include_pinned=True) == 2
+        assert db.prune_sessions(older_than_days=90) == 1
+        assert db.get_session("ordinary") is None
+        assert db.get_session("keep") is not None
+
+        assert db.prune_sessions(older_than_days=90, include_pinned=True) == 1
+        assert db.get_session("keep") is None
+
     def test_prune_old_ended_sessions(self, db):
         # Create and end an "old" session
         db.create_session(session_id="old", source="cli")

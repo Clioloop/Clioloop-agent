@@ -6092,11 +6092,75 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def _default_value_for_key(key: str) -> Any:
+    """Return the schema default for a dotted key, or ``None`` if unknown.
+
+    Numeric path segments navigate list defaults when possible. Unknown keys
+    retain the historical best-effort coercion used by ``config set`` while
+    known string leaves (notably ``approvals.mode``) stay strings.
+    """
+    current: Any = DEFAULT_CONFIG
+    for segment in key.split("."):
+        if isinstance(current, dict) and segment in current:
+            current = current[segment]
+            continue
+        if isinstance(current, list):
+            try:
+                current = current[int(segment)]
+                continue
+            except (IndexError, TypeError, ValueError):
+                pass
+        return None
+    return current
+
+
+def _coerce_int(value: str) -> Optional[int]:
+    """Return ``int(value)`` for an integer literal, otherwise ``None``."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: str) -> Optional[float]:
+    """Return a finite ``float(value)``, otherwise ``None``."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result or result in (float("inf"), float("-inf")):
+        return None
+    return result
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
         managed_error("set configuration values")
         return
+    # Empty dotted-key segments otherwise become real YAML keys (for example,
+    # ``agent.`` writes ``agent: {'': ...}``) and silently pollute the schema.
+    if key != key.strip() or not key.strip():
+        print(
+            f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    segments = key.split(".")
+    if any(segment == "" for segment in segments):
+        print(
+            f"✗ Invalid config key: {key!r} — contains an empty path segment "
+            "(leading, trailing, or doubled '.').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if any(segment != segment.strip() for segment in segments):
+        print(
+            f"✗ Invalid config key: {key!r} — path segments cannot have "
+            "surrounding whitespace.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
@@ -6132,17 +6196,31 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert values according to the known default type. In particular,
+    # string enums such as ``approvals.mode: off`` must remain strings rather
+    # than becoming ``False``. Unknown keys retain best-effort coercion.
+    coerced_value: Any = value
+    if not isinstance(_default_value_for_key(key), str):
+        stripped = value.strip()
+        lowered = stripped.lower()
+        int_value = _coerce_int(stripped)
+        float_value = _coerce_float(stripped)
+        if lowered in {'true', 'yes', 'on'}:
+            coerced_value = True
+        elif lowered in {'false', 'no', 'off'}:
+            coerced_value = False
+        elif lowered in {'null', 'none', '~'}:
+            coerced_value = None
+        elif int_value is not None:
+            coerced_value = int_value
+        elif float_value is not None:
+            coerced_value = float_value
 
-    _set_nested(user_config, key, value)
+    try:
+        _set_nested(user_config, key, coerced_value)
+    except (IndexError, TypeError, ValueError) as exc:
+        print(f"✗ Invalid config key {key!r}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     
     # Write only user config back (not the full merged defaults)
     ensure_clio_home()
@@ -6180,9 +6258,9 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        save_env_value(_config_to_env_sync[key], str(coerced_value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    print(f"✓ Set {key} = {coerced_value} in {config_path}")
 
 
 # =============================================================================

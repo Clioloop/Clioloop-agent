@@ -149,23 +149,30 @@ def run_backup(args) -> None:
         print(f"Error: Clio home directory not found at {clio_root}")
         sys.exit(1)
 
-    # Determine output path
-    if args.output:
-        out_path = Path(args.output).expanduser().resolve()
-        # If user gave a directory, put the zip inside it
-        if out_path.is_dir():
+    # Resolve and prepare the output path under one filesystem-error guard so
+    # permission failures and impossible parent paths produce a concise CLI
+    # error instead of a raw traceback.
+    out_path = None
+    try:
+        if args.output:
+            out_path = Path(args.output).expanduser().resolve()
+            # If user gave a directory, put the zip inside it
+            if out_path.is_dir():
+                stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+                out_path = out_path / f"clio-backup-{stamp}.zip"
+        else:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-            out_path = out_path / f"clio-backup-{stamp}.zip"
-    else:
-        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        out_path = Path.home() / f"clio-backup-{stamp}.zip"
+            out_path = Path.home() / f"clio-backup-{stamp}.zip"
 
-    # Ensure the suffix is .zip
-    if out_path.suffix.lower() != ".zip":
-        out_path = out_path.with_suffix(out_path.suffix + ".zip")
+        # Ensure the suffix is .zip
+        if out_path.suffix.lower() != ".zip":
+            out_path = out_path.with_suffix(out_path.suffix + ".zip")
 
-    # Ensure parent directory exists
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Error: cannot write backup to {args.output or out_path}: {exc}")
+        raise SystemExit(1) from exc
 
     # Collect files
     print(f"Scanning {display_clio_home()} ...")
@@ -206,34 +213,42 @@ def run_backup(args) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
-            try:
-                # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                        tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+                try:
+                    # Safe copy for SQLite databases (handles WAL mode)
+                    if abs_path.suffix == ".db":
+                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                            tmp_db = Path(tmp.name)
+                        if _safe_copy_db(abs_path, tmp_db):
+                            zf.write(tmp_db, arcname=str(rel_path))
+                            total_bytes += tmp_db.stat().st_size
+                            tmp_db.unlink(missing_ok=True)
+                        else:
+                            tmp_db.unlink(missing_ok=True)
+                            errors.append(f"  {rel_path}: SQLite safe copy failed")
+                            continue
                     else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
-                else:
-                    zf.write(abs_path, arcname=str(rel_path))
-                    total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {rel_path}: {exc}")
-                continue
+                        zf.write(abs_path, arcname=str(rel_path))
+                        total_bytes += abs_path.stat().st_size
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {rel_path}: {exc}")
+                    continue
 
-            # Progress every 500 files
-            if i % 500 == 0:
-                print(f"  {i}/{file_count} files ...")
+                # Progress every 500 files
+                if i % 500 == 0:
+                    print(f"  {i}/{file_count} files ...")
 
-    elapsed = time.monotonic() - t0
-    zip_size = out_path.stat().st_size
+        elapsed = time.monotonic() - t0
+        zip_size = out_path.stat().st_size
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"Error: cannot create backup at {out_path}: {exc}")
+        raise SystemExit(1) from exc
 
     # Summary
     print()

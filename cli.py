@@ -6506,13 +6506,19 @@ class ClioCLI:
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
-        # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
-        # provider). Never invoke it; just identify the auth surface.
+        # Prefer the live agent credential after provider resolution. The CLI
+        # constructor's seed may belong to a different provider, so displaying
+        # it next to the live model/base URL is misleading. A credential may
+        # also be a callable Entra ID token provider; never invoke it.
         from agent.azure_identity_adapter import is_token_provider
-        if is_token_provider(self.api_key):
+        display_key = self.api_key
+        agent = getattr(self, "agent", None)
+        if agent is not None and hasattr(agent, "api_key"):
+            display_key = agent.api_key
+        if is_token_provider(display_key):
             api_key_display = "Microsoft Entra ID"
-        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
-            api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+        elif isinstance(display_key, str) and len(display_key) > 12:
+            api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:
             api_key_display = "Not set!"
         
@@ -9281,14 +9287,23 @@ class ClioCLI:
             # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
             _undo_n = 1
             _undo_parts = cmd_original.split()
+            if len(_undo_parts) > 2:
+                print("(._.) Invalid arguments — use /undo or /undo N.")
+                return True
             if len(_undo_parts) > 1:
                 try:
                     _undo_n = int(_undo_parts[1])
                 except ValueError:
                     print(f"(._.) Invalid count {_undo_parts[1]!r} — use /undo or /undo N.")
-                    return
+                    return True
                 if _undo_n < 1:
                     _undo_n = 1
+            # A guaranteed no-op should not open a destructive confirmation
+            # modal. This also avoids claiming that history was changed when
+            # a malformed or freshly-created session has no messages.
+            if not self.conversation_history:
+                print("(._.) No messages to undo.")
+                return True
             _undo_desc = (
                 "This removes the last user/assistant exchange from history."
                 if _undo_n == 1
@@ -10626,10 +10641,23 @@ class ClioCLI:
         """
         from clio_cli.colors import Colors as _Colors
         from tools.approval import (
+            _YOLO_MODE_FROZEN,
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
+
+        # Process-start YOLO is frozen before tool imports and cannot be
+        # disabled by the session toggle. Never claim approvals are back when
+        # every command will continue to auto-approve.
+        if _YOLO_MODE_FROZEN:
+            _cprint(
+                f"  ⚡ YOLO is {_Colors.BOLD}{_Colors.RED}locked ON{_Colors.RESET}"
+                " for this process (started with --yolo / CLIO_YOLO_MODE)."
+                " /yolo cannot disable it — restart without the flag to"
+                " re-enable approvals."
+            )
+            return
 
         session_key = self.session_id or "default"
         if is_session_yolo_enabled(session_key):

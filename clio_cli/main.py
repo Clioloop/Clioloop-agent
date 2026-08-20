@@ -15154,6 +15154,11 @@ Examples:
     sessions_prune.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
+    sessions_prune.add_argument(
+        "--include-pinned",
+        action="store_true",
+        help="Also delete pinned sessions (excluded by default)",
+    )
 
     sessions_subparsers.add_parser(
         "optimize",
@@ -15195,7 +15200,7 @@ Examples:
             db = SessionDB()
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
-            return
+            return 1
 
         action = args.sessions_action
 
@@ -15237,11 +15242,11 @@ Examples:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
                     print(f"Session '{args.session_id}' not found.")
-                    return
+                    return 1
                 data = db.export_session(resolved_session_id)
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
-                    return
+                    return 1
                 line = _json.dumps(data, ensure_ascii=False) + "\n"
                 if args.output == "-":
 
@@ -15266,29 +15271,43 @@ Examples:
             resolved_session_id = db.resolve_session_id(args.session_id)
             if not resolved_session_id:
                 print(f"Session '{args.session_id}' not found.")
-                return
+                return 1
+            get_session = getattr(db, "get_session", None)
+            session_meta = (
+                get_session(resolved_session_id) if callable(get_session) else None
+            )
+            pinned_note = (
+                " (this session is PINNED)"
+                if isinstance(session_meta, dict) and session_meta.get("pinned")
+                else ""
+            )
             if not args.yes:
                 if not _confirm_prompt(
-                    f"Delete session '{resolved_session_id}' and all its messages? [y/N] "
+                    f"Delete session '{resolved_session_id}'{pinned_note} "
+                    "and all its messages? [y/N] "
                 ):
                     print("Cancelled.")
                     return
+            elif pinned_note:
+                print(f"Warning: deleting pinned session '{resolved_session_id}'.")
             sessions_dir = get_clio_home() / "sessions"
             if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
                 print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
+                return 1
 
         elif action in {"archive", "recover"}:
             resolved_session_id = db.resolve_session_id(args.session_id)
             if not resolved_session_id:
                 print(f"Session '{args.session_id}' not found.")
-                return
+                return 1
             archived = action == "archive"
             if db.set_session_archived(resolved_session_id, archived):
                 print(f"Session '{resolved_session_id}' {'archived' if archived else 'recovered'}.")
             else:
                 print(f"Session '{args.session_id}' not found.")
+                return 1
 
         elif action == "repair-routing":
             result = db.repair_gateway_routing()
@@ -15296,6 +15315,9 @@ Examples:
 
         elif action == "prune":
             days = args.older_than
+            if days < 0:
+                print("Error: --older-than must be zero or greater.")
+                return 1
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
                 if not _confirm_prompt(
@@ -15303,9 +15325,31 @@ Examples:
                 ):
                     print("Cancelled.")
                     return
+            include_pinned = bool(getattr(args, "include_pinned", False))
+            if not include_pinned:
+                with_pinned = db.count_prune_candidates(
+                    older_than_days=days,
+                    source=args.source,
+                    include_pinned=True,
+                )
+                without_pinned = db.count_prune_candidates(
+                    older_than_days=days,
+                    source=args.source,
+                    include_pinned=False,
+                )
+                pinned_skipped = max(with_pinned - without_pinned, 0)
+                if pinned_skipped:
+                    suffix = "" if pinned_skipped == 1 else "s"
+                    print(
+                        f"Note: {pinned_skipped} pinned session{suffix} matched but "
+                        "will NOT be deleted. Pass --include-pinned to override."
+                    )
             sessions_dir = get_clio_home() / "sessions"
             count = db.prune_sessions(
-                older_than_days=days, source=args.source, sessions_dir=sessions_dir
+                older_than_days=days,
+                source=args.source,
+                sessions_dir=sessions_dir,
+                include_pinned=include_pinned,
             )
             print(f"Pruned {count} session(s).")
 
@@ -15313,15 +15357,23 @@ Examples:
             resolved_session_id = db.resolve_session_id(args.session_id)
             if not resolved_session_id:
                 print(f"Session '{args.session_id}' not found.")
-                return
+                return 1
             title = " ".join(args.title)
+            if not title.strip():
+                print("Error: title cannot be empty or whitespace-only.")
+                return 1
+            if "\n" in title or "\r" in title:
+                print("Error: title cannot contain newlines.")
+                return 1
             try:
                 if db.set_session_title(resolved_session_id, title):
                     print(f"Session '{resolved_session_id}' renamed to: {title}")
                 else:
                     print(f"Session '{args.session_id}' not found.")
+                    return 1
             except ValueError as e:
                 print(f"Error: {e}")
+                return 1
 
         elif action == "browse":
             limit = getattr(args, "limit", 500) or 500
@@ -15362,7 +15414,7 @@ Examples:
             except Exception as e:
                 print(f"Error: optimization failed: {e}")
                 db.close()
-                return
+                return 1
             after_mb = (
                 os.path.getsize(db_path) / (1024 * 1024)
                 if db_path.exists()
@@ -16304,9 +16356,13 @@ Examples:
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command. Integer handler returns are process status codes;
+    # bools are deliberately excluded because several interactive handlers use
+    # them as continue/stop signals rather than shell exit statuses.
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if type(result) is int and result != 0:
+            raise SystemExit(result)
     else:
         parser.print_help()
 
