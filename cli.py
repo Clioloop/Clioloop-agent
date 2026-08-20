@@ -12242,6 +12242,17 @@ class ClioCLI:
         key bindings.  If no response arrives within the configured timeout the
         question is dismissed and the agent is told to decide on its own.
         """
+        if os.environ.get("CLIO_BOT_HANDOFF_PATH"):
+            from clio_bot_mode import bot_child_handoff
+
+            return bot_child_handoff(
+                "clarify",
+                {
+                    "question": str(question or ""),
+                    "choices": [str(choice) for choice in (choices or [])],
+                },
+            )
+
         import time as _time
 
         timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
@@ -12361,6 +12372,22 @@ class ClioCLI:
         parallel delegation subtasks) so each prompt gets its own turn
         and the shared _approval_state / _approval_deadline aren't clobbered.
         """
+        if os.environ.get("CLIO_BOT_HANDOFF_PATH"):
+            from clio_bot_mode import bot_child_handoff
+
+            return bot_child_handoff(
+                "approval",
+                {
+                    "command": str(command or ""),
+                    "description": str(description or "dangerous command"),
+                    "choices": (
+                        ["once", "session", "always", "deny"]
+                        if allow_permanent
+                        else ["once", "session", "deny"]
+                    ),
+                },
+            )
+
         import time as _time
 
         with self._approval_lock:

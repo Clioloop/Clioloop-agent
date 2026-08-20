@@ -92,6 +92,28 @@ def test_metadata_roster_and_canonical_session_are_profile_backed(bot_env):
         db.close()
 
 
+def test_canonical_bot_chat_adopts_exact_legacy_title_without_forking(bot_env):
+    homes, _root = bot_env
+    db = SessionDB(db_path=homes["alpha"] / "state.db")
+    try:
+        legacy_id = db.create_session("legacy-bot-chat", source="cli")
+        db.set_session_title(legacy_id, bots.BOT_CHAT_TITLE)
+        ordinary_id = db.create_session("ordinary visible chat", source="cli")
+    finally:
+        db.close()
+
+    adopted = bots.ensure_bot_chat("alpha")
+    assert adopted["id"] == legacy_id
+    assert bots.ensure_bot_chat("alpha")["id"] == legacy_id
+    db = SessionDB(db_path=homes["alpha"] / "state.db")
+    try:
+        assert [row["id"] for row in db.list_sessions_rich()] == [ordinary_id]
+        all_rows = db.list_sessions_rich(include_hidden=True)
+        assert {row["id"] for row in all_rows} == {legacy_id, ordinary_id}
+    finally:
+        db.close()
+
+
 def test_profile_rename_reconciles_room_and_canonical_session_by_stable_identity(bot_env):
     homes, root = bot_env
     room = bots.create_room("Rename", ["alpha", "beta"], root=root)
@@ -235,6 +257,53 @@ def test_room_caps_rounds_and_needs_user(bot_env):
     )
     assert decision.needs_user is True
     assert bots.get_room(room2["id"], root=root)["state"] == "needs_user"
+
+
+def test_room_handoff_routes_only_to_matching_epoch_and_session(bot_env, tmp_path):
+    _homes, root = bot_env
+    room = bots.create_room("Approval", ["alpha", "beta"], root=root)
+    channel = tmp_path / "handoff.json"
+    channel.write_text("{}", encoding="utf-8")
+    request = {
+        "request_id": "ask-1",
+        "kind": "approval",
+        "command": "rm example",
+        "description": "Remove example",
+        "choices": ["once", "session", "deny"],
+        "_handoff_path": str(channel),
+        "_handoff_token": "secret",
+    }
+    bots._publish_room_handoff(room["id"], 0, room["members"][0], "session-alpha", request, root)
+    pending = bots.get_room(room["id"], root=root)["pending_user_action"]
+    assert pending["session_id"] == "session-alpha"
+    assert "_handoff_path" not in pending and "_handoff_token" not in pending
+
+    with pytest.raises(ValueError, match="epoch and session_id are required"):
+        bots.respond_room_user_action(room["id"], "ask-1", "once", root=root)
+    with pytest.raises(bots.BotModeError, match="epoch and session"):
+        bots.respond_room_user_action(
+            room["id"], "ask-1", "once", epoch=1, session_id="session-alpha", root=root
+        )
+    with pytest.raises(bots.BotModeError, match="epoch and session"):
+        bots.respond_room_user_action(
+            room["id"], "ask-1", "once", epoch=0, session_id="wrong-session", root=root
+        )
+
+    result = bots.respond_room_user_action(
+        room["id"], "ask-1", "once", epoch=0, session_id="session-alpha", root=root
+    )
+    assert result["accepted"] is True
+    frame = json.loads(channel.read_text(encoding="utf-8"))
+    assert frame == {
+        "version": bots.BOT_HANDOFF_VERSION,
+        "token": "secret",
+        "state": "responded",
+        "request_id": "ask-1",
+        "response": "once",
+    }
+    current = bots.get_room(room["id"], root=root)
+    assert current["pending_user_action"] is None
+    assert current["messages"][-1]["handoff_request_id"] == "ask-1"
 
 
 def test_room_failure_truth_and_attachment_profile_staging(bot_env, tmp_path):

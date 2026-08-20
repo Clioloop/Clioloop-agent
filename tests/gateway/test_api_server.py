@@ -415,6 +415,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/bots/{profile}/attachments", adapter._handle_bot_attachment)
+    app.router.add_post("/api/bot-rooms/{room_id}/user-action", adapter._handle_respond_bot_room)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -486,6 +487,36 @@ class TestBotAttachmentEndpoint:
             mime_type="text/plain",
             size=1,
             base64_data="eA==",
+        )
+
+
+class TestBotRoomUserActionEndpoint:
+    @pytest.mark.asyncio
+    async def test_is_authenticated_and_routes_epoch_and_session(self, auth_adapter, monkeypatch):
+        respond = MagicMock(
+            return_value={"room_id": "room-1", "request_id": "ask-1", "epoch": 3, "accepted": True}
+        )
+        monkeypatch.setattr("clio_bot_mode.respond_room_user_action", respond)
+        app = _create_app(auth_adapter)
+        payload = {
+            "request_id": "ask-1",
+            "response": "deny",
+            "epoch": 3,
+            "session_id": "session-alpha",
+        }
+        async with TestClient(TestServer(app)) as cli:
+            unauthenticated = await cli.post("/api/bot-rooms/room-1/user-action", json=payload)
+            assert unauthenticated.status == 401
+            response = await cli.post(
+                "/api/bot-rooms/room-1/user-action",
+                json=payload,
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            response_body = await response.json()
+        assert response.status == 200
+        assert response_body["accepted"] is True
+        respond.assert_called_once_with(
+            "room-1", "ask-1", "deny", epoch=3, session_id="session-alpha"
         )
 
 

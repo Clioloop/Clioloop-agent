@@ -1169,6 +1169,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "bot_rooms": {"method": "GET|POST", "path": "/api/bot-rooms"},
                 "bot_room": {"method": "GET|DELETE", "path": "/api/bot-rooms/{room_id}"},
                 "bot_room_send": {"method": "POST", "path": "/api/bot-rooms/{room_id}/messages"},
+                "bot_room_respond": {"method": "POST", "path": "/api/bot-rooms/{room_id}/user-action"},
             },
         })
 
@@ -1332,6 +1333,27 @@ class APIServerAdapter(BasePlatformAdapter):
         except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
             return web.json_response(_openai_error(str(exc), code="bot_room_send_failed"), status=400)
         return web.json_response({"object": "clio.bot_room.turn", **asdict(result)})
+
+    async def _handle_respond_bot_room(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from clio_bot_mode import respond_room_user_action
+
+        try:
+            result = respond_room_user_action(
+                request.match_info["room_id"],
+                str(body.get("request_id") or ""),
+                str(body.get("response") or ""),
+                epoch=body.get("epoch"),
+                session_id=str(body["session_id"]) if body.get("session_id") is not None else None,
+            )
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return web.json_response(_openai_error(str(exc), code="bot_room_response_failed"), status=409)
+        return web.json_response({"object": "clio.bot_room.user_action", **result})
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4292,6 +4314,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/bot-rooms/{room_id}", self._handle_get_bot_room)
             self._app.router.add_delete("/api/bot-rooms/{room_id}", self._handle_delete_bot_room)
             self._app.router.add_post("/api/bot-rooms/{room_id}/messages", self._handle_send_bot_room)
+            self._app.router.add_post("/api/bot-rooms/{room_id}/user-action", self._handle_respond_bot_room)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)

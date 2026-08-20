@@ -74,6 +74,19 @@ export interface BotRoom {
   messages: BotRoomMessage[]
   name: string
   needs_user: boolean
+  pending_user_action?: null | {
+    choices: string[]
+    command?: string
+    description?: string
+    epoch: number
+    kind: 'approval' | 'clarify'
+    member: string
+    profile: string
+    question?: string
+    request_id: string
+    room_id: string
+    session_id: string
+  }
   state: string
   updated_at: number
   visible_messages?: BotRoomMessage[]
@@ -243,6 +256,8 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
   const [roomAttachmentDragActive, setRoomAttachmentDragActive] = useState(false)
   const [roomPickingAttachments, setRoomPickingAttachments] = useState(false)
   const [roomSending, setRoomSending] = useState(false)
+  const [roomResponding, setRoomResponding] = useState(false)
+  const [handoffText, setHandoffText] = useState('')
   const [deletingRoom, setDeletingRoom] = useState(false)
   const [lastTurn, setLastTurn] = useState<BotTurnResult | null>(null)
   const activeRoomIdRef = useRef<string | null>(null)
@@ -334,6 +349,26 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
     setRoomAttachmentIssue(null)
     setRoomAttachmentDragActive(false)
   }, [selectedRoomId])
+
+  useEffect(() => {
+    if (!roomSending || !selectedRoomId) {
+      return
+    }
+
+    const roomId = selectedRoomId
+
+    const timer = window.setInterval(() => {
+      void requestGateway<{ room: BotRoom }>('bot.rooms.get', { room_id: roomId })
+        .then(response => {
+          if (activeRoomIdRef.current === roomId) {
+            setRoom(response.room)
+          }
+        })
+        .catch(() => undefined)
+    }, 300)
+
+    return () => window.clearInterval(timer)
+  }, [requestGateway, roomSending, selectedRoomId])
 
   const handleOpenBotChat = async (bot: BotRosterItem) => {
     setOpeningBot(true)
@@ -637,6 +672,34 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
     }
   }
 
+  const handleRoomUserAction = async (response: string) => {
+    const action = room?.pending_user_action
+    const answer = response.trim()
+
+    if (!room || !action || !answer) {
+      return
+    }
+
+    setRoomResponding(true)
+    setError(null)
+
+    try {
+      await requestGateway('bot.rooms.respond', {
+        epoch: action.epoch,
+        request_id: action.request_id,
+        response: answer,
+        room_id: room.id,
+        session_id: action.session_id
+      })
+      setHandoffText('')
+      await openRoom(room.id)
+    } catch (nextError) {
+      setError(errorMessage(nextError))
+    } finally {
+      setRoomResponding(false)
+    }
+  }
+
   if (bots === null || rooms === null) {
     return <PageLoader label="Loading Bots" />
   }
@@ -901,8 +964,58 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                       <Alert className="m-3 mb-0 w-auto" variant="warning">
                         <Codicon name="person" />
                         <AlertTitle>Your judgment is needed</AlertTitle>
-                        <AlertDescription>A Bot mentioned @user. Reply below to continue the room.</AlertDescription>
+                        <AlertDescription>
+                          {room.pending_user_action
+                            ? `@${room.pending_user_action.member} is waiting for your ${room.pending_user_action.kind === 'approval' ? 'approval' : 'answer'}.`
+                            : 'A Bot mentioned @user. Reply below to continue the room.'}
+                        </AlertDescription>
                       </Alert>
+                    ) : null}
+
+                    {room.pending_user_action ? (
+                      <section className="m-3 mb-0 grid gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+                        <strong className="text-xs">
+                          {room.pending_user_action.kind === 'approval'
+                            ? room.pending_user_action.description || 'Approve this command?'
+                            : room.pending_user_action.question || 'Answer the Bot'}
+                        </strong>
+                        {room.pending_user_action.command ? (
+                          <code className="overflow-x-auto rounded bg-background p-2 text-[0.6875rem]">
+                            {room.pending_user_action.command}
+                          </code>
+                        ) : null}
+                        {room.pending_user_action.kind === 'clarify' && room.pending_user_action.choices.length === 0 ? (
+                          <Input
+                            aria-label="Answer Bot question"
+                            disabled={roomResponding}
+                            maxLength={100_000}
+                            onChange={event => setHandoffText(event.target.value)}
+                            value={handoffText}
+                          />
+                        ) : null}
+                        <div className="flex flex-wrap gap-2">
+                          {room.pending_user_action.choices.map(choice => (
+                            <Button
+                              disabled={roomResponding}
+                              key={choice}
+                              onClick={() => void handleRoomUserAction(choice)}
+                              size="sm"
+                              variant={choice === 'deny' ? 'destructive' : 'outline'}
+                            >
+                              {choice}
+                            </Button>
+                          ))}
+                          {room.pending_user_action.kind === 'clarify' && room.pending_user_action.choices.length === 0 ? (
+                            <Button
+                              disabled={roomResponding || !handoffText.trim()}
+                              onClick={() => void handleRoomUserAction(handoffText)}
+                              size="sm"
+                            >
+                              Send answer
+                            </Button>
+                          ) : null}
+                        </div>
+                      </section>
                     ) : null}
 
                     <div aria-label="Room transcript" className="min-h-52 flex-1 space-y-3 overflow-y-auto p-4">

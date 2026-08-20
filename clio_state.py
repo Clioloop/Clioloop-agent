@@ -1291,12 +1291,16 @@ class SessionDB:
         hidden: bool = True,
         owner_kind: Optional[str] = None,
         owner_ref: Optional[str] = None,
+        adopt_exact_title: bool = False,
     ) -> Dict[str, Any]:
         """Atomically get or create a profile-local canonical session.
 
         The partial unique index on ``(owner_profile, canonical_key)`` is the
         concurrency primitive. A title is presentation only and may be changed
-        later without changing canonical identity.
+        later without changing canonical identity. ``adopt_exact_title`` is a
+        narrowly-scoped legacy migration rung: before minting, an unowned row
+        with the exact requested title is atomically promoted to the canonical
+        identity. It deliberately never scans a bounded recent-session window.
         """
         owner_profile = str(owner_profile or "").strip()
         canonical_key = str(canonical_key or "").strip()
@@ -1311,6 +1315,45 @@ class SessionDB:
         resolved_owner_ref = str(owner_ref or owner_profile)
 
         def _do(conn):
+            existing = conn.execute(
+                "SELECT id FROM sessions WHERE owner_profile = ? AND canonical_key = ?",
+                (owner_profile, canonical_key),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["id"] if isinstance(existing, sqlite3.Row) else existing[0])
+
+            if adopt_exact_title:
+                legacy = conn.execute(
+                    "SELECT id FROM sessions WHERE title = ? AND canonical_key IS NULL "
+                    "AND owner_profile IS NULL "
+                    "ORDER BY started_at ASC LIMIT 1",
+                    (clean_title,),
+                ).fetchone()
+                if legacy is not None:
+                    legacy_id = str(legacy["id"] if isinstance(legacy, sqlite3.Row) else legacy[0])
+                    conn.execute(
+                        """UPDATE sessions SET source = ?, owner_profile = ?, owner_kind = ?,
+                               owner_ref = ?, canonical_key = ?, identity_kind = ?, hidden = ?,
+                               pinned = 1
+                           WHERE id = ? AND canonical_key IS NULL""",
+                        (
+                            source,
+                            owner_profile,
+                            resolved_owner_kind,
+                            resolved_owner_ref,
+                            canonical_key,
+                            identity_kind or "internal",
+                            1 if hidden else 0,
+                            legacy_id,
+                        ),
+                    )
+                    adopted = conn.execute(
+                        "SELECT id FROM sessions WHERE owner_profile = ? AND canonical_key = ?",
+                        (owner_profile, canonical_key),
+                    ).fetchone()
+                    if adopted is not None:
+                        return str(adopted["id"] if isinstance(adopted, sqlite3.Row) else adopted[0])
+
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (
                        id, source, title, started_at, owner_profile, owner_kind,
@@ -1333,6 +1376,10 @@ class SessionDB:
                 "SELECT id FROM sessions WHERE owner_profile = ? AND canonical_key = ?",
                 (owner_profile, canonical_key),
             ).fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "Canonical session title is already owned by a non-canonical session"
+                )
             return str(row["id"] if isinstance(row, sqlite3.Row) else row[0])
 
         resolved_id = self._execute_write(_do)

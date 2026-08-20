@@ -216,6 +216,67 @@ describe('BotsView', () => {
     expect(rpc).toHaveBeenCalledWith('bot.rooms.send', { message: 'Can we ship?', room_id: 'room-1' }, 660_000)
   })
 
+  it('answers a pending room approval through the exact epoch and session RPC', async () => {
+    const room = makeRoom({
+      pending_user_action: {
+        choices: ['once', 'session', 'deny'],
+        command: 'rm example',
+        description: 'Remove example',
+        epoch: 2,
+        kind: 'approval',
+        member: 'researcher',
+        profile: 'researcher',
+        request_id: 'ask-1',
+        room_id: 'room-1',
+        session_id: 'session-alpha'
+      }
+    })
+
+    const rpc = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+      if (method === 'bot.list') {
+        return { bots }
+      }
+
+      if (method === 'bot.rooms.list') {
+        return { rooms: [room] }
+      }
+
+      if (method === 'bot.rooms.get') {
+        return { room }
+      }
+
+      if (method === 'bot.rooms.respond') {
+        return { accepted: true }
+      }
+
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+
+    const requestGateway: GatewayRequest = async <T,>(
+      method: string,
+      params?: Record<string, unknown>,
+      timeoutMs?: number
+    ): Promise<T> => (await rpc(method, params, timeoutMs)) as T
+
+    render(<BotsView onOpenBotChat={vi.fn()} requestGateway={requestGateway} />)
+
+    expect(await screen.findByText('Remove example')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    await waitFor(() =>
+      expect(rpc).toHaveBeenCalledWith(
+        'bot.rooms.respond',
+        {
+          epoch: 2,
+          request_id: 'ask-1',
+          response: 'once',
+          room_id: 'room-1',
+          session_id: 'session-alpha'
+        },
+        undefined
+      )
+    )
+  })
+
   it('picks, removes, clears, and sends real-path room attachments with metadata', async () => {
     const room = makeRoom()
     const selectPaths = vi.fn().mockResolvedValue(['/tmp/brief.pdf', '/tmp/notes.md'])

@@ -25,6 +25,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,9 @@ PEER_MAX_RESPONSE_BYTES = 1024 * 1024
 ROOM_SOFT_TIMEOUT_SECONDS = 90.0
 ROOM_HARD_TIMEOUT_SECONDS = 300.0
 WORKER_ACTIVE_SECONDS = 120.0
+BOT_HANDOFF_VERSION = 1
+BOT_HANDOFF_POLL_SECONDS = 0.1
+BOT_HANDOFF_MAX_TEXT = 100_000
 
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -69,6 +73,8 @@ _ROOM_ATTACHMENT_MIME_TYPES = frozenset(
 )
 _ROOM_LOCK = threading.RLock()
 _CRON_LOCK = threading.RLock()
+_ROOM_HANDOFF_LOCK = threading.RLock()
+_ROOM_HANDOFFS: Dict[str, Dict[str, Any]] = {}
 
 
 class BotModeError(RuntimeError):
@@ -423,6 +429,11 @@ def ensure_canonical_session(
                 hidden=hidden,
                 owner_kind=owner_kind,
                 owner_ref=owner_ref,
+                adopt_exact_title=(
+                    identity_kind == "bot"
+                    and str(canonical_key) == BOT_CANONICAL_KEY
+                    and title == BOT_CHAT_TITLE
+                ),
             )
         finally:
             db.close()
@@ -580,8 +591,133 @@ def _safe_message_text(message: str, *, max_chars: int = 200_000) -> str:
     return text
 
 
-def run_profile_turn(profile: str, session_id: str, message: str, *, timeout: float = 600.0) -> str:
-    """Run one finalized CLI turn using argv + a 0600 query file (never a shell)."""
+RoomHandoffCallback = Callable[[Mapping[str, Any]], None]
+
+
+def _atomic_handoff_json(path: Path, value: Mapping[str, Any]) -> None:
+    """Write one owner-only child/parent handoff frame atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(dict(value), handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_handoff_json(path: Path) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def bot_child_handoff(kind: str, payload: Mapping[str, Any]) -> str:
+    """Block a Bot child at a user prompt until its room owner responds.
+
+    This is intentionally a tiny, file-based IPC contract. The path and random
+    token are inherited only by the argv-safe Bot child. Public room state never
+    contains either value, and a response is accepted only when both the token
+    and request id still match. Returning from this function resumes the same
+    process, agent instance, canonical member session, and tool call.
+    """
+    if os.environ.get("CLIO_BOT_CHILD") != "1":
+        raise BotModeError("Bot handoff is only available to a managed Bot child")
+    raw_path = os.environ.get("CLIO_BOT_HANDOFF_PATH", "").strip()
+    token = os.environ.get("CLIO_BOT_HANDOFF_TOKEN", "").strip()
+    if not raw_path or not token:
+        raise BotModeError("Bot room handoff channel is unavailable")
+    kind = str(kind or "").strip().lower()
+    if kind not in {"clarify", "approval"}:
+        raise ValueError("Unsupported Bot room handoff kind")
+    path = Path(raw_path)
+    request_id = f"handoff-{uuid.uuid4().hex}"
+    request = {
+        "request_id": request_id,
+        "kind": kind,
+        **dict(payload),
+    }
+    _atomic_handoff_json(
+        path,
+        {
+            "version": BOT_HANDOFF_VERSION,
+            "token": token,
+            "state": "pending",
+            "request": request,
+        },
+    )
+    try:
+        timeout = max(1.0, float(os.environ.get("CLIO_BOT_HANDOFF_TIMEOUT") or "300"))
+    except (TypeError, ValueError):
+        timeout = 300.0
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = _read_handoff_json(path)
+        if frame.get("token") != token:
+            time.sleep(BOT_HANDOFF_POLL_SECONDS)
+            continue
+        if frame.get("state") == "responded" and frame.get("request_id") == request_id:
+            return str(frame.get("response") or "")
+        if frame.get("state") == "cancelled" and frame.get("request_id") in {None, request_id}:
+            return "deny" if kind == "approval" else (
+                "The room turn was cancelled before the user answered. Stop this workflow."
+            )
+        time.sleep(BOT_HANDOFF_POLL_SECONDS)
+    return "deny" if kind == "approval" else (
+        "The user did not answer before the room handoff expired. Stop this workflow."
+    )
+
+
+def _terminate_bot_process(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:  # pragma: no cover - Windows CI exercises terminate fallback
+            process.terminate()
+        process.wait(timeout=1.0)
+    except Exception:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:  # pragma: no cover
+                process.kill()
+        except Exception:
+            pass
+
+
+def _bot_turn_output(result_stdout: str) -> str:
+    output = str(result_stdout or "").strip()
+    # Quiet mode may append a stable session-id diagnostic. It is metadata,
+    # not part of the Bot's reply.
+    lines = output.splitlines()
+    if lines and re.fullmatch(r"Session(?: ID)?:\s*\S+", lines[-1], re.I):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def run_profile_turn(
+    profile: str,
+    session_id: str,
+    message: str,
+    *,
+    timeout: float = 600.0,
+    handoff_callback: Optional[RoomHandoffCallback] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+) -> str:
+    """Run one finalized CLI turn using argv + 0600 files (never a shell).
+
+    Normal direct messages retain the small ``subprocess.run`` path. Room
+    members opt into a monitored ``Popen`` path so clarify/approval requests can
+    cross the hidden child-session boundary while the exact turn remains alive.
+    """
     profile = _validate_profile(profile)
     message = _safe_message_text(message)
     home = profile_home(profile)
@@ -589,6 +725,7 @@ def run_profile_turn(profile: str, session_id: str, message: str, *, timeout: fl
     temp_dir.mkdir(parents=True, exist_ok=True)
     fd, raw_path = tempfile.mkstemp(prefix="bot-dm-", suffix=".txt", dir=str(temp_dir))
     path = Path(raw_path)
+    handoff_path: Optional[Path] = None
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -612,29 +749,106 @@ def run_profile_turn(profile: str, session_id: str, message: str, *, timeout: fl
         ]
         env = os.environ.copy()
         env["CLIO_BOT_CHILD"] = "1"
-        result = subprocess.run(
-            command,
-            cwd=str(Path(__file__).resolve().parent),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=max(1.0, timeout),
-            check=False,
+
+        if handoff_callback is None:
+            result = subprocess.run(
+                command,
+                cwd=str(Path(__file__).resolve().parent),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=max(1.0, timeout),
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "Bot turn failed").strip()
+                raise BotModeError(detail[-2000:])
+            return _bot_turn_output(result.stdout)
+
+        handoff_fd, raw_handoff_path = tempfile.mkstemp(
+            prefix="bot-room-handoff-", suffix=".json", dir=str(temp_dir)
         )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "Bot turn failed").strip()
-            raise BotModeError(detail[-2000:])
-        output = result.stdout.strip()
-        # Quiet mode may append a stable session-id diagnostic. It is metadata,
-        # not part of the Bot's reply.
-        lines = output.splitlines()
-        if lines and re.fullmatch(r"Session(?: ID)?:\s*\S+", lines[-1], re.I):
-            lines.pop()
-        return "\n".join(lines).strip()
+        os.close(handoff_fd)
+        handoff_path = Path(raw_handoff_path)
+        os.chmod(handoff_path, 0o600)
+        handoff_token = uuid.uuid4().hex + uuid.uuid4().hex
+        env.update(
+            {
+                "CLIO_BOT_HANDOFF_PATH": str(handoff_path),
+                "CLIO_BOT_HANDOFF_TOKEN": handoff_token,
+                "CLIO_BOT_HANDOFF_TIMEOUT": str(max(1.0, timeout)),
+                # Dangerous-command guards must use the managed approval
+                # callback rather than the non-interactive auto-approve path.
+                "CLIO_INTERACTIVE": "1",
+            }
+        )
+        started = time.monotonic()
+        seen_requests: set[str] = set()
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file, tempfile.TemporaryFile(
+            mode="w+t", encoding="utf-8"
+        ) as stderr_file:
+            process = subprocess.Popen(
+                command,
+                cwd=str(Path(__file__).resolve().parent),
+                env=env,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                start_new_session=(os.name == "posix"),
+            )
+            while process.poll() is None:
+                if cancelled is not None and cancelled():
+                    frame = _read_handoff_json(handoff_path)
+                    _atomic_handoff_json(
+                        handoff_path,
+                        {
+                            "version": BOT_HANDOFF_VERSION,
+                            "token": handoff_token,
+                            "state": "cancelled",
+                            "request_id": (frame.get("request") or {}).get("request_id")
+                            if isinstance(frame.get("request"), dict)
+                            else None,
+                        },
+                    )
+                    _terminate_bot_process(process)
+                    raise BotModeError("Bot room turn was superseded")
+                if time.monotonic() - started > max(1.0, timeout):
+                    _terminate_bot_process(process)
+                    raise BotModeError(f"Bot turn timed out after {timeout:g}s")
+                frame = _read_handoff_json(handoff_path)
+                request = frame.get("request")
+                if (
+                    frame.get("version") == BOT_HANDOFF_VERSION
+                    and frame.get("token") == handoff_token
+                    and frame.get("state") == "pending"
+                    and isinstance(request, dict)
+                ):
+                    request_id = str(request.get("request_id") or "")
+                    if request_id and request_id not in seen_requests:
+                        seen_requests.add(request_id)
+                        handoff_callback(
+                            {
+                                **request,
+                                "_handoff_path": str(handoff_path),
+                                "_handoff_token": handoff_token,
+                            }
+                        )
+                time.sleep(BOT_HANDOFF_POLL_SECONDS)
+
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
+            if process.returncode != 0:
+                detail = (stderr or stdout or "Bot turn failed").strip()
+                raise BotModeError(detail[-2000:])
+            return _bot_turn_output(stdout)
     except subprocess.TimeoutExpired as exc:
         raise BotModeError(f"Bot turn timed out after {timeout:g}s") from exc
     finally:
         path.unlink(missing_ok=True)
+        if handoff_path is not None:
+            handoff_path.unlink(missing_ok=True)
 
 
 def local_dm(target_profile: str, message: str, *, sender: str = "user", timeout: float = 600.0) -> Dict[str, Any]:
@@ -804,6 +1018,7 @@ def create_room(name: str, members: Sequence[str | Mapping[str, Any]], *, root: 
         "active_epoch": 0,
         "state": "idle",
         "needs_user": False,
+        "pending_user_action": None,
         "messages": [],
         "watermarks": {},
         "activity": [],
@@ -1073,9 +1288,24 @@ def _room_prompt(room: Mapping[str, Any], member: Mapping[str, str], transcript:
 RoomResponder = Callable[[Mapping[str, str], str, str, float], Any]
 
 
-def _default_room_responder(member: Mapping[str, str], prompt: str, session_id: str, hard_timeout: float) -> str:
+def _default_room_responder(
+    member: Mapping[str, str],
+    prompt: str,
+    session_id: str,
+    hard_timeout: float,
+    *,
+    handoff_callback: Optional[RoomHandoffCallback] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+) -> str:
     if member["source"] == "local":
-        return run_profile_turn(member["profile"], session_id, prompt, timeout=hard_timeout)
+        return run_profile_turn(
+            member["profile"],
+            session_id,
+            prompt,
+            timeout=hard_timeout,
+            handoff_callback=handoff_callback,
+            cancelled=cancelled,
+        )
     result = peer_dm(
         f"{member['source']}/{member['profile']}",
         prompt,
@@ -1101,6 +1331,163 @@ def _invoke_bounded(responder: RoomResponder, member: Mapping[str, str], prompt:
     return value, time.monotonic() - started, timed_out
 
 
+def _cancel_pending_handoff(action: Any) -> None:
+    if not isinstance(action, dict):
+        return
+    request_id = str(action.get("request_id") or "")
+    with _ROOM_HANDOFF_LOCK:
+        channel = _ROOM_HANDOFFS.pop(request_id, None)
+    if channel:
+        _atomic_handoff_json(
+            Path(channel["path"]),
+            {
+                "version": BOT_HANDOFF_VERSION,
+                "token": channel["token"],
+                "state": "cancelled",
+                "request_id": request_id,
+            },
+        )
+
+
+def _publish_room_handoff(
+    room_id: str,
+    epoch: int,
+    member: Mapping[str, str],
+    session_id: str,
+    request: Mapping[str, Any],
+    root: Optional[Path],
+) -> None:
+    """Publish a child prompt without exposing the private IPC channel."""
+    request_id = str(request.get("request_id") or "")
+    kind = str(request.get("kind") or "")
+    path = str(request.get("_handoff_path") or "")
+    token = str(request.get("_handoff_token") or "")
+    if not request_id or kind not in {"clarify", "approval"} or not path or not token:
+        raise BotModeError("Invalid Bot room handoff request")
+    action = {
+        "request_id": request_id,
+        "kind": kind,
+        "room_id": room_id,
+        "epoch": epoch,
+        "member": member["handle"],
+        "profile": member["profile"],
+        "session_id": session_id,
+        "choices": [str(value) for value in request.get("choices") or []],
+        "created_at": time.time(),
+    }
+    for field in ("question", "command", "description"):
+        if request.get(field) is not None:
+            action[field] = str(request[field])[:BOT_HANDOFF_MAX_TEXT]
+    with _ROOM_HANDOFF_LOCK:
+        _ROOM_HANDOFFS[request_id] = {
+            "path": path,
+            "token": token,
+            "room_id": room_id,
+            "epoch": epoch,
+            "session_id": session_id,
+            "kind": kind,
+        }
+    try:
+        with _ROOM_LOCK:
+            store = _load_room_store(root)
+            room = store["rooms"].get(room_id)
+            if not isinstance(room, dict) or int(room.get("active_epoch") or 0) != epoch:
+                raise BotModeError("Bot room turn was superseded")
+            previous = room.get("pending_user_action")
+            if isinstance(previous, dict) and previous.get("request_id") != request_id:
+                raise BotModeError("Bot room already has a pending user action")
+            room["pending_user_action"] = action
+            room["needs_user"] = True
+            room["state"] = "needs_user"
+            room["updated_at"] = time.time()
+            _save_room_store(store, root)
+    except Exception:
+        with _ROOM_HANDOFF_LOCK:
+            _ROOM_HANDOFFS.pop(request_id, None)
+        raise
+
+
+def respond_room_user_action(
+    room_id: str,
+    request_id: str,
+    response: str,
+    *,
+    epoch: Optional[int] = None,
+    session_id: Optional[str] = None,
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Resume exactly the child session and room epoch that asked the question."""
+    room_id = str(room_id or "").strip()
+    request_id = str(request_id or "").strip()
+    response = str(response or "").strip()
+    if not room_id or not request_id or not response:
+        raise ValueError("room_id, request_id, and response are required")
+    if epoch is None or session_id is None:
+        raise ValueError("epoch and session_id are required")
+    if len(response) > BOT_HANDOFF_MAX_TEXT:
+        raise ValueError("Bot room handoff response is too long")
+    with _ROOM_HANDOFF_LOCK:
+        channel = _ROOM_HANDOFFS.get(request_id)
+    if not channel:
+        raise BotModeError("Bot room user action is no longer pending")
+    with _ROOM_LOCK:
+        store = _load_room_store(root)
+        room = store["rooms"].get(room_id)
+        if not isinstance(room, dict):
+            raise KeyError(room_id)
+        action = room.get("pending_user_action")
+        current_epoch = int(room.get("active_epoch") or 0)
+        if (
+            not isinstance(action, dict)
+            or action.get("request_id") != request_id
+            or channel.get("room_id") != room_id
+            or int(channel.get("epoch") or 0) != current_epoch
+            or int(epoch) != current_epoch
+            or str(session_id) != str(channel.get("session_id"))
+            or str(action.get("session_id")) != str(channel.get("session_id"))
+        ):
+            raise BotModeError("Bot room user action does not match the active epoch and session")
+        if channel.get("kind") == "approval":
+            response = response.lower()
+            choices = {str(value).lower() for value in action.get("choices") or []}
+            response = {"approve": "once", "approved": "once", "yes": "once", "no": "deny"}.get(
+                response, response
+            )
+            if response not in choices:
+                raise ValueError(f"Approval response must be one of: {', '.join(sorted(choices))}")
+        _atomic_handoff_json(
+            Path(channel["path"]),
+            {
+                "version": BOT_HANDOFF_VERSION,
+                "token": channel["token"],
+                "state": "responded",
+                "request_id": request_id,
+                "response": response,
+            },
+        )
+        room.setdefault("messages", []).append(
+            {
+                "id": f"msg-{uuid.uuid4().hex[:12]}",
+                "seq": _max_seq(room.get("messages") or []) + 1,
+                "author": "user",
+                "content": response,
+                "created_at": time.time(),
+                "epoch": current_epoch,
+                "thread_id": None,
+                "handoff_request_id": request_id,
+            }
+        )
+        room["messages"] = room["messages"][-200:]
+        room["pending_user_action"] = None
+        room["needs_user"] = False
+        room["state"] = "running"
+        room["updated_at"] = time.time()
+        _save_room_store(store, root)
+    with _ROOM_HANDOFF_LOCK:
+        _ROOM_HANDOFFS.pop(request_id, None)
+    return {"room_id": room_id, "request_id": request_id, "epoch": current_epoch, "accepted": True}
+
+
 def send_room_message(
     room_id: str,
     message: str,
@@ -1124,6 +1511,7 @@ def send_room_message(
     clean_attachments = _prepare_attachments(attachments)
     soft_timeout = max(0.01, float(soft_timeout))
     hard_timeout = max(soft_timeout, float(hard_timeout))
+    use_managed_handoff = responder is None
     responder = responder or _default_room_responder
 
     with _ROOM_LOCK:
@@ -1146,8 +1534,10 @@ def send_room_message(
                 )
         epoch = int(room.get("active_epoch") or 0) + 1
         room["active_epoch"] = epoch
+        _cancel_pending_handoff(room.get("pending_user_action"))
         room["state"] = "running"
         room["needs_user"] = False
+        room["pending_user_action"] = None
         now = time.time()
         user_record = {
             "id": f"msg-{uuid.uuid4().hex[:12]}",
@@ -1239,9 +1629,32 @@ def send_room_message(
                     thread_id,
                     round_number,
                 )
-                raw_reply, elapsed, timed_out = _invoke_bounded(
-                    responder, member, prompt, session_id, hard_timeout
-                )
+                if use_managed_handoff and member["source"] == "local":
+                    def publish(request: Mapping[str, Any]) -> None:
+                        _publish_room_handoff(room_id, epoch, member, session_id, request, root)
+
+                    def superseded() -> bool:
+                        with _ROOM_LOCK:
+                            active = _load_room_store(root)["rooms"].get(room_id) or {}
+                        return int(active.get("active_epoch") or 0) != epoch
+
+                    def managed_responder(*_args: Any) -> str:
+                        return _default_room_responder(
+                            member,
+                            prompt,
+                            session_id,
+                            hard_timeout,
+                            handoff_callback=publish,
+                            cancelled=superseded,
+                        )
+
+                    raw_reply, elapsed, timed_out = _invoke_bounded(
+                        managed_responder, member, prompt, session_id, hard_timeout
+                    )
+                else:
+                    raw_reply, elapsed, timed_out = _invoke_bounded(
+                        responder, member, prompt, session_id, hard_timeout
+                    )
             except Exception as exc:
                 raw_reply, elapsed, timed_out = None, 0.0, False
                 error_text = str(exc)
@@ -1363,6 +1776,9 @@ def send_room_message(
         store = _load_room_store(root)
         current = store["rooms"].get(room_id)
         if isinstance(current, dict) and int(current.get("active_epoch") or 0) == epoch:
+            _cancel_pending_handoff(current.get("pending_user_action"))
+            current["pending_user_action"] = None
+            current["needs_user"] = bool(current.get("needs_user")) and not use_managed_handoff
             current["state"] = "needs_user" if current.get("needs_user") else state
             current["updated_at"] = time.time()
             _save_room_store(store, root)

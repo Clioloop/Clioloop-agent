@@ -3242,6 +3242,23 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"room_id": room_id, "deleted": delete_room(room_id)})
 
 
+@method("bot.rooms.respond")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import respond_room_user_action
+
+    try:
+        result = respond_room_user_action(
+            str(params.get("room_id") or ""),
+            str(params.get("request_id") or ""),
+            str(params.get("response") or ""),
+            epoch=params.get("epoch"),
+            session_id=str(params["session_id"]) if params.get("session_id") is not None else None,
+        )
+    except (FileNotFoundError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _err(rid, -32000, str(exc))
+    return _ok(rid, result)
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]

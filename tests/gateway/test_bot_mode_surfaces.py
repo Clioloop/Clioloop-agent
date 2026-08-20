@@ -38,11 +38,31 @@ def test_tui_rpc_exposes_complete_bot_room_lifecycle(monkeypatch):
         activity=[],
     )
     monkeypatch.setattr(clio_bot_mode, "send_room_message", lambda *_args, **_kwargs: turn)
+    monkeypatch.setattr(
+        clio_bot_mode,
+        "respond_room_user_action",
+        lambda room_id, request_id, response, **_kwargs: {
+            "room_id": room_id,
+            "request_id": request_id,
+            "response": response,
+            "accepted": True,
+        },
+    )
 
     assert rpc("bot.rooms.list")["result"]["rooms"][0]["id"] == "room-1"
     assert rpc("bot.rooms.create", {"name": "New", "members": ["alpha", "beta"]})["result"]["room"]["name"] == "New"
     assert rpc("bot.rooms.get", {"room_id": "room-1"})["result"]["room"]["id"] == "room-1"
     assert rpc("bot.rooms.send", {"room_id": "room-1", "message": "review"})["result"] == asdict(turn)
+    assert rpc(
+        "bot.rooms.respond",
+        {
+            "room_id": "room-1",
+            "request_id": "ask-1",
+            "response": "once",
+            "epoch": 2,
+            "session_id": "session-alpha",
+        },
+    )["result"]["accepted"] is True
     assert rpc("bot.rooms.delete", {"room_id": "room-1"})["result"]["deleted"] is True
 
 
