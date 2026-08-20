@@ -905,6 +905,9 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Canonical Bot Chats receive the local/peer handoff protocol and a
+        # capability epoch. Ordinary sessions are unaffected.
+        "bot_mode_protocol": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Clio
         # (sandbox runner, managed platform) explain the runtime environment

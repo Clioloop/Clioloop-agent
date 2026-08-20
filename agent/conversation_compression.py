@@ -531,6 +531,7 @@ def compress_context(
                 model_config=agent._session_init_model_config,
                 parent_session_id=old_session_id,
             )
+            agent._session_db.transfer_canonical_identity(old_session_id, agent.session_id)
             agent._session_db_created = True
             # Auto-number the title for the continuation session
             if old_title:

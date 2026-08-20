@@ -249,8 +249,15 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Clioloop",
     )
-    chat_parser.add_argument(
+    query_source = chat_parser.add_mutually_exclusive_group()
+    query_source.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    query_source.add_argument(
+        "--query-file",
+        metavar="PATH",
+        default=None,
+        help="Read a single UTF-8 query from PATH; use - for stdin",
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"

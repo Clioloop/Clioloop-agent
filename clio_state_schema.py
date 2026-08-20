@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Tuple
 
 LEGACY_SCHEMA_VERSION = 14
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 PHASE1_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS gateway_routing (
@@ -146,6 +146,26 @@ def _ensure_session_portability(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {declaration}")
 
 
+def _ensure_canonical_session_identity(conn: sqlite3.Connection) -> None:
+    """Add generic owner/canonical identity for Bots, rooms, and future owners."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    for name, declaration in (
+        ("owner_profile", "TEXT"),
+        ("owner_kind", "TEXT"),
+        ("owner_ref", "TEXT"),
+        ("canonical_key", "TEXT"),
+        ("identity_kind", "TEXT NOT NULL DEFAULT 'session'"),
+        ("capability_fingerprint", "TEXT"),
+        ("capability_epoch", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {declaration}")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_owner_canonical "
+        "ON sessions(owner_profile, canonical_key) WHERE canonical_key IS NOT NULL"
+    )
+
+
 # Every callback is safe after the full current schema has already been ensured.
 # This is intentional: new databases run CREATE IF NOT EXISTS once, while old
 # databases advance one durable version at a time.
@@ -156,6 +176,7 @@ MIGRATIONS: Tuple[StateMigration, ...] = (
     StateMigration(18, "content-addressed-system-prompts", _ensure_prompt_column),
     StateMigration(19, "durable-async-delegations", _ensure_all_phase1),
     StateMigration(20, "session-portability-metadata", _ensure_session_portability),
+    StateMigration(21, "canonical-session-identity", _ensure_canonical_session_identity),
 )
 
 

@@ -266,6 +266,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"after explicit direction."
         )
 
+    # Only a profile's canonical Bot Chat gets teammate transport guidance.
+    # This stays out of normal chats and never mutates the user's SOUL.md.
+    try:
+        from clio_bot_mode import bot_protocol_section_for_agent
+
+        bot_protocol = bot_protocol_section_for_agent(agent)
+        if bot_protocol:
+            stable_parts.append(bot_protocol)
+    except Exception:
+        pass
+
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])

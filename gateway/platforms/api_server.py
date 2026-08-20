@@ -14,6 +14,9 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- GET  /api/bots                   — list profile-backed Bot roster
+- GET  /api/bots/{profile}         — read Bot metadata and canonical chat id
+- POST /api/bots/{profile}/dm      — deliver an attributed Bot turn
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -1123,6 +1126,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "bot_mode": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1155,8 +1159,145 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "bots": {"method": "GET", "path": "/api/bots"},
+                "bot": {"method": "GET", "path": "/api/bots/{profile}"},
+                "bot_dm": {"method": "POST", "path": "/api/bots/{profile}/dm"},
+                "bot_rooms": {"method": "GET|POST", "path": "/api/bot-rooms"},
+                "bot_room": {"method": "GET|DELETE", "path": "/api/bot-rooms/{room_id}"},
+                "bot_room_send": {"method": "POST", "path": "/api/bot-rooms/{room_id}/messages"},
             },
         })
+
+    async def _handle_list_bots(self, request: "web.Request") -> "web.Response":
+        """GET /api/bots — authenticated Bot roster contract."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from clio_bot_mode import list_bot_roster
+
+        include_hidden = _coerce_request_bool(request.query.get("include_hidden"), default=False)
+        return web.json_response({"object": "list", "data": list_bot_roster(include_hidden=include_hidden)})
+
+    async def _handle_get_bot(self, request: "web.Request") -> "web.Response":
+        """GET /api/bots/{profile} — metadata plus stable canonical identity."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from clio_bot_mode import ensure_bot_chat, read_bot_metadata
+
+        profile = request.match_info["profile"]
+        try:
+            metadata = read_bot_metadata(profile)
+            session = ensure_bot_chat(profile)
+        except (FileNotFoundError, ValueError) as exc:
+            return web.json_response(_openai_error(str(exc), code="bot_not_found"), status=404)
+        return web.json_response({
+            "object": "clio.bot",
+            "bot": {"profile": profile, **metadata, "session_id": session["id"]},
+        })
+
+    async def _handle_bot_dm(self, request: "web.Request") -> "web.Response":
+        """POST /api/bots/{profile}/dm — safe argv/file based delivery."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return web.json_response(_openai_error("message must be a non-empty string", code="missing_message"), status=400)
+        sender = str(body.get("sender") or "user")
+        try:
+            timeout = min(max(float(body.get("timeout") or 600.0), 1.0), 1800.0)
+        except (TypeError, ValueError):
+            return web.json_response(_openai_error("timeout must be numeric", code="invalid_timeout"), status=400)
+        from clio_bot_mode import BotModeError, local_dm
+
+        try:
+            result = await asyncio.to_thread(
+                local_dm,
+                request.match_info["profile"],
+                message,
+                sender=sender,
+                timeout=timeout,
+            )
+        except (BotModeError, FileNotFoundError, OSError, ValueError) as exc:
+            return web.json_response(_openai_error(str(exc), code="bot_delivery_failed"), status=400)
+        return web.json_response({"object": "clio.bot.dm", **result})
+
+    async def _handle_list_bot_rooms(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from clio_bot_mode import list_rooms
+
+        return web.json_response({"object": "list", "data": list_rooms()})
+
+    async def _handle_create_bot_room(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        members = body.get("members")
+        if not isinstance(members, list):
+            return web.json_response(_openai_error("members must be a list", code="invalid_members"), status=400)
+        from clio_bot_mode import create_room
+
+        try:
+            room = create_room(str(body.get("name") or ""), members)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_bot_room"), status=400)
+        return web.json_response({"object": "clio.bot_room", "room": room}, status=201)
+
+    async def _handle_get_bot_room(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from clio_bot_mode import get_room
+
+        try:
+            room = get_room(request.match_info["room_id"])
+        except KeyError:
+            return web.json_response(_openai_error("Bot room not found", code="bot_room_not_found"), status=404)
+        return web.json_response({"object": "clio.bot_room", "room": room})
+
+    async def _handle_delete_bot_room(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from clio_bot_mode import delete_room
+
+        room_id = request.match_info["room_id"]
+        return web.json_response({"object": "clio.bot_room.deleted", "room_id": room_id, "deleted": delete_room(room_id)})
+
+    async def _handle_send_bot_room(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return web.json_response(_openai_error("message must be a non-empty string", code="missing_message"), status=400)
+        from dataclasses import asdict
+
+        from clio_bot_mode import send_room_message
+
+        try:
+            result = await asyncio.to_thread(
+                send_room_message,
+                request.match_info["room_id"],
+                message,
+                attachments=body.get("attachments") if isinstance(body.get("attachments"), list) else None,
+                thread_id=str(body.get("thread_id") or "") or None,
+            )
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+            return web.json_response(_openai_error(str(exc), code="bot_room_send_failed"), status=400)
+        return web.json_response({"object": "clio.bot_room.turn", **asdict(result)})
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4108,6 +4249,14 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            self._app.router.add_get("/api/bots", self._handle_list_bots)
+            self._app.router.add_get("/api/bots/{profile}", self._handle_get_bot)
+            self._app.router.add_post("/api/bots/{profile}/dm", self._handle_bot_dm)
+            self._app.router.add_get("/api/bot-rooms", self._handle_list_bot_rooms)
+            self._app.router.add_post("/api/bot-rooms", self._handle_create_bot_room)
+            self._app.router.add_get("/api/bot-rooms/{room_id}", self._handle_get_bot_room)
+            self._app.router.add_delete("/api/bot-rooms/{room_id}", self._handle_delete_bot_room)
+            self._app.router.add_post("/api/bot-rooms/{room_id}/messages", self._handle_send_bot_room)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)

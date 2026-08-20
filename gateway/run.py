@@ -8017,6 +8017,10 @@ class GatewayRunner:
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "bots":
+                    return await self._handle_bots_command(event)
+                if _cmd_def_inner.name == "botroom":
+                    return await self._handle_botroom_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
 
@@ -8273,6 +8277,12 @@ class GatewayRunner:
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
+
+        if canonical == "bots":
+            return await self._handle_bots_command(event)
+
+        if canonical == "botroom":
+            return await self._handle_botroom_command(event)
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
@@ -10388,6 +10398,93 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    async def _handle_bots_command(self, event: MessageEvent) -> str:
+        """Handle /bots from the same profile registry as CLI/API clients."""
+        from clio_bot_mode import list_bot_roster
+
+        roster = list_bot_roster()
+        if not roster:
+            return "No Bot-enabled profiles are available."
+        lines = ["Clio Bots:"]
+        for bot in roster:
+            detail = f" — {bot['title']}" if bot.get("title") else ""
+            lines.append(f"• @{bot['handle']} · {bot['display_name']}{detail}")
+        return "\n".join(lines)
+
+    async def _handle_botroom_command(self, event: MessageEvent) -> str:
+        """Operate bounded rooms explicitly from Telegram and other gateways."""
+        from clio_bot_mode import (
+            create_room,
+            delete_room,
+            get_room,
+            list_rooms,
+            send_room_message,
+        )
+
+        raw = str(event.text or "").strip()
+        command_tail = raw.split(maxsplit=1)[1].strip() if len(raw.split(maxsplit=1)) > 1 else "list"
+        action, _, payload = command_tail.partition(" ")
+        action = action.lower() or "list"
+        usage = (
+            "Usage:\n"
+            "/botroom list\n"
+            "/botroom create Room name | profile1,profile2\n"
+            "/botroom show ROOM_ID\n"
+            "/botroom send ROOM_ID | message\n"
+            "/botroom delete ROOM_ID"
+        )
+        try:
+            if action == "list":
+                rooms = list_rooms()
+                if not rooms:
+                    return "No Bot rooms exist.\n\n" + usage
+                return "Clio Bot rooms:\n" + "\n".join(
+                    f"• {room['id']} · {room['name']} · {len(room.get('members') or [])} Bots · {room.get('state', 'idle')}"
+                    for room in rooms
+                )
+            if action == "create":
+                name, separator, members_text = payload.partition("|")
+                members = [item.strip().lstrip("@") for item in members_text.split(",") if item.strip()]
+                if not separator or not name.strip() or not members:
+                    return usage
+                room = create_room(name.strip(), members)
+                return f"Created {room['name']}\nID: `{room['id']}`\nMembers: " + ", ".join(
+                    f"@{member['handle']}" for member in room["members"]
+                )
+            if action == "show":
+                room = get_room(payload.strip())
+                lines = [
+                    f"{room['name']} · {room['id']}",
+                    f"State: {room.get('state', 'idle')}",
+                    "Members: " + ", ".join(f"@{member['handle']}" for member in room.get("members") or []),
+                ]
+                for message in room.get("visible_messages") or []:
+                    lines.append(f"[{message.get('author', 'unknown')}] {message.get('content', '')}")
+                return "\n".join(lines)
+            if action == "delete":
+                room_id = payload.strip()
+                return f"Bot room {room_id}: " + ("deleted" if delete_room(room_id) else "not found")
+            if action == "send":
+                room_id, separator, message = payload.partition("|")
+                if not separator or not room_id.strip() or not message.strip():
+                    return usage
+                result = await asyncio.to_thread(
+                    send_room_message,
+                    room_id.strip(),
+                    message.strip(),
+                )
+                lines = [
+                    f"Room {result.room_id} · {result.state} · {result.rounds} round(s)",
+                ]
+                for item in result.messages:
+                    lines.append(f"[{item.get('author', 'unknown')}] {item.get('content', '')}")
+                if result.suppressed:
+                    lines.append(f"({result.suppressed} pass/duplicate/failed response(s) hidden)")
+                return "\n".join(lines)
+            return usage
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+            return f"Bot room error: {exc}\n\n{usage}"
 
 
     def _check_slash_access(

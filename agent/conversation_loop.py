@@ -277,6 +277,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt:
+        try:
+            from clio_bot_mode import maybe_refresh_bot_prompt
+
+            if maybe_refresh_bot_prompt(agent, stored_prompt, system_message):
+                return
+        except Exception:
+            pass
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt

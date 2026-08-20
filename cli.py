@@ -9228,6 +9228,19 @@ class ClioCLI:
             if not self._handle_handoff_command(cmd_original):
                 return False
         elif canonical == "new":
+            current_session = (
+                self._session_db.get_session(self.session_id)
+                if self._session_db and self.session_id
+                else None
+            )
+            if (
+                isinstance(current_session, dict)
+                and current_session.get("canonical_key") == "bot.chat"
+                and current_session.get("identity_kind") == "bot"
+            ):
+                _cprint("  Canonical Bot Chat is permanent; compacting instead of creating a new session.")
+                self._manual_compress("/compress")
+                return True
             # Strip inline-skip tokens (now/--yes/-y) before deriving the title
             # so "/new now My Session" yields title="My Session" instead of
             # title="now My Session". See _split_destructive_skip.

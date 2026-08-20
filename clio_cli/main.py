@@ -1976,8 +1976,32 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _read_query_file(query_file: str) -> str:
+    if query_file == "-":
+        content = sys.stdin.read(200_001)
+    else:
+        path = Path(query_file).expanduser()
+        if path.stat().st_size > 200_000:
+            raise ValueError("query file exceeds 200000 bytes")
+        content = path.read_text(encoding="utf-8")
+    if len(content) > 200_000:
+        raise ValueError("query file exceeds 200000 characters")
+    if "\x00" in content:
+        raise ValueError("query file contains a NUL byte")
+    if not content.strip():
+        raise ValueError("query file is empty")
+    return content
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    query_file = getattr(args, "query_file", None)
+    if query_file:
+        try:
+            args.query = _read_query_file(query_file)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"Error reading --query-file: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     use_tui = _resolve_use_tui(args)
 
     # Resolve --continue into --resume with the latest session or by name
@@ -12849,6 +12873,11 @@ def main():
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
+
+    # Profile-backed Bot Mode, team rooms, peer gateways, and routines.
+    from clio_cli.bot_mode import register_cli as _register_bot_mode_cli
+
+    _register_bot_mode_cli(subparsers)
 
     # =========================================================================
     # model command

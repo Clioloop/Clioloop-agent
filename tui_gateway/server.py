@@ -174,6 +174,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
+        "bot.dm",
+        "bot.rooms.send",
         "browser.manage",
         "cli.exec",
         "session.branch",
@@ -3141,6 +3143,104 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 
 # ── Methods: session ─────────────────────────────────────────────────
+
+
+@method("bot.list")
+def _(rid, params: dict) -> dict:
+    """Return the source-of-truth Bot roster for TUI/desktop clients."""
+    from clio_bot_mode import list_bot_roster
+
+    return _ok(rid, {"bots": list_bot_roster(include_hidden=bool(params.get("include_hidden")))})
+
+
+@method("bot.get")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import ensure_bot_chat, read_bot_metadata
+
+    profile = str(params.get("profile") or "default")
+    try:
+        metadata = read_bot_metadata(profile)
+        session = ensure_bot_chat(profile)
+    except (FileNotFoundError, ValueError) as exc:
+        return _err(rid, -32602, str(exc))
+    return _ok(rid, {"bot": {"profile": profile, **metadata, "session_id": session["id"]}})
+
+
+@method("bot.dm")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import local_dm
+
+    profile = str(params.get("profile") or "default")
+    message = params.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return _err(rid, -32602, "message must be a non-empty string")
+    try:
+        result = local_dm(profile, message, sender=str(params.get("sender") or "user"))
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        return _err(rid, -32000, str(exc))
+    return _ok(rid, result)
+
+
+@method("bot.rooms.list")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import list_rooms
+
+    return _ok(rid, {"rooms": list_rooms()})
+
+
+@method("bot.rooms.create")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import create_room
+
+    name = str(params.get("name") or "")
+    members = params.get("members")
+    if not isinstance(members, list):
+        return _err(rid, -32602, "members must be a list")
+    try:
+        room = create_room(name, members)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        return _err(rid, -32602, str(exc))
+    return _ok(rid, {"room": room})
+
+
+@method("bot.rooms.get")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import get_room
+
+    try:
+        room = get_room(str(params.get("room_id") or ""))
+    except KeyError:
+        return _err(rid, -32602, "unknown Bot room")
+    return _ok(rid, {"room": room})
+
+
+@method("bot.rooms.send")
+def _(rid, params: dict) -> dict:
+    from dataclasses import asdict
+
+    from clio_bot_mode import send_room_message
+
+    message = params.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return _err(rid, -32602, "message must be a non-empty string")
+    try:
+        result = send_room_message(
+            str(params.get("room_id") or ""),
+            message,
+            attachments=params.get("attachments") if isinstance(params.get("attachments"), list) else None,
+            thread_id=str(params.get("thread_id") or "") or None,
+        )
+    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+        return _err(rid, -32000, str(exc))
+    return _ok(rid, asdict(result))
+
+
+@method("bot.rooms.delete")
+def _(rid, params: dict) -> dict:
+    from clio_bot_mode import delete_room
+
+    room_id = str(params.get("room_id") or "")
+    return _ok(rid, {"room_id": room_id, "deleted": delete_room(room_id)})
 
 
 @method("session.create")

@@ -22,6 +22,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -286,6 +287,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
+    owner_profile TEXT,
+    owner_kind TEXT,
+    owner_ref TEXT,
+    canonical_key TEXT,
+    identity_kind TEXT NOT NULL DEFAULT 'session',
+    capability_fingerprint TEXT,
+    capability_epoch INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1168,14 +1176,23 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        owner_profile: str = None,
+        owner_kind: str = None,
+        owner_ref: str = None,
+        canonical_key: str = None,
+        identity_kind: str = "session",
+        hidden: bool = False,
+        pinned: bool = False,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             prompt_digest = _prompts.store(conn, system_prompt)
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, system_prompt_hash, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
+                   system_prompt, system_prompt_hash, parent_session_id, cwd, started_at,
+                   owner_profile, owner_kind, owner_ref, canonical_key, identity_kind,
+                   hidden, pinned)
+                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -1186,6 +1203,13 @@ class SessionDB:
                     parent_session_id,
                     cwd,
                     time.time(),
+                    owner_profile,
+                    owner_kind,
+                    owner_ref,
+                    canonical_key,
+                    identity_kind or "session",
+                    1 if hidden else 0,
+                    1 if pinned else 0,
                 ),
             )
         self._execute_write(_do)
@@ -1194,6 +1218,128 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def get_canonical_session(
+        self, owner_profile: str, canonical_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return a canonical session without relying on its mutable title."""
+        if not owner_profile or not canonical_key:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT s.*, p.prompt AS _system_prompt_resolved "
+                "FROM sessions s LEFT JOIN system_prompts p "
+                "ON p.hash = s.system_prompt_hash "
+                "WHERE s.owner_profile = ? AND s.canonical_key = ?",
+                (owner_profile, canonical_key),
+            ).fetchone()
+        return _prompts.hydrate_row(row) if row else None
+
+    def get_or_create_canonical_session(
+        self,
+        *,
+        owner_profile: str,
+        canonical_key: str,
+        title: str,
+        source: str,
+        identity_kind: str,
+        hidden: bool = True,
+        owner_kind: Optional[str] = None,
+        owner_ref: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically get or create a profile-local canonical session.
+
+        The partial unique index on ``(owner_profile, canonical_key)`` is the
+        concurrency primitive. A title is presentation only and may be changed
+        later without changing canonical identity.
+        """
+        owner_profile = str(owner_profile or "").strip()
+        canonical_key = str(canonical_key or "").strip()
+        if not owner_profile or not canonical_key:
+            raise ValueError("owner_profile and canonical_key are required")
+        clean_title = self.sanitize_title(title)
+        if not clean_title:
+            raise ValueError("A canonical session title is required")
+        session_id = f"bot_{uuid.uuid4().hex}"
+        now = time.time()
+        resolved_owner_kind = str(owner_kind or identity_kind or "internal")
+        resolved_owner_ref = str(owner_ref or owner_profile)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO sessions (
+                       id, source, title, started_at, owner_profile, owner_kind,
+                       owner_ref, canonical_key, identity_kind, hidden, pinned
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (
+                    session_id,
+                    source,
+                    clean_title,
+                    now,
+                    owner_profile,
+                    resolved_owner_kind,
+                    resolved_owner_ref,
+                    canonical_key,
+                    identity_kind or "internal",
+                    1 if hidden else 0,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE owner_profile = ? AND canonical_key = ?",
+                (owner_profile, canonical_key),
+            ).fetchone()
+            return str(row["id"] if isinstance(row, sqlite3.Row) else row[0])
+
+        resolved_id = self._execute_write(_do)
+        result = self.get_session(resolved_id)
+        if result is None:  # pragma: no cover - external DB corruption only
+            raise RuntimeError("Canonical session creation did not produce a readable row")
+        return result
+
+    def set_canonical_capability(
+        self, session_id: str, *, fingerprint: str, epoch: int
+    ) -> bool:
+        """Record the capability snapshot used to build a canonical prompt."""
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET capability_fingerprint = ?, capability_epoch = ? "
+                "WHERE id = ? AND canonical_key IS NOT NULL",
+                (fingerprint, int(epoch), session_id),
+            )
+            return cursor.rowcount > 0
+        return bool(self._execute_write(_do))
+
+    def transfer_canonical_identity(self, old_session_id: str, new_session_id: str) -> bool:
+        """Move canonical ownership across a compression continuation."""
+        def _do(conn):
+            old = conn.execute(
+                "SELECT owner_profile, owner_kind, owner_ref, canonical_key, "
+                "identity_kind, hidden, pinned, capability_fingerprint, capability_epoch "
+                "FROM sessions WHERE id = ?",
+                (old_session_id,),
+            ).fetchone()
+            if old is None or old["canonical_key"] is None:
+                return False
+            # Clear the old key first so the partial unique index permits the move.
+            conn.execute(
+                "UPDATE sessions SET canonical_key = NULL WHERE id = ?",
+                (old_session_id,),
+            )
+            cursor = conn.execute(
+                """UPDATE sessions SET owner_profile = ?, owner_kind = ?, owner_ref = ?,
+                       canonical_key = ?, identity_kind = ?, hidden = ?, pinned = ?,
+                       capability_fingerprint = ?, capability_epoch = ?
+                   WHERE id = ?""",
+                (
+                    old["owner_profile"], old["owner_kind"], old["owner_ref"],
+                    old["canonical_key"], old["identity_kind"], old["hidden"],
+                    old["pinned"], old["capability_fingerprint"],
+                    old["capability_epoch"], new_session_id,
+                ),
+            )
+            return cursor.rowcount > 0
+        return bool(self._execute_write(_do))
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -1878,6 +2024,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1947,6 +2094,8 @@ class SessionDB:
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
+        if not include_hidden:
+            where_clauses.append("s.hidden = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -3457,6 +3606,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         exclude_children: bool = False,
+        include_hidden: bool = False,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -3491,6 +3641,8 @@ class SessionDB:
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
+        if not include_hidden:
+            where_clauses.append("s.hidden = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
