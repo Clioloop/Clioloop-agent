@@ -1261,6 +1261,88 @@ class APIServerAdapter(BasePlatformAdapter):
             status=201,
         )
 
+    async def _handle_start_peer_bot_room_turn(self, request: "web.Request") -> "web.Response":
+        """Start one authenticated, receiver-local Bot room worker."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        if body.get("protocol_version") != 1:
+            return web.json_response(
+                _openai_error("unsupported Bot room handoff protocol", code="invalid_bot_room_turn"),
+                status=400,
+            )
+        from clio_bot_mode import start_peer_room_turn
+
+        try:
+            result = await asyncio.to_thread(
+                start_peer_room_turn,
+                request.match_info["profile"],
+                body.get("message"),
+                turn_id=body.get("turn_id"),
+                room_id=body.get("room_id"),
+                room_name=body.get("room_name"),
+                epoch=body.get("epoch"),
+                sender=body.get("sender") or "user",
+                timeout=body.get("timeout") or 120.0,
+            )
+        except (FileNotFoundError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_bot_room_turn"), status=409
+            )
+        return web.json_response({"object": "clio.bot.room_turn", **result}, status=202)
+
+    async def _handle_peer_bot_room_turn_lifecycle(self, request: "web.Request") -> "web.Response":
+        """Poll, respond to, or cancel one exactly bound peer room turn."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        if body.get("protocol_version") != 1:
+            return web.json_response(
+                _openai_error("unsupported Bot room handoff protocol", code="invalid_bot_room_lifecycle"),
+                status=400,
+            )
+        from clio_bot_mode import cancel_peer_room_turn, get_peer_room_turn, respond_peer_room_turn
+
+        action = str(body.get("action") or "").strip().lower()
+        common = {
+            "room_id": body.get("room_id"),
+            "epoch": body.get("epoch"),
+            "session_id": body.get("session_id"),
+        }
+        try:
+            if action == "status":
+                result = get_peer_room_turn(
+                    request.match_info["profile"], request.match_info["turn_id"], **common
+                )
+            elif action == "user-action":
+                result = respond_peer_room_turn(
+                    request.match_info["profile"],
+                    request.match_info["turn_id"],
+                    body.get("request_id"),
+                    body.get("response"),
+                    **common,
+                )
+            elif action == "cancel":
+                result = cancel_peer_room_turn(
+                    request.match_info["profile"],
+                    request.match_info["turn_id"],
+                    request_id=body.get("request_id"),
+                    **common,
+                )
+            else:
+                raise ValueError("invalid peer Bot room lifecycle action")
+        except (FileNotFoundError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_bot_room_lifecycle"), status=409
+            )
+        return web.json_response({"object": "clio.bot.room_turn", **result})
+
     async def _handle_list_bot_rooms(self, request: "web.Request") -> "web.Response":
         auth_err = self._check_auth(request)
         if auth_err:
@@ -4309,6 +4391,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/bots/{profile}", self._handle_get_bot)
             self._app.router.add_post("/api/bots/{profile}/dm", self._handle_bot_dm)
             self._app.router.add_post("/api/bots/{profile}/attachments", self._handle_bot_attachment)
+            self._app.router.add_post("/api/bots/{profile}/room-turns", self._handle_start_peer_bot_room_turn)
+            self._app.router.add_post(
+                "/api/bots/{profile}/room-turns/{turn_id}",
+                self._handle_peer_bot_room_turn_lifecycle,
+            )
             self._app.router.add_get("/api/bot-rooms", self._handle_list_bot_rooms)
             self._app.router.add_post("/api/bot-rooms", self._handle_create_bot_room)
             self._app.router.add_get("/api/bot-rooms/{room_id}", self._handle_get_bot_room)

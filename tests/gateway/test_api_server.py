@@ -415,6 +415,11 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/bots/{profile}/attachments", adapter._handle_bot_attachment)
+    app.router.add_post("/api/bots/{profile}/room-turns", adapter._handle_start_peer_bot_room_turn)
+    app.router.add_post(
+        "/api/bots/{profile}/room-turns/{turn_id}",
+        adapter._handle_peer_bot_room_turn_lifecycle,
+    )
     app.router.add_post("/api/bot-rooms/{room_id}/user-action", adapter._handle_respond_bot_room)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
@@ -517,6 +522,41 @@ class TestBotRoomUserActionEndpoint:
         assert response_body["accepted"] is True
         respond.assert_called_once_with(
             "room-1", "ask-1", "deny", epoch=3, session_id="session-alpha"
+        )
+
+    @pytest.mark.asyncio
+    async def test_peer_turn_route_authenticates_and_forwards_exact_bindings(
+        self, auth_adapter, monkeypatch
+    ):
+        start = MagicMock(return_value={"state": "running"})
+        status = MagicMock(return_value={"state": "running"})
+        monkeypatch.setattr("clio_bot_mode.start_peer_room_turn", start)
+        monkeypatch.setattr("clio_bot_mode.get_peer_room_turn", status)
+        app = _create_app(auth_adapter)
+        start_body = {
+            "protocol_version": 1, "turn_id": "turn-1", "message": "review",
+            "room_id": "room-1", "room_name": "Review", "epoch": 7, "timeout": 30,
+        }
+        poll_body = {
+            "protocol_version": 1, "action": "status", "room_id": "room-1",
+            "epoch": 7, "session_id": "session-remote",
+        }
+        headers = {"Authorization": "Bearer sk-secret"}
+        async with TestClient(TestServer(app)) as cli:
+            denied = await cli.post("/api/bots/alpha/room-turns", json=start_body)
+            created = await cli.post("/api/bots/alpha/room-turns", json=start_body, headers=headers)
+            polled = await cli.post(
+                "/api/bots/alpha/room-turns/turn-1", json=poll_body, headers=headers
+            )
+        assert denied.status == 401
+        assert created.status == 202
+        assert polled.status == 200
+        start.assert_called_once_with(
+            "alpha", "review", turn_id="turn-1", room_id="room-1",
+            room_name="Review", epoch=7, sender="user", timeout=30,
+        )
+        status.assert_called_once_with(
+            "alpha", "turn-1", room_id="room-1", epoch=7, session_id="session-remote"
         )
 
 

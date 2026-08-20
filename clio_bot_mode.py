@@ -60,6 +60,10 @@ WORKER_ACTIVE_SECONDS = 120.0
 BOT_HANDOFF_VERSION = 1
 BOT_HANDOFF_POLL_SECONDS = 0.1
 BOT_HANDOFF_MAX_TEXT = 100_000
+BOT_PEER_HANDOFF_VERSION = 1
+BOT_PEER_TURN_MAX_ACTIVE = 32
+BOT_PEER_TURN_MAX_RECORDS = 128
+BOT_PEER_TURN_TTL_SECONDS = 120.0
 
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -67,6 +71,7 @@ _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 _MENTION_RE = re.compile(r"(?<![\w@])@([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})")
 _PASS_RE = re.compile(r"^\s*\(?\s*pass\s*\)?\s*[.!]?\s*$", re.I)
 _ROOM_STAGING_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+_PEER_TURN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$")
 _ROOM_ATTACHMENT_MIME_TYPES = frozenset(
     {"application/pdf", "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown"}
@@ -75,6 +80,8 @@ _ROOM_LOCK = threading.RLock()
 _CRON_LOCK = threading.RLock()
 _ROOM_HANDOFF_LOCK = threading.RLock()
 _ROOM_HANDOFFS: Dict[str, Dict[str, Any]] = {}
+_PEER_ROOM_TURN_LOCK = threading.RLock()
+_PEER_ROOM_TURNS: Dict[str, Dict[str, Any]] = {}
 
 
 class BotModeError(RuntimeError):
@@ -140,6 +147,25 @@ def _validate_room_staging_id(room_id: str) -> str:
     normalized = str(room_id or "").strip().lower()
     if not _ROOM_STAGING_RE.fullmatch(normalized):
         raise ValueError("Invalid Bot room attachment identifier")
+    return normalized
+
+
+def _validate_peer_turn_id(turn_id: Any) -> str:
+    normalized = str(turn_id or "").strip()
+    if not _PEER_TURN_RE.fullmatch(normalized):
+        raise ValueError("Invalid peer Bot room turn identifier")
+    return normalized
+
+
+def _validate_room_epoch(epoch: Any) -> int:
+    if isinstance(epoch, bool):
+        raise ValueError("Bot room epoch must be a positive integer")
+    try:
+        normalized = int(epoch)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Bot room epoch must be a positive integer") from exc
+    if normalized < 1 or str(normalized) != str(epoch).strip():
+        raise ValueError("Bot room epoch must be a positive integer")
     return normalized
 
 
@@ -851,6 +877,413 @@ def run_profile_turn(
             handoff_path.unlink(missing_ok=True)
 
 
+def _sanitize_peer_handoff(request: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the bounded, path-free portion of a child handoff request."""
+    request_id = _validate_peer_turn_id(request.get("request_id"))
+    kind = str(request.get("kind") or "").strip().lower()
+    if kind not in {"clarify", "approval"}:
+        raise BotModeError("Peer Bot room handoff has an invalid kind")
+    raw_choices = request.get("choices") or []
+    if not isinstance(raw_choices, (list, tuple)) or len(raw_choices) > 20:
+        raise BotModeError("Peer Bot room handoff has invalid choices")
+    choices: List[str] = []
+    for raw in raw_choices:
+        choice = str(raw or "").strip()
+        if not choice or len(choice) > 500:
+            raise BotModeError("Peer Bot room handoff has invalid choices")
+        if choice not in choices:
+            choices.append(choice)
+    handoff: Dict[str, Any] = {
+        "request_id": request_id,
+        "kind": kind,
+        "choices": choices,
+    }
+    for field in ("question", "command", "description"):
+        if request.get(field) is not None:
+            handoff[field] = str(request[field])[:BOT_HANDOFF_MAX_TEXT]
+    return handoff
+
+
+def _peer_turn_snapshot_locked(record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Serialize a peer lifecycle record without its process IPC capability."""
+    snapshot: Dict[str, Any] = {
+        "protocol_version": BOT_PEER_HANDOFF_VERSION,
+        "turn_id": record["turn_id"],
+        "profile": record["profile"],
+        "room_id": record["room_id"],
+        "epoch": record["epoch"],
+        "session_id": record["session_id"],
+        "state": record["state"],
+        "created_at": record["created_at"],
+        "updated_at": record["updated_at"],
+        "expires_at": record["expires_at"],
+    }
+    handoff = record.get("handoff")
+    if isinstance(handoff, dict) and record.get("state") == "needs_user":
+        snapshot["handoff"] = dict(handoff)
+    if record.get("state") == "completed":
+        snapshot["reply"] = str(record.get("reply") or "")
+    elif record.get("state") in {"failed", "timeout", "cancelled"}:
+        snapshot["error"] = {
+            "failed": "Remote Bot room turn failed",
+            "timeout": "Remote Bot room turn timed out",
+            "cancelled": "Remote Bot room turn was cancelled",
+        }[str(record["state"])]
+    return snapshot
+
+
+def _sweep_peer_room_turns_locked(now: Optional[float] = None) -> None:
+    """Expire active turns and cap retained terminal lifecycle records."""
+    now = time.time() if now is None else now
+    for record in _PEER_ROOM_TURNS.values():
+        if record.get("state") in {"running", "needs_user"} and now >= float(
+            record.get("expires_at") or 0
+        ):
+            record["state"] = "timeout"
+            record["handoff"] = None
+            record["channel"] = None
+            record["updated_at"] = now
+            event = record.get("cancel_event")
+            if isinstance(event, threading.Event):
+                event.set()
+    stale = [
+        turn_id
+        for turn_id, record in _PEER_ROOM_TURNS.items()
+        if record.get("state") not in {"running", "needs_user"}
+        and now - float(record.get("updated_at") or 0) >= BOT_PEER_TURN_TTL_SECONDS
+    ]
+    for turn_id in stale:
+        _PEER_ROOM_TURNS.pop(turn_id, None)
+    if len(_PEER_ROOM_TURNS) <= BOT_PEER_TURN_MAX_RECORDS:
+        return
+    terminal = sorted(
+        (
+            record
+            for record in _PEER_ROOM_TURNS.values()
+            if record.get("state") not in {"running", "needs_user"}
+        ),
+        key=lambda record: float(record.get("updated_at") or 0),
+    )
+    for record in terminal[: len(_PEER_ROOM_TURNS) - BOT_PEER_TURN_MAX_RECORDS]:
+        _PEER_ROOM_TURNS.pop(str(record["turn_id"]), None)
+
+
+def _bound_peer_room_turn_locked(
+    profile: str,
+    turn_id: str,
+    *,
+    room_id: str,
+    epoch: int,
+    session_id: str,
+) -> Dict[str, Any]:
+    _sweep_peer_room_turns_locked()
+    record = _PEER_ROOM_TURNS.get(turn_id)
+    if not isinstance(record, dict):
+        raise BotModeError("Peer Bot room turn is no longer available")
+    if (
+        record.get("profile") != profile
+        or record.get("room_id") != room_id
+        or int(record.get("epoch") or 0) != epoch
+        or str(record.get("session_id") or "") != session_id
+    ):
+        raise BotModeError("Peer Bot room turn binding does not match")
+    return record
+
+
+def start_peer_room_turn(
+    profile: str,
+    message: str,
+    *,
+    turn_id: str,
+    room_id: str,
+    room_name: str,
+    epoch: int,
+    sender: str = "user",
+    timeout: float = ROOM_HARD_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Start one authenticated peer room turn and return its lifecycle state.
+
+    The worker remains on the receiving host. Only bounded handoff metadata is
+    published; its temporary file path and random capability token never cross
+    the API boundary.
+    """
+    profile = _validate_profile(profile)
+    turn_id = _validate_peer_turn_id(turn_id)
+    room_id = _validate_room_staging_id(room_id)
+    epoch = _validate_room_epoch(epoch)
+    message = _safe_message_text(message)
+    sender = str(sender or "user").strip()
+    if not sender or len(sender) > 128:
+        raise ValueError("Invalid peer Bot room sender")
+    clean_room_name = re.sub(r"\s+", " ", str(room_name or "Remote room")).strip()
+    if not clean_room_name or len(clean_room_name) > 80:
+        raise ValueError("Peer Bot room name must be 1-80 characters")
+    timeout = min(max(float(timeout), 1.0), 1800.0)
+    start_binding = (profile, message, room_id, clean_room_name, epoch, sender, timeout)
+
+    with _PEER_ROOM_TURN_LOCK:
+        _sweep_peer_room_turns_locked()
+        existing = _PEER_ROOM_TURNS.get(turn_id)
+        if isinstance(existing, dict):
+            if existing.get("start_binding") != start_binding:
+                raise BotModeError("Peer Bot room turn identifier was reused with a different binding")
+            return _peer_turn_snapshot_locked(existing)
+        active = sum(
+            record.get("state") in {"running", "needs_user"}
+            for record in _PEER_ROOM_TURNS.values()
+        )
+        if active >= BOT_PEER_TURN_MAX_ACTIVE:
+            raise BotModeError("Too many peer Bot room turns are active")
+
+    metadata = read_bot_metadata(profile)
+    if not metadata.get("enabled"):
+        raise BotModeError(f"Profile {profile!r} is not Bot-enabled")
+    session = ensure_group_session(profile, room_id, clean_room_name)
+    session_id = str(session["id"])
+    cancel_event = threading.Event()
+    now = time.time()
+    record: Dict[str, Any] = {
+        "turn_id": turn_id,
+        "profile": profile,
+        "room_id": room_id,
+        "epoch": epoch,
+        "session_id": session_id,
+        "state": "running",
+        "handoff": None,
+        "channel": None,
+        "reply": "",
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": now + timeout,
+        "cancel_event": cancel_event,
+        "start_binding": start_binding,
+    }
+
+    def publish(request: Mapping[str, Any]) -> None:
+        handoff = _sanitize_peer_handoff(request)
+        path = str(request.get("_handoff_path") or "")
+        token = str(request.get("_handoff_token") or "")
+        if not path or not token:
+            raise BotModeError("Peer Bot room handoff channel is unavailable")
+        with _PEER_ROOM_TURN_LOCK:
+            current = _PEER_ROOM_TURNS.get(turn_id)
+            if current is not record:
+                raise BotModeError("Peer Bot room turn was cancelled")
+            assert isinstance(current, dict)
+            if current.get("state") != "running" or cancel_event.is_set():
+                raise BotModeError("Peer Bot room turn was cancelled")
+            current["handoff"] = handoff
+            current["channel"] = {
+                "path": path,
+                "token": token,
+                "request_id": handoff["request_id"],
+                "kind": handoff["kind"],
+            }
+            current["state"] = "needs_user"
+            current["updated_at"] = time.time()
+
+    def worker() -> None:
+        try:
+            reply = run_profile_turn(
+                profile,
+                session_id,
+                message,
+                timeout=timeout,
+                handoff_callback=publish,
+                cancelled=cancel_event.is_set,
+            )
+        except Exception as exc:
+            with _PEER_ROOM_TURN_LOCK:
+                current = _PEER_ROOM_TURNS.get(turn_id)
+                if current is not record:
+                    return
+                assert isinstance(current, dict)
+                if current.get("state") in {"cancelled", "timeout"}:
+                    return
+                current["state"] = "timeout" if "timed out" in str(exc).lower() else "failed"
+                current["handoff"] = None
+                current["channel"] = None
+                current["updated_at"] = time.time()
+            return
+        with _PEER_ROOM_TURN_LOCK:
+            current = _PEER_ROOM_TURNS.get(turn_id)
+            if current is not record:
+                return
+            assert isinstance(current, dict)
+            if current.get("state") in {"cancelled", "timeout"}:
+                return
+            current["state"] = "completed"
+            current["reply"] = reply
+            current["handoff"] = None
+            current["channel"] = None
+            current["updated_at"] = time.time()
+
+    with _PEER_ROOM_TURN_LOCK:
+        raced = _PEER_ROOM_TURNS.get(turn_id)
+        if isinstance(raced, dict):
+            if raced.get("start_binding") != start_binding:
+                raise BotModeError("Peer Bot room turn identifier was reused with a different binding")
+            return _peer_turn_snapshot_locked(raced)
+        _PEER_ROOM_TURNS[turn_id] = record
+    threading.Thread(target=worker, name=f"clio-peer-room-{turn_id[:24]}", daemon=True).start()
+    with _PEER_ROOM_TURN_LOCK:
+        return _peer_turn_snapshot_locked(record)
+
+
+def get_peer_room_turn(
+    profile: str,
+    turn_id: str,
+    *,
+    room_id: str,
+    epoch: int,
+    session_id: str,
+) -> Dict[str, Any]:
+    """Read one lifecycle record only when every authenticated binding matches."""
+    profile = _validate_profile(profile)
+    turn_id = _validate_peer_turn_id(turn_id)
+    room_id = _validate_room_staging_id(room_id)
+    epoch = _validate_room_epoch(epoch)
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        raise ValueError("Peer Bot room session_id is required")
+    with _PEER_ROOM_TURN_LOCK:
+        return _peer_turn_snapshot_locked(
+            _bound_peer_room_turn_locked(
+                profile,
+                turn_id,
+                room_id=room_id,
+                epoch=epoch,
+                session_id=session_id,
+            )
+        )
+
+
+def respond_peer_room_turn(
+    profile: str,
+    turn_id: str,
+    request_id: str,
+    response: str,
+    *,
+    room_id: str,
+    epoch: int,
+    session_id: str,
+) -> Dict[str, Any]:
+    """Forward a user choice to the exact receiver-local child tool call."""
+    profile = _validate_profile(profile)
+    turn_id = _validate_peer_turn_id(turn_id)
+    request_id = _validate_peer_turn_id(request_id)
+    room_id = _validate_room_staging_id(room_id)
+    epoch = _validate_room_epoch(epoch)
+    session_id = str(session_id or "").strip()
+    response = str(response or "").strip()
+    if not session_id or not response:
+        raise ValueError("Peer Bot room session_id and response are required")
+    if len(response) > BOT_HANDOFF_MAX_TEXT:
+        raise ValueError("Peer Bot room handoff response is too long")
+    with _PEER_ROOM_TURN_LOCK:
+        record = _bound_peer_room_turn_locked(
+            profile,
+            turn_id,
+            room_id=room_id,
+            epoch=epoch,
+            session_id=session_id,
+        )
+        handoff = record.get("handoff")
+        channel = record.get("channel")
+        if (
+            record.get("state") != "needs_user"
+            or not isinstance(handoff, dict)
+            or not isinstance(channel, dict)
+            or handoff.get("request_id") != request_id
+            or channel.get("request_id") != request_id
+        ):
+            raise BotModeError("Peer Bot room user action does not match the pending request")
+        if handoff.get("kind") == "approval":
+            response = response.lower()
+            response = {
+                "approve": "once",
+                "approved": "once",
+                "yes": "once",
+                "no": "deny",
+            }.get(response, response)
+            choices = {str(value).lower() for value in handoff.get("choices") or []}
+            if response not in choices:
+                raise ValueError(
+                    f"Approval response must be one of: {', '.join(sorted(choices))}"
+                )
+        _atomic_handoff_json(
+            Path(str(channel["path"])),
+            {
+                "version": BOT_HANDOFF_VERSION,
+                "token": channel["token"],
+                "state": "responded",
+                "request_id": request_id,
+                "response": response,
+            },
+        )
+        record["state"] = "running"
+        record["handoff"] = None
+        record["channel"] = None
+        record["updated_at"] = time.time()
+        return _peer_turn_snapshot_locked(record)
+
+
+def cancel_peer_room_turn(
+    profile: str,
+    turn_id: str,
+    *,
+    room_id: str,
+    epoch: int,
+    session_id: str,
+    request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Cancel one exact peer turn; terminal success is never rewritten."""
+    profile = _validate_profile(profile)
+    turn_id = _validate_peer_turn_id(turn_id)
+    room_id = _validate_room_staging_id(room_id)
+    epoch = _validate_room_epoch(epoch)
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        raise ValueError("Peer Bot room session_id is required")
+    clean_request_id = _validate_peer_turn_id(request_id) if request_id else None
+    with _PEER_ROOM_TURN_LOCK:
+        record = _bound_peer_room_turn_locked(
+            profile,
+            turn_id,
+            room_id=room_id,
+            epoch=epoch,
+            session_id=session_id,
+        )
+        if record.get("state") == "cancelled":
+            return _peer_turn_snapshot_locked(record)
+        if record.get("state") not in {"running", "needs_user"}:
+            raise BotModeError("Peer Bot room turn is already terminal")
+        handoff = record.get("handoff")
+        if clean_request_id and (
+            not isinstance(handoff, dict) or handoff.get("request_id") != clean_request_id
+        ):
+            raise BotModeError("Peer Bot room cancellation does not match the pending request")
+        channel = record.get("channel")
+        if isinstance(channel, dict):
+            _atomic_handoff_json(
+                Path(str(channel["path"])),
+                {
+                    "version": BOT_HANDOFF_VERSION,
+                    "token": channel["token"],
+                    "state": "cancelled",
+                    "request_id": channel.get("request_id"),
+                },
+            )
+        event = record.get("cancel_event")
+        if isinstance(event, threading.Event):
+            event.set()
+        record["state"] = "cancelled"
+        record["handoff"] = None
+        record["channel"] = None
+        record["updated_at"] = time.time()
+        return _peer_turn_snapshot_locked(record)
+
+
 def local_dm(target_profile: str, message: str, *, sender: str = "user", timeout: float = 600.0) -> Dict[str, Any]:
     target_profile = _validate_profile(target_profile)
     sender = _validate_profile(sender) if sender != "user" else "user"
@@ -1296,6 +1729,9 @@ def _default_room_responder(
     *,
     handoff_callback: Optional[RoomHandoffCallback] = None,
     cancelled: Optional[Callable[[], bool]] = None,
+    room_id: Optional[str] = None,
+    room_name: Optional[str] = None,
+    epoch: Optional[int] = None,
 ) -> str:
     if member["source"] == "local":
         return run_profile_turn(
@@ -1306,12 +1742,25 @@ def _default_room_responder(
             handoff_callback=handoff_callback,
             cancelled=cancelled,
         )
-    result = peer_dm(
-        f"{member['source']}/{member['profile']}",
-        prompt,
-        sender="user",
-        timeout=hard_timeout,
-    )
+    if room_id is None or room_name is None or epoch is None:
+        result = peer_dm(
+            f"{member['source']}/{member['profile']}",
+            prompt,
+            sender="user",
+            timeout=hard_timeout,
+        )
+    else:
+        result = peer_room_turn(
+            f"{member['source']}/{member['profile']}",
+            prompt,
+            room_id=room_id,
+            room_name=room_name,
+            epoch=epoch,
+            sender="user",
+            timeout=hard_timeout,
+            handoff_callback=handoff_callback,
+            cancelled=cancelled,
+        )
     return str(result.get("reply") or "")
 
 
@@ -1337,16 +1786,25 @@ def _cancel_pending_handoff(action: Any) -> None:
     request_id = str(action.get("request_id") or "")
     with _ROOM_HANDOFF_LOCK:
         channel = _ROOM_HANDOFFS.pop(request_id, None)
-    if channel:
-        _atomic_handoff_json(
-            Path(channel["path"]),
-            {
-                "version": BOT_HANDOFF_VERSION,
-                "token": channel["token"],
-                "state": "cancelled",
-                "request_id": request_id,
-            },
-        )
+    if not channel:
+        return
+    try:
+        if channel.get("transport") == "peer":
+            _send_peer_room_lifecycle(channel, "cancel")
+        else:
+            _atomic_handoff_json(
+                Path(channel["path"]),
+                {
+                    "version": BOT_HANDOFF_VERSION,
+                    "token": channel["token"],
+                    "state": "cancelled",
+                    "request_id": request_id,
+                },
+            )
+    except Exception:
+        # Supersession is authoritative locally. A peer outage must not prevent
+        # the next epoch from starting; the receiver also has its own deadline.
+        pass
 
 
 def _publish_room_handoff(
@@ -1357,29 +1815,39 @@ def _publish_room_handoff(
     request: Mapping[str, Any],
     root: Optional[Path],
 ) -> None:
-    """Publish a child prompt without exposing the private IPC channel."""
-    request_id = str(request.get("request_id") or "")
-    kind = str(request.get("kind") or "")
-    path = str(request.get("_handoff_path") or "")
-    token = str(request.get("_handoff_token") or "")
-    if not request_id or kind not in {"clarify", "approval"} or not path or not token:
-        raise BotModeError("Invalid Bot room handoff request")
-    action = {
-        "request_id": request_id,
-        "kind": kind,
-        "room_id": room_id,
-        "epoch": epoch,
-        "member": member["handle"],
-        "profile": member["profile"],
-        "session_id": session_id,
-        "choices": [str(value) for value in request.get("choices") or []],
-        "created_at": time.time(),
-    }
-    for field in ("question", "command", "description"):
-        if request.get(field) is not None:
-            action[field] = str(request[field])[:BOT_HANDOFF_MAX_TEXT]
-    with _ROOM_HANDOFF_LOCK:
-        _ROOM_HANDOFFS[request_id] = {
+    """Publish a child prompt without exposing either transport's capability."""
+    handoff = _sanitize_peer_handoff(request)
+    request_id = str(handoff["request_id"])
+    kind = str(handoff["kind"])
+    peer_handoff = request.get("_peer_handoff")
+    if isinstance(peer_handoff, Mapping):
+        peer_room_id = str(peer_handoff.get("room_id") or "")
+        peer_epoch = int(peer_handoff.get("epoch") or 0)
+        if peer_room_id != room_id or peer_epoch != epoch:
+            raise BotModeError("Peer Bot room handoff does not match the active room epoch")
+        channel: Dict[str, Any] = {
+            "transport": "peer",
+            "peer": _validate_source(str(peer_handoff.get("peer") or "")),
+            "profile": _validate_profile(str(peer_handoff.get("profile") or "")),
+            "turn_id": _validate_peer_turn_id(peer_handoff.get("turn_id")),
+            "peer_request_id": _validate_peer_turn_id(peer_handoff.get("request_id")),
+            "peer_session_id": str(peer_handoff.get("session_id") or "").strip(),
+            "peer_room_id": _validate_room_staging_id(peer_room_id),
+            "peer_epoch": _validate_room_epoch(peer_epoch),
+            "room_id": room_id,
+            "epoch": epoch,
+            "session_id": session_id,
+            "kind": kind,
+        }
+        if channel["peer_request_id"] != request_id or not channel["peer_session_id"]:
+            raise BotModeError("Peer Bot room handoff has an invalid request binding")
+    else:
+        path = str(request.get("_handoff_path") or "")
+        token = str(request.get("_handoff_token") or "")
+        if not path or not token:
+            raise BotModeError("Invalid Bot room handoff request")
+        channel = {
+            "transport": "local",
             "path": path,
             "token": token,
             "room_id": room_id,
@@ -1387,6 +1855,20 @@ def _publish_room_handoff(
             "session_id": session_id,
             "kind": kind,
         }
+    action = {
+        **handoff,
+        "room_id": room_id,
+        "epoch": epoch,
+        "member": member["handle"],
+        "profile": member["profile"],
+        "session_id": session_id,
+        "created_at": time.time(),
+    }
+    with _ROOM_HANDOFF_LOCK:
+        previous_channel = _ROOM_HANDOFFS.get(request_id)
+        if previous_channel is not None and previous_channel != channel:
+            raise BotModeError("Bot room handoff request identifier is already active")
+        _ROOM_HANDOFFS[request_id] = channel
     try:
         with _ROOM_LOCK:
             store = _load_room_store(root)
@@ -1403,7 +1885,8 @@ def _publish_room_handoff(
             _save_room_store(store, root)
     except Exception:
         with _ROOM_HANDOFF_LOCK:
-            _ROOM_HANDOFFS.pop(request_id, None)
+            if _ROOM_HANDOFFS.get(request_id) is channel:
+                _ROOM_HANDOFFS.pop(request_id, None)
         raise
 
 
@@ -1455,16 +1938,19 @@ def respond_room_user_action(
             )
             if response not in choices:
                 raise ValueError(f"Approval response must be one of: {', '.join(sorted(choices))}")
-        _atomic_handoff_json(
-            Path(channel["path"]),
-            {
-                "version": BOT_HANDOFF_VERSION,
-                "token": channel["token"],
-                "state": "responded",
-                "request_id": request_id,
-                "response": response,
-            },
-        )
+        if channel.get("transport") == "peer":
+            _send_peer_room_lifecycle(channel, "user-action", response=response)
+        else:
+            _atomic_handoff_json(
+                Path(channel["path"]),
+                {
+                    "version": BOT_HANDOFF_VERSION,
+                    "token": channel["token"],
+                    "state": "responded",
+                    "request_id": request_id,
+                    "response": response,
+                },
+            )
         room.setdefault("messages", []).append(
             {
                 "id": f"msg-{uuid.uuid4().hex[:12]}",
@@ -1629,7 +2115,7 @@ def send_room_message(
                     thread_id,
                     round_number,
                 )
-                if use_managed_handoff and member["source"] == "local":
+                if use_managed_handoff:
                     def publish(request: Mapping[str, Any]) -> None:
                         _publish_room_handoff(room_id, epoch, member, session_id, request, root)
 
@@ -1646,6 +2132,9 @@ def send_room_message(
                             hard_timeout,
                             handoff_callback=publish,
                             cancelled=superseded,
+                            room_id=room_id,
+                            room_name=str(room["name"]),
+                            epoch=epoch,
                         )
 
                     raw_reply, elapsed, timed_out = _invoke_bounded(
@@ -1950,6 +2439,232 @@ def _peer_request(url: str, key: str, *, method: str = "GET", body: Optional[Map
     return parsed
 
 
+def _peer_room_endpoint(peer_name: str, profile: str, turn_id: Optional[str] = None) -> tuple[str, str]:
+    """Resolve one configured peer endpoint and bearer credential."""
+    peer_name = _validate_source(peer_name)
+    profile = _validate_profile(profile)
+    peer = load_peers().get(peer_name)
+    if not isinstance(peer, dict) or not peer.get("url"):
+        raise BotModeError(f"No peer named '{peer_name}'")
+    parsed = urllib.parse.urlsplit(str(peer["url"]).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        raise BotModeError(f"Peer '{peer_name}' has an invalid URL")
+    key = peer_secret(peer_name)
+    if not key:
+        raise BotModeError(f"No API key configured for peer '{peer_name}' ({_peer_key_env(peer_name)})")
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    endpoint = f"{base}/api/bots/{urllib.parse.quote(profile, safe='')}/room-turns"
+    if turn_id is not None:
+        endpoint += f"/{urllib.parse.quote(_validate_peer_turn_id(turn_id), safe='')}"
+    return endpoint, key
+
+
+def _validated_peer_turn_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    profile: str,
+    turn_id: str,
+    room_id: str,
+    epoch: int,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Accept only the path-free portion of an exactly bound peer response."""
+    if payload.get("protocol_version") != BOT_PEER_HANDOFF_VERSION:
+        raise BotModeError("Peer returned an unsupported Bot room handoff protocol")
+    actual_session = str(payload.get("session_id") or "").strip()
+    if (
+        payload.get("turn_id") != turn_id
+        or payload.get("profile") != profile
+        or payload.get("room_id") != room_id
+        or payload.get("epoch") != epoch
+        or not actual_session
+        or (session_id is not None and actual_session != session_id)
+    ):
+        raise BotModeError("Peer returned a Bot room turn with a mismatched binding")
+    state = str(payload.get("state") or "")
+    if state not in {"running", "needs_user", "completed", "failed", "timeout", "cancelled"}:
+        raise BotModeError("Peer returned an invalid Bot room turn state")
+    snapshot: Dict[str, Any] = {
+        "protocol_version": BOT_PEER_HANDOFF_VERSION,
+        "turn_id": turn_id,
+        "profile": profile,
+        "room_id": room_id,
+        "epoch": epoch,
+        "session_id": actual_session,
+        "state": state,
+    }
+    if state == "needs_user":
+        handoff = payload.get("handoff")
+        if not isinstance(handoff, Mapping):
+            raise BotModeError("Peer Bot room turn omitted its pending user action")
+        snapshot["handoff"] = _sanitize_peer_handoff(handoff)
+    elif state == "completed":
+        reply = str(payload.get("reply") or "")
+        if len(reply) > BOT_HANDOFF_MAX_TEXT:
+            raise BotModeError("Peer Bot room reply is too large")
+        snapshot["reply"] = reply
+    elif state in {"failed", "timeout", "cancelled"}:
+        snapshot["error"] = str(payload.get("error") or f"Remote Bot room turn {state}")[:1000]
+    return snapshot
+
+
+def _send_peer_room_lifecycle(
+    channel: Mapping[str, Any],
+    action: str,
+    *,
+    response: Optional[str] = None,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """Send an authenticated action bound to one peer turn/session/room epoch."""
+    peer_name = _validate_source(str(channel.get("peer") or ""))
+    profile = _validate_profile(str(channel.get("profile") or ""))
+    turn_id = _validate_peer_turn_id(channel.get("turn_id"))
+    room_id = _validate_room_staging_id(str(channel.get("peer_room_id") or channel.get("room_id") or ""))
+    epoch = _validate_room_epoch(channel.get("peer_epoch", channel.get("epoch")))
+    session_id = str(channel.get("peer_session_id") or channel.get("session_id") or "").strip()
+    if not session_id:
+        raise BotModeError("Peer Bot room lifecycle is missing its session binding")
+    action = str(action or "").strip().lower()
+    if action not in {"status", "user-action", "cancel"}:
+        raise ValueError("Invalid peer Bot room lifecycle action")
+    request_id = str(channel.get("peer_request_id") or channel.get("request_id") or "").strip()
+    body: Dict[str, Any] = {
+        "protocol_version": BOT_PEER_HANDOFF_VERSION,
+        "action": action,
+        "room_id": room_id,
+        "epoch": epoch,
+        "session_id": session_id,
+    }
+    if request_id:
+        body["request_id"] = _validate_peer_turn_id(request_id)
+    if action == "user-action":
+        clean_response = str(response or "").strip()
+        if not request_id or not clean_response:
+            raise ValueError("Peer Bot room user action requires request_id and response")
+        body["response"] = clean_response
+    endpoint, key = _peer_room_endpoint(peer_name, profile, turn_id)
+    payload = _peer_request(
+        endpoint, key, method="POST", body=body, timeout=max(0.1, float(timeout))
+    )
+    return _validated_peer_turn_snapshot(
+        payload,
+        profile=profile,
+        turn_id=turn_id,
+        room_id=room_id,
+        epoch=epoch,
+        session_id=session_id,
+    )
+
+
+def peer_room_turn(
+    target: str,
+    message: str,
+    *,
+    room_id: str,
+    room_name: str,
+    epoch: int,
+    sender: str = "user",
+    timeout: float = ROOM_HARD_TIMEOUT_SECONDS,
+    handoff_callback: Optional[RoomHandoffCallback] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
+    """Run and poll one remote room turn, forwarding only sanitized handoffs."""
+    peer_name, separator, profile = str(target or "").strip().partition("/")
+    peer_name = _validate_source(peer_name)
+    profile = _validate_profile(profile) if separator and profile else "default"
+    message = _safe_message_text(message)
+    room_id = _validate_room_staging_id(room_id)
+    epoch = _validate_room_epoch(epoch)
+    clean_room_name = re.sub(r"\s+", " ", str(room_name or "")).strip()
+    if not clean_room_name or len(clean_room_name) > 80:
+        raise ValueError("Peer Bot room name must be 1-80 characters")
+    timeout = min(max(float(timeout), 1.0), 1800.0)
+    turn_id = f"turn-{uuid.uuid4().hex}"
+    endpoint, key = _peer_room_endpoint(peer_name, profile)
+    try:
+        payload = _peer_request(
+            endpoint,
+            key,
+            method="POST",
+            body={
+                "protocol_version": BOT_PEER_HANDOFF_VERSION,
+                "turn_id": turn_id,
+                "message": message,
+                "room_id": room_id,
+                "room_name": clean_room_name,
+                "epoch": epoch,
+                "sender": sender,
+                "timeout": timeout,
+            },
+            timeout=min(timeout, 30.0),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {404, 405}:
+            detail = exc.read(1001)[:1000].decode("utf-8", "replace")
+            raise BotModeError(f"Peer rejected Bot room turn (HTTP {exc.code}): {detail}") from exc
+        return peer_dm(target, message, sender=sender, timeout=timeout)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise BotModeError(f"Could not start Bot room turn on peer '{peer_name}': {exc}") from exc
+
+    snapshot = _validated_peer_turn_snapshot(
+        payload, profile=profile, turn_id=turn_id, room_id=room_id, epoch=epoch
+    )
+    session_id = str(snapshot["session_id"])
+    binding: Dict[str, Any] = {
+        "peer": peer_name,
+        "profile": profile,
+        "turn_id": turn_id,
+        "peer_room_id": room_id,
+        "peer_epoch": epoch,
+        "peer_session_id": session_id,
+    }
+    published: set[str] = set()
+    deadline = time.monotonic() + timeout
+    while True:
+        state = str(snapshot["state"])
+        if state == "completed":
+            return {
+                "peer": peer_name,
+                "profile": profile,
+                "reply": str(snapshot.get("reply") or ""),
+                "session_id": session_id,
+            }
+        if state in {"failed", "timeout", "cancelled"}:
+            raise BotModeError(str(snapshot.get("error") or f"Remote Bot room turn {state}"))
+        if cancelled and cancelled():
+            try:
+                _send_peer_room_lifecycle(binding, "cancel")
+            except Exception:
+                pass
+            raise BotModeError("Remote Bot room turn was cancelled")
+        if time.monotonic() >= deadline:
+            try:
+                _send_peer_room_lifecycle(binding, "cancel")
+            except Exception:
+                pass
+            raise BotModeError("Remote Bot room turn timed out")
+        if state == "needs_user":
+            handoff = dict(snapshot["handoff"])
+            request_id = str(handoff["request_id"])
+            if request_id not in published:
+                if handoff_callback is None:
+                    _send_peer_room_lifecycle(
+                        {**binding, "peer_request_id": request_id}, "cancel"
+                    )
+                    raise BotModeError("Remote Bot room turn requires an unavailable user action")
+                handoff["_peer_handoff"] = {
+                    **binding,
+                    "request_id": request_id,
+                    "room_id": room_id,
+                    "epoch": epoch,
+                    "session_id": session_id,
+                }
+                handoff_callback(handoff)
+                published.add(request_id)
+        time.sleep(min(BOT_HANDOFF_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        snapshot = _send_peer_room_lifecycle(binding, "status", timeout=min(30.0, timeout))
+
+
 def upload_peer_room_attachment(
     peer_name: str,
     profile: str,
@@ -2179,6 +2894,7 @@ __all__ = [
     "ensure_canonical_session",
     "ensure_group_session",
     "fetch_peer_roster",
+    "get_peer_room_turn",
     "get_room",
     "list_bot_roster",
     "list_bot_routines",
@@ -2188,12 +2904,16 @@ __all__ = [
     "local_dm",
     "maybe_refresh_bot_prompt",
     "peer_dm",
+    "peer_room_turn",
     "read_bot_metadata",
     "remove_peer",
     "run_profile_turn",
+    "start_peer_room_turn",
     "save_peer",
     "send_room_message",
     "stage_received_room_attachment",
+    "respond_peer_room_turn",
+    "cancel_peer_room_turn",
     "source_qualified_roster",
     "update_bot_metadata",
     "upload_peer_room_attachment",

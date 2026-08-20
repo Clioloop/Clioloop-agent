@@ -522,12 +522,208 @@ def test_peer_tls_policy_and_remote_room_delivery(bot_env, monkeypatch):
     )
     monkeypatch.setattr(
         bots,
-        "peer_dm",
+        "peer_room_turn",
         lambda target, message, **kwargs: {"reply": f"remote reply from {target}"},
     )
     monkeypatch.setattr(bots, "run_profile_turn", lambda *_args, **_kwargs: "PASS")
     result = bots.send_room_message(room["id"], "@research-remote investigate", root=root)
     assert any("remote/research" in message["content"] for message in result.messages)
+
+
+def test_fake_peer_handoff_is_sanitized_and_exactly_bound(bot_env, monkeypatch):
+    calls = []
+    state = {"value": "running"}
+    monkeypatch.setattr(bots, "load_peers", lambda: {"lab": {"url": "https://lab.example"}})
+    monkeypatch.setattr(bots, "peer_secret", lambda _name: "peer-secret")
+    monkeypatch.setattr(bots, "BOT_HANDOFF_POLL_SECONDS", 0)
+
+    def snapshot(turn_id, current):
+        result = {
+            "protocol_version": bots.BOT_PEER_HANDOFF_VERSION,
+            "turn_id": turn_id,
+            "profile": "alpha",
+            "room_id": "room-7",
+            "epoch": 4,
+            "session_id": "session-remote",
+            "state": current,
+        }
+        if current == "needs_user":
+            result["handoff"] = {
+                "request_id": "ask-7",
+                "kind": "approval",
+                "choices": ["once", "deny"],
+                "_handoff_path": "/receiver/private",
+                "_handoff_token": "receiver-secret",
+            }
+        if current == "completed":
+            result["reply"] = "approved"
+        return result
+
+    def peer_request(url, key, **kwargs):
+        body = dict(kwargs["body"])
+        calls.append((url, key, body))
+        turn_id = body.get("turn_id") or url.rsplit("/", 1)[-1]
+        if url.endswith("/room-turns"):
+            return snapshot(turn_id, "running")
+        if body["action"] == "status":
+            if state["value"] == "running":
+                state["value"] = "needs_user"
+            return snapshot(turn_id, state["value"])
+        if body["action"] == "user-action":
+            state["value"] = "completed"
+            return snapshot(turn_id, "completed")
+        raise AssertionError(body)
+
+    monkeypatch.setattr(bots, "_peer_request", peer_request)
+    exposed = {}
+
+    def publish(request):
+        exposed.update(request)
+        binding = request["_peer_handoff"]
+        bots._send_peer_room_lifecycle(
+            {**binding, "peer_request_id": binding["request_id"]},
+            "user-action",
+            response="once",
+        )
+
+    result = bots.peer_room_turn(
+        "lab/alpha",
+        "review",
+        room_id="room-7",
+        room_name="Review",
+        epoch=4,
+        timeout=5,
+        handoff_callback=publish,
+    )
+    assert result["reply"] == "approved"
+    assert "_handoff_path" not in exposed and "_handoff_token" not in exposed
+    assert "receiver-secret" not in json.dumps(exposed)
+    lifecycle = [body for _url, _key, body in calls if "action" in body]
+    assert {body["action"] for body in lifecycle} == {"status", "user-action"}
+    assert all(
+        (body["room_id"], body["epoch"], body["session_id"])
+        == ("room-7", 4, "session-remote")
+        for body in lifecycle
+    )
+    assert next(body for body in lifecycle if body["action"] == "user-action")[
+        "request_id"
+    ] == "ask-7"
+
+
+def test_fake_old_peer_fallback_and_remote_cancel(bot_env, monkeypatch):
+    monkeypatch.setattr(bots, "load_peers", lambda: {"lab": {"url": "https://lab.example"}})
+    monkeypatch.setattr(bots, "peer_secret", lambda _name: "peer-secret")
+
+    def old_peer(url, _key, **_kwargs):
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+
+    monkeypatch.setattr(bots, "_peer_request", old_peer)
+    monkeypatch.setattr(
+        bots,
+        "peer_dm",
+        lambda target, message, **kwargs: {"reply": f"legacy:{target}:{message}"},
+    )
+    result = bots.peer_room_turn(
+        "lab/alpha", "hello", room_id="room-1", room_name="Old", epoch=1
+    )
+    assert result["reply"] == "legacy:lab/alpha:hello"
+
+    actions = []
+
+    def running_peer(url, _key, **kwargs):
+        body = dict(kwargs["body"])
+        turn_id = body.get("turn_id") or url.rsplit("/", 1)[-1]
+        if body.get("action") == "cancel":
+            actions.append(body)
+        return {
+            "protocol_version": bots.BOT_PEER_HANDOFF_VERSION,
+            "turn_id": turn_id,
+            "profile": "alpha",
+            "room_id": "room-1",
+            "epoch": 2,
+            "session_id": "session-exact",
+            "state": "cancelled" if body.get("action") == "cancel" else "running",
+        }
+
+    monkeypatch.setattr(bots, "_peer_request", running_peer)
+    with pytest.raises(bots.BotModeError, match="cancelled"):
+        bots.peer_room_turn(
+            "lab/alpha",
+            "stop",
+            room_id="room-1",
+            room_name="Cancel",
+            epoch=2,
+            cancelled=lambda: True,
+        )
+    assert actions == [{
+        "protocol_version": bots.BOT_PEER_HANDOFF_VERSION,
+        "action": "cancel",
+        "room_id": "room-1",
+        "epoch": 2,
+        "session_id": "session-exact",
+    }]
+
+
+def test_peer_receiver_hides_capability_and_enforces_binding_and_timeout(
+    bot_env, tmp_path, monkeypatch
+):
+    bots._PEER_ROOM_TURNS.clear()
+    release = threading.Event()
+    channel = tmp_path / "receiver.json"
+
+    def fake_turn(_profile, _session, _message, **kwargs):
+        kwargs["handoff_callback"]({
+            "request_id": "ask-exact",
+            "kind": "approval",
+            "choices": ["once", "deny"],
+            "_handoff_path": str(channel),
+            "_handoff_token": "local-secret",
+        })
+        release.wait(2)
+        return "finished"
+
+    monkeypatch.setattr(bots, "run_profile_turn", fake_turn)
+    started = bots.start_peer_room_turn(
+        "alpha", "prompt", turn_id="turn-exact", room_id="room-exact",
+        room_name="Exact", epoch=3, timeout=30,
+    )
+    session_id = started["session_id"]
+    for _ in range(100):
+        snapshot = bots.get_peer_room_turn(
+            "alpha", "turn-exact", room_id="room-exact", epoch=3, session_id=session_id
+        )
+        if snapshot["state"] == "needs_user":
+            break
+        threading.Event().wait(0.01)
+    assert snapshot["state"] == "needs_user"
+    assert str(channel) not in json.dumps(snapshot) and "local-secret" not in json.dumps(snapshot)
+    with pytest.raises(bots.BotModeError, match="binding"):
+        bots.get_peer_room_turn(
+            "alpha", "turn-exact", room_id="room-exact", epoch=4, session_id=session_id
+        )
+    with pytest.raises(bots.BotModeError, match="pending request"):
+        bots.respond_peer_room_turn(
+            "alpha", "turn-exact", "wrong", "once",
+            room_id="room-exact", epoch=3, session_id=session_id,
+        )
+    bots.respond_peer_room_turn(
+        "alpha", "turn-exact", "ask-exact", "once",
+        room_id="room-exact", epoch=3, session_id=session_id,
+    )
+    assert json.loads(channel.read_text(encoding="utf-8"))["token"] == "local-secret"
+    with bots._PEER_ROOM_TURN_LOCK:
+        bots._PEER_ROOM_TURNS["turn-exact"]["expires_at"] = 0
+        bots._PEER_ROOM_TURNS["turn-exact"]["state"] = "running"
+    expired = bots.get_peer_room_turn(
+        "alpha", "turn-exact", room_id="room-exact", epoch=3, session_id=session_id
+    )
+    assert expired["state"] == "timeout"
+    with pytest.raises(bots.BotModeError, match="different binding"):
+        bots.start_peer_room_turn(
+            "alpha", "different", turn_id="turn-exact", room_id="room-exact",
+            room_name="Exact", epoch=3, timeout=30,
+        )
+    release.set()
 
 
 def test_connected_roster_uses_authenticated_peer_and_qualifies_collisions(bot_env, monkeypatch):
