@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type DragEvent as ReactDragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { CLIO_PATHS_MIME, type DroppedFile, extractDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot } from '@/components/status-dot'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -95,8 +96,43 @@ interface BotsViewProps {
 }
 
 const LONG_RPC_TIMEOUT_MS = 11 * 60 * 1000
+const ROOM_MAX_ATTACHMENTS = 12
+const ROOM_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+const ROOM_REMOTE_ATTACHMENT_BYTES = 7 * 1024 * 1024
 const ROOM_MAX_MEMBERS = 6
 const ROOM_MIN_MEMBERS = 2
+
+const ROOM_ATTACHMENT_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+  '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.ico': 'image/x-icon',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.markdown': 'text/markdown',
+  '.md': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.text': 'text/plain',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.txt': 'text/plain',
+  '.webp': 'image/webp'
+}
+
+const ROOM_ATTACHMENT_PICKER_EXTENSIONS = Object.keys(ROOM_ATTACHMENT_MIME_BY_EXTENSION).map(extension =>
+  extension.slice(1)
+)
+
+interface RoomAttachment {
+  mime_type: string
+  name: string
+  path: string
+  size: number
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -112,6 +148,77 @@ function formatTime(value: number): string {
   }
 
   return new Date(value * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
+function roomAttachmentMimeType(path: string): string | null {
+  const name = fileNameFromPath(path)
+  const dot = name.lastIndexOf('.')
+  const extension = dot >= 0 ? name.slice(dot).toLowerCase() : ''
+
+  return ROOM_ATTACHMENT_MIME_BY_EXTENSION[extension] ?? null
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+
+  const kibibytes = bytes / 1024
+
+  if (kibibytes < 1024) {
+    return `${Number(kibibytes.toFixed(kibibytes < 10 ? 1 : 0))} KiB`
+  }
+
+  const mebibytes = kibibytes / 1024
+
+  return `${Number(mebibytes.toFixed(mebibytes < 10 ? 1 : 0))} MiB`
+}
+
+async function inspectRoomAttachment(candidate: DroppedFile): Promise<RoomAttachment> {
+  const path = candidate.path.trim()
+
+  if (!path) {
+    throw new Error('Could not resolve a real filesystem path for the dropped file.')
+  }
+
+  const mimeType = roomAttachmentMimeType(path)
+
+  if (!mimeType) {
+    throw new Error(`${fileNameFromPath(path)} is not a supported PDF, image, text, or Markdown file.`)
+  }
+
+  const inspectFile = window.clioDesktop?.readFileText
+
+  if (!inspectFile) {
+    throw new Error('Desktop file inspection is unavailable.')
+  }
+
+  const metadata = await inspectFile(path)
+  const resolvedPath = metadata.path || path
+  const name = fileNameFromPath(resolvedPath)
+  const size = typeof metadata.byteSize === 'number' ? metadata.byteSize : candidate.file?.size
+
+  if (!name || name.length > 200) {
+    throw new Error('Attachment names must be plain filenames of at most 200 characters.')
+  }
+
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) {
+    throw new Error(`Could not determine the size of ${name}.`)
+  }
+
+  if (size > ROOM_MAX_ATTACHMENT_BYTES) {
+    throw new Error(`${name} exceeds the 25 MiB local attachment limit.`)
+  }
+
+  return { mime_type: mimeType, name, path: resolvedPath, size }
+}
+
+function dragHasRoomFiles(event: ReactDragEvent): boolean {
+  return Array.from(event.dataTransfer.types || []).some(type => type === 'Files' || type === CLIO_PATHS_MIME)
 }
 
 export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
@@ -131,13 +238,27 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
   const [roomName, setRoomName] = useState('')
   const [roomMembers, setRoomMembers] = useState<string[]>([])
   const [roomText, setRoomText] = useState('')
+  const [roomAttachments, setRoomAttachments] = useState<RoomAttachment[]>([])
+  const [roomAttachmentIssue, setRoomAttachmentIssue] = useState<string | null>(null)
+  const [roomAttachmentDragActive, setRoomAttachmentDragActive] = useState(false)
+  const [roomPickingAttachments, setRoomPickingAttachments] = useState(false)
   const [roomSending, setRoomSending] = useState(false)
   const [deletingRoom, setDeletingRoom] = useState(false)
   const [lastTurn, setLastTurn] = useState<BotTurnResult | null>(null)
+  const activeRoomIdRef = useRef<string | null>(null)
+  const roomAttachmentsRef = useRef<RoomAttachment[]>([])
+  const roomDragDepthRef = useRef(0)
 
   const selectedBot = useMemo(
     () => bots?.find(bot => (bot.identity_id || bot.key) === selectedBotIdentity) ?? null,
     [bots, selectedBotIdentity]
+  )
+
+  const roomHasRemoteMembers = useMemo(() => room?.members.some(member => member.source !== 'local') ?? false, [room])
+
+  const remoteOversizeAttachments = useMemo(
+    () => (roomHasRemoteMembers ? roomAttachments.filter(item => item.size > ROOM_REMOTE_ATTACHMENT_BYTES) : []),
+    [roomAttachments, roomHasRemoteMembers]
   )
 
   const refreshRoomList = useCallback(async () => {
@@ -204,6 +325,15 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
       setRoom(null)
     }
   }, [openRoom, selectedRoomId])
+
+  useEffect(() => {
+    activeRoomIdRef.current = selectedRoomId
+    roomAttachmentsRef.current = []
+    roomDragDepthRef.current = 0
+    setRoomAttachments([])
+    setRoomAttachmentIssue(null)
+    setRoomAttachmentDragActive(false)
+  }, [selectedRoomId])
 
   const handleOpenBotChat = async (bot: BotRosterItem) => {
     setOpeningBot(true)
@@ -282,10 +412,178 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
     }
   }
 
-  const handleSendRoomMessage = async () => {
-    if (!room || !roomText.trim()) {
+  const addRoomAttachments = useCallback(async (candidates: DroppedFile[]) => {
+    const targetRoomId = activeRoomIdRef.current
+
+    if (!targetRoomId || candidates.length === 0) {
       return
     }
+
+    setRoomAttachmentIssue(null)
+    const inspectable = candidates.filter(candidate => !candidate.isDirectory)
+    const issues = candidates.length > inspectable.length ? ['Folders cannot be attached to Bot rooms.'] : []
+    const inspected = await Promise.allSettled(inspectable.map(candidate => inspectRoomAttachment(candidate)))
+
+    if (activeRoomIdRef.current !== targetRoomId) {
+      return
+    }
+
+    const current = roomAttachmentsRef.current
+    const next = [...current]
+    const seenPaths = new Set(current.map(item => item.path))
+    let hitLimit = false
+
+    for (const result of inspected) {
+      if (result.status === 'rejected') {
+        issues.push(errorMessage(result.reason))
+
+        continue
+      }
+
+      if (seenPaths.has(result.value.path)) {
+        continue
+      }
+
+      if (next.length >= ROOM_MAX_ATTACHMENTS) {
+        hitLimit = true
+
+        continue
+      }
+
+      seenPaths.add(result.value.path)
+      next.push(result.value)
+    }
+
+    if (hitLimit) {
+      issues.push(`At most ${ROOM_MAX_ATTACHMENTS} attachments can be sent to a room.`)
+    }
+
+    roomAttachmentsRef.current = next
+    setRoomAttachments(next)
+    setRoomAttachmentIssue(
+      issues.length > 1 ? `${issues[0]} (+${issues.length - 1} more)` : issues.length === 1 ? issues[0] : null
+    )
+  }, [])
+
+  const clearRoomAttachments = useCallback(() => {
+    roomAttachmentsRef.current = []
+    setRoomAttachments([])
+    setRoomAttachmentIssue(null)
+  }, [])
+
+  const removeRoomAttachment = useCallback((path: string) => {
+    const next = roomAttachmentsRef.current.filter(item => item.path !== path)
+
+    roomAttachmentsRef.current = next
+    setRoomAttachments(next)
+    setRoomAttachmentIssue(null)
+  }, [])
+
+  const handlePickRoomAttachments = async () => {
+    const selectPaths = window.clioDesktop?.selectPaths
+
+    if (!selectPaths) {
+      setRoomAttachmentIssue('Desktop file picker is unavailable.')
+
+      return
+    }
+
+    setRoomPickingAttachments(true)
+    setRoomAttachmentIssue(null)
+
+    try {
+      const paths = await selectPaths({
+        filters: [
+          { extensions: ROOM_ATTACHMENT_PICKER_EXTENSIONS, name: 'Supported attachments' },
+          { extensions: ['pdf'], name: 'PDF documents' },
+          {
+            extensions: [
+              'avif',
+              'bmp',
+              'gif',
+              'heic',
+              'heif',
+              'ico',
+              'jpeg',
+              'jpg',
+              'png',
+              'svg',
+              'tif',
+              'tiff',
+              'webp'
+            ],
+            name: 'Images'
+          },
+          { extensions: ['txt', 'text', 'md', 'markdown'], name: 'Text and Markdown' }
+        ],
+        multiple: true,
+        title: 'Attach files to Bot room'
+      })
+
+      await addRoomAttachments((paths || []).map(path => ({ path })))
+    } catch (nextError) {
+      setRoomAttachmentIssue(errorMessage(nextError))
+    } finally {
+      setRoomPickingAttachments(false)
+    }
+  }
+
+  const handleRoomAttachmentDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (roomSending || !dragHasRoomFiles(event)) {
+      return
+    }
+
+    event.preventDefault()
+    roomDragDepthRef.current += 1
+    setRoomAttachmentDragActive(true)
+  }
+
+  const handleRoomAttachmentDragLeave = () => {
+    roomDragDepthRef.current -= 1
+
+    if (roomDragDepthRef.current <= 0) {
+      roomDragDepthRef.current = 0
+      setRoomAttachmentDragActive(false)
+    }
+  }
+
+  const handleRoomAttachmentDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (roomSending || !dragHasRoomFiles(event)) {
+      return
+    }
+
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleRoomAttachmentDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (roomSending || !dragHasRoomFiles(event)) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    roomDragDepthRef.current = 0
+    setRoomAttachmentDragActive(false)
+    const candidates = extractDroppedFiles(event.dataTransfer)
+
+    if (candidates.length === 0) {
+      setRoomAttachmentIssue('Could not resolve a real filesystem path for the dropped file.')
+
+      return
+    }
+
+    void addRoomAttachments(candidates)
+  }
+
+  const handleSendRoomMessage = async () => {
+    const message = roomText.trim()
+
+    if (!room || !message || remoteOversizeAttachments.length > 0) {
+      return
+    }
+
+    const attachments = roomAttachments.map(item => ({ ...item }))
 
     setRoomSending(true)
     setLastTurn(null)
@@ -294,11 +592,16 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
     try {
       const turn = await requestGateway<BotTurnResult>(
         'bot.rooms.send',
-        { message: roomText.trim(), room_id: room.id },
+        {
+          ...(attachments.length > 0 ? { attachments } : {}),
+          message,
+          room_id: room.id
+        },
         LONG_RPC_TIMEOUT_MS
       )
 
       setRoomText('')
+      clearRoomAttachments()
       setLastTurn(turn)
       await Promise.all([openRoom(room.id), refreshRoomList()])
     } catch (nextError) {
@@ -413,7 +716,10 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
         <main className="min-h-0 overflow-y-auto p-5">
           <div className="mx-auto grid max-w-5xl gap-6">
             {selectedBot ? (
-              <section aria-labelledby="bot-direct-title" className="rounded-lg border border-(--ui-stroke-secondary) bg-card p-4">
+              <section
+                aria-labelledby="bot-direct-title"
+                className="rounded-lg border border-(--ui-stroke-secondary) bg-card p-4"
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-semibold" id="bot-direct-title">
@@ -454,7 +760,9 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                   {dmReply !== null ? (
                     <div className="mt-2 rounded-md border border-(--ui-stroke-secondary) bg-background p-3">
                       <div className="mb-1 text-[0.6875rem] font-semibold text-primary">{selectedBot.display_name}</div>
-                      <div className="whitespace-pre-wrap text-xs leading-relaxed">{dmReply || '(No visible reply)'}</div>
+                      <div className="whitespace-pre-wrap text-xs leading-relaxed">
+                        {dmReply || '(No visible reply)'}
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -519,7 +827,9 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                     </div>
                   </fieldset>
                   {roomMembers.length > 0 && roomMembers.length < ROOM_MIN_MEMBERS ? (
-                    <p className="text-[0.6875rem] text-amber-600 dark:text-amber-300">Select at least 2 distinct Bots.</p>
+                    <p className="text-[0.6875rem] text-amber-600 dark:text-amber-300">
+                      Select at least 2 distinct Bots.
+                    </p>
                   ) : null}
                   <Button
                     className="justify-self-end"
@@ -534,7 +844,10 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
               ) : null}
 
               <div className="grid min-h-96 grid-cols-[14rem_minmax(0,1fr)] overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-card max-[48rem]:grid-cols-1">
-                <nav aria-label="Bot rooms" className="border-r border-(--ui-stroke-secondary) p-2 max-[48rem]:border-b max-[48rem]:border-r-0">
+                <nav
+                  aria-label="Bot rooms"
+                  className="border-r border-(--ui-stroke-secondary) p-2 max-[48rem]:border-b max-[48rem]:border-r-0"
+                >
                   {rooms.length ? (
                     <div className="grid gap-1">
                       {rooms.map(item => (
@@ -596,7 +909,9 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                       {room.messages.length ? (
                         room.messages.map(message => {
                           const authorBot = bots.find(bot => bot.profile === message.profile)
-                          const authorName = message.author === 'user' ? 'You' : authorBot?.display_name || `@${message.author}`
+
+                          const authorName =
+                            message.author === 'user' ? 'You' : authorBot?.display_name || `@${message.author}`
 
                           return (
                             <article
@@ -608,11 +923,17 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                               key={message.id}
                             >
                               <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[0.65rem]">
-                                <strong className={message.author === 'user' ? 'text-foreground' : 'text-primary'}>{authorName}</strong>
-                                {message.author !== 'user' ? <span className="text-(--ui-text-quaternary)">@{message.author}</span> : null}
+                                <strong className={message.author === 'user' ? 'text-foreground' : 'text-primary'}>
+                                  {authorName}
+                                </strong>
+                                {message.author !== 'user' ? (
+                                  <span className="text-(--ui-text-quaternary)">@{message.author}</span>
+                                ) : null}
                                 {message.round ? <Badge variant="outline">round {message.round}</Badge> : null}
                                 {message.late ? <Badge variant="warn">slow</Badge> : null}
-                                <time className="ml-auto text-(--ui-text-quaternary)">{formatTime(message.created_at)}</time>
+                                <time className="ml-auto text-(--ui-text-quaternary)">
+                                  {formatTime(message.created_at)}
+                                </time>
                               </div>
                               <div className="whitespace-pre-wrap text-xs leading-relaxed">{message.content}</div>
                             </article>
@@ -626,40 +947,146 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                     </div>
 
                     <div className="border-t border-(--ui-stroke-secondary) p-3">
-                      <Textarea
-                        aria-label={`Message ${room.name}`}
-                        disabled={roomSending}
-                        maxLength={100_000}
-                        onChange={event => setRoomText(event.target.value)}
-                        placeholder="Message the room. Mention @handle to target a Bot…"
-                        value={roomText}
-                      />
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[0.65rem] text-(--ui-text-quaternary)">
-                          {roomSending
-                            ? 'Running serial Bot turns within the room limits…'
-                            : 'No mention selects the whole room. New input supersedes stale work.'}
-                        </span>
-                        <Button
-                          disabled={roomSending || !roomText.trim()}
-                          onClick={() => void handleSendRoomMessage()}
-                          size="sm"
-                        >
-                          <Codicon name={roomSending ? 'loading' : 'send'} spinning={roomSending} />
-                          {roomSending ? 'Bots working…' : 'Send to room'}
-                        </Button>
+                      <div
+                        aria-label={`Attach files to ${room.name}`}
+                        className={cn(
+                          'relative rounded-md border border-transparent p-1 transition-colors',
+                          roomAttachmentDragActive && 'border-dashed border-primary bg-primary/5'
+                        )}
+                        onDragEnter={handleRoomAttachmentDragEnter}
+                        onDragLeave={handleRoomAttachmentDragLeave}
+                        onDragOver={handleRoomAttachmentDragOver}
+                        onDrop={handleRoomAttachmentDrop}
+                      >
+                        {roomAttachmentDragActive ? (
+                          <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-md bg-background/90 text-xs font-medium text-primary">
+                            <span className="flex items-center gap-1.5">
+                              <Codicon name="cloud-upload" />
+                              Drop files to attach
+                            </span>
+                          </div>
+                        ) : null}
+                        <Textarea
+                          aria-label={`Message ${room.name}`}
+                          disabled={roomSending}
+                          maxLength={100_000}
+                          onChange={event => setRoomText(event.target.value)}
+                          placeholder="Message the room. Mention @handle to target a Bot…"
+                          value={roomText}
+                        />
+
+                        {roomAttachments.length > 0 ? (
+                          <div className="mt-2 rounded-md border border-(--ui-stroke-secondary) bg-background p-2">
+                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                              <span className="text-[0.6875rem] font-medium">
+                                Attachments ({roomAttachments.length}/{ROOM_MAX_ATTACHMENTS})
+                              </span>
+                              <Button
+                                aria-label="Clear room attachments"
+                                disabled={roomSending}
+                                onClick={clearRoomAttachments}
+                                size="xs"
+                                variant="text"
+                              >
+                                Clear all
+                              </Button>
+                            </div>
+                            <ul aria-label="Selected room attachments" className="grid gap-1">
+                              {roomAttachments.map(attachment => {
+                                const overRemoteLimit =
+                                  roomHasRemoteMembers && attachment.size > ROOM_REMOTE_ATTACHMENT_BYTES
+
+                                return (
+                                  <li
+                                    className="flex min-w-0 items-center gap-2 rounded bg-card px-2 py-1.5 text-[0.6875rem]"
+                                    key={attachment.path}
+                                  >
+                                    <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="file" />
+                                    <span className="min-w-0 flex-1 truncate" title={attachment.path}>
+                                      {attachment.name}
+                                    </span>
+                                    <Badge variant="outline">{attachment.mime_type}</Badge>
+                                    <span className="shrink-0 tabular-nums text-(--ui-text-tertiary)">
+                                      {formatFileSize(attachment.size)}
+                                    </span>
+                                    {overRemoteLimit ? <Badge variant="warn">over remote limit</Badge> : null}
+                                    <Button
+                                      aria-label={`Remove ${attachment.name}`}
+                                      disabled={roomSending}
+                                      onClick={() => removeRoomAttachment(attachment.path)}
+                                      size="icon-xs"
+                                      variant="ghost"
+                                    >
+                                      <Codicon name="close" />
+                                    </Button>
+                                  </li>
+                                )
+                              })}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        {roomAttachmentIssue ? (
+                          <p className="mt-1.5 text-[0.6875rem] text-destructive" role="alert">
+                            {roomAttachmentIssue}
+                          </p>
+                        ) : null}
+                        {remoteOversizeAttachments.length > 0 ? (
+                          <p className="mt-1.5 text-[0.6875rem] text-amber-600 dark:text-amber-300" role="alert">
+                            Remote Bots accept attachments up to 7 MiB. Remove the flagged file
+                            {remoteOversizeAttachments.length === 1 ? '' : 's'} before sending; local Bots accept up to
+                            25 MiB.
+                          </p>
+                        ) : null}
+
+                        <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <Button
+                              disabled={
+                                roomSending || roomPickingAttachments || roomAttachments.length >= ROOM_MAX_ATTACHMENTS
+                              }
+                              onClick={() => void handlePickRoomAttachments()}
+                              size="sm"
+                              variant="outline"
+                            >
+                              <Codicon
+                                name={roomPickingAttachments ? 'loading' : 'attach'}
+                                spinning={roomPickingAttachments}
+                              />
+                              {roomPickingAttachments ? 'Inspecting…' : 'Attach files'}
+                            </Button>
+                            <span className="text-[0.65rem] text-(--ui-text-quaternary)">
+                              PDF, images, text, or Markdown · {ROOM_MAX_ATTACHMENTS} max · message required
+                            </span>
+                          </div>
+                          <Button
+                            disabled={roomSending || !roomText.trim() || remoteOversizeAttachments.length > 0}
+                            onClick={() => void handleSendRoomMessage()}
+                            size="sm"
+                          >
+                            <Codicon name={roomSending ? 'loading' : 'send'} spinning={roomSending} />
+                            {roomSending ? 'Bots working…' : 'Send to room'}
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
+                        {roomSending
+                          ? 'Running serial Bot turns within the room limits…'
+                          : 'Drop files here. No mention selects the whole room; new input supersedes stale work.'}
                       </div>
                       {lastTurn ? (
                         <p className="mt-2 text-[0.6875rem] text-(--ui-text-tertiary)">
-                          Turn {lastTurn.epoch}: {lastTurn.rounds} round{lastTurn.rounds === 1 ? '' : 's'}, {lastTurn.suppressed}{' '}
-                          hidden pass/duplicate/failure{lastTurn.suppressed === 1 ? '' : 's'}.
+                          Turn {lastTurn.epoch}: {lastTurn.rounds} round{lastTurn.rounds === 1 ? '' : 's'},{' '}
+                          {lastTurn.suppressed} hidden pass/duplicate/failure{lastTurn.suppressed === 1 ? '' : 's'}.
                         </p>
                       ) : null}
                     </div>
 
                     {room.activity.length ? (
                       <details className="border-t border-(--ui-stroke-secondary) px-4 py-2 text-[0.6875rem]">
-                        <summary className="cursor-pointer text-(--ui-text-tertiary)">Private activity ({room.activity.length})</summary>
+                        <summary className="cursor-pointer text-(--ui-text-tertiary)">
+                          Private activity ({room.activity.length})
+                        </summary>
                         <div className="mt-2 grid max-h-40 gap-1 overflow-y-auto">
                           {room.activity.slice(-30).map(activity => (
                             <div
@@ -672,14 +1099,18 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
                               <span className="font-medium">@{activity.member}</span>
                               <span>round {activity.round}</span>
                               <Badge
-                                variant={activity.state === 'failed' || activity.state === 'timeout' ? 'destructive' : 'muted'}
+                                variant={
+                                  activity.state === 'failed' || activity.state === 'timeout' ? 'destructive' : 'muted'
+                                }
                               >
                                 {activity.state}
                               </Badge>
                               {typeof activity.elapsed_seconds === 'number' ? (
                                 <span>{activity.elapsed_seconds.toFixed(1)}s</span>
                               ) : null}
-                              {activity.error ? <span className="basis-full whitespace-pre-wrap">{activity.error}</span> : null}
+                              {activity.error ? (
+                                <span className="basis-full whitespace-pre-wrap">{activity.error}</span>
+                              ) : null}
                             </div>
                           ))}
                         </div>
