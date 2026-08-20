@@ -2107,6 +2107,8 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["CLIO_SESSION_SOURCE"] = args.source
+    if getattr(args, "run_budget", None) is not None:
+        os.environ["CLIO_RUN_BUDGET_SECONDS"] = str(args.run_budget)
 
     _pin_kanban_board_env()
 

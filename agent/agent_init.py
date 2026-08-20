@@ -145,6 +145,7 @@ def init_agent(
     args: list[str] | None = None,
     model: str = "",
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+    run_budget_seconds: float | None = None,
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -1047,6 +1048,15 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    from agent.run_budget import normalize_run_budget
+
+    configured_run_budget = ((_agent_cfg.get("agent") or {}).get("run_budget_seconds"))
+    env_run_budget = os.getenv("CLIO_RUN_BUDGET_SECONDS", "").strip()
+    agent.run_budget_seconds = normalize_run_budget(
+        run_budget_seconds
+        if run_budget_seconds is not None
+        else (env_run_budget if env_run_budget else configured_run_budget)
+    )
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

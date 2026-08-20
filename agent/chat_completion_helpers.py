@@ -269,6 +269,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
             _stale_timeout = max(_stale_timeout, 900.0)
         elif _est_tokens_for_codex_watchdog > 25_000:
             _stale_timeout = max(_stale_timeout, 600.0)
+    from agent.run_budget import bound_agent_timeout
+
+    _stale_timeout = bound_agent_timeout(agent, _stale_timeout)
 
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
@@ -2317,6 +2320,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
+    from agent.run_budget import bound_agent_timeout
+
+    _stream_stale_timeout = bound_agent_timeout(agent, _stream_stale_timeout)
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()

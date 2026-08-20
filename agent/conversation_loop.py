@@ -497,6 +497,11 @@ def run_conversation(
     # They are initialized in __init__ and must persist across run_conversation
     # calls so that nudge logic accumulates correctly in CLI mode.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    from agent.run_budget import TurnRunBudget
+
+    agent._turn_run_budget = TurnRunBudget(
+        getattr(agent, "run_budget_seconds", None)
+    )
 
     # Log conversation turn start for debugging/observability
     _preview_text = _summarize_user_message_for_log(user_message)
@@ -823,6 +828,22 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
+
+        run_budget = getattr(agent, "_turn_run_budget", None)
+        if run_budget is not None and run_budget.expired:
+            _turn_exit_reason = "run_budget_expired"
+            final_response = (
+                "The configured wall-clock budget expired before this turn completed. "
+                "Work already performed is preserved; send `continue` to resume."
+            )
+            agent._emit_status("⏱️ Run budget expired — stopping before another model call")
+            break
+        if run_budget is not None and run_budget.should_wrap_up:
+            from agent.run_budget import append_wrap_up_notice
+
+            if append_wrap_up_notice(messages):
+                run_budget.mark_wrap_up()
+                agent._emit_status("⏱️ Run budget at 80% — asking the model to wrap up")
         
         api_call_count += 1
         agent._api_call_count = api_call_count

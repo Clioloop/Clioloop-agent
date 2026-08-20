@@ -341,6 +341,13 @@ def build_top_level_parser():
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Optional wall-clock budget for one conversation turn; disabled by default",
+    )
     _inherited_flag(
         chat_parser,
         "--yolo",

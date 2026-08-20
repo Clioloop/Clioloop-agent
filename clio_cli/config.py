@@ -888,6 +888,9 @@ DEFAULT_CONFIG = {
         # that end by announcing an immediate next action. Notice/re-prompt
         # only; neither guard blocks tool execution.
         "stall_guards": True,
+        # Optional wall-clock cap for one conversation turn. None/0 disables.
+        # At 80% Clio asks the model to wrap up; at expiry it starts no new call.
+        "run_budget_seconds": None,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
