@@ -7985,6 +7985,34 @@ class ClioCLI:
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
+    @staticmethod
+    def _filter_model_picker_entries(entries: list[str], query: str) -> list[tuple[int, str]]:
+        """Return original-index/label pairs matching a fuzzy subsequence.
+
+        Keeping the original index is important because managed-provider labels
+        contain display tags while ``model_ids`` contains the exact API IDs.
+        """
+        pairs = list(enumerate(entries))
+        needle = (query or "").strip().lower()
+        if not needle:
+            return pairs
+
+        def _matches(value: str) -> bool:
+            chars = iter(value.lower())
+            return all(char in chars for char in needle)
+
+        return [(index, entry) for index, entry in pairs if _matches(entry)]
+
+    def _update_model_picker_filter(self, value: str) -> None:
+        """Update model-stage filter state and reset its viewport."""
+        state = self._model_picker_state
+        if not state:
+            return
+        state["filter"] = value
+        state["selected"] = 0
+        state["_scroll_offset"] = 0
+        self._invalidate(min_interval=0.0)
+
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
@@ -7997,6 +8025,7 @@ class ClioCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "filter": "",
         }
         self._invalidate(min_interval=0.0)
 
@@ -8424,6 +8453,7 @@ class ClioCLI:
             state["model_ids"] = model_ids
             state["model_list"] = model_list
             state["selected"] = 0
+            state["filter"] = ""
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
@@ -8432,21 +8462,25 @@ class ClioCLI:
                 return
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
-            back_idx = len(model_list)
-            cancel_idx = len(model_list) + 1
+            filtered_pairs = self._filter_model_picker_entries(
+                model_list, state.get("filter", "") or ""
+            )
+            back_idx = len(filtered_pairs)
+            cancel_idx = len(filtered_pairs) + 1
             if selected == back_idx:
                 state["stage"] = "provider"
+                state["filter"] = ""
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
                 self._close_model_picker()
                 return
-            if selected < len(model_list):
+            if 0 <= selected < len(filtered_pairs):
                 from clio_cli.model_switch import switch_model
-                # model_list may carry display tags; switch on the raw id.
+                # Map the visible filtered row back to its exact raw model ID.
                 model_ids = state.get("model_ids") or model_list
-                chosen_model = model_ids[selected]
+                chosen_model = model_ids[filtered_pairs[selected][0]]
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -14365,7 +14399,7 @@ class ClioCLI:
                 self._slash_confirm_state["selected"] = min(max_idx, self._slash_confirm_state.get("selected", 0) + 1)
                 event.app.invalidate()
 
-        # --- /model picker: arrow-key navigation ---
+        # --- /model picker: arrow navigation + type-to-fuzzy-filter ---
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
             if self._model_picker_state:
@@ -14379,14 +14413,68 @@ class ClioCLI:
                 return
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
-            else:
+            elif state.get("fusion"):
                 max_idx = len(state.get("model_list") or []) + 1
+            else:
+                pairs = self._filter_model_picker_entries(
+                    state.get("model_list") or [], state.get("filter", "") or ""
+                )
+                max_idx = len(pairs) + 1  # Back + Cancel
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
 
+        def _model_picker_typing_active() -> bool:
+            state = self._model_picker_state
+            return bool(
+                state
+                and state.get("stage") == "model"
+                and not state.get("fusion")
+            )
+
+        def _make_model_filter_char_handler(char: str):
+            def handler(event):
+                state = self._model_picker_state
+                if state:
+                    self._update_model_picker_filter(
+                        (state.get("filter", "") or "") + char
+                    )
+                    event.app.invalidate()
+            return handler
+
+        # Restrict capture to characters commonly present in model IDs.
+        import string as _model_filter_string
+        for _filter_char in (
+            _model_filter_string.digits
+            + _model_filter_string.ascii_letters
+            + "-_.:/ "
+        ):
+            kb.add(
+                _filter_char,
+                filter=Condition(_model_picker_typing_active),
+            )(_make_model_filter_char_handler(_filter_char))
+
+        @kb.add('backspace', filter=Condition(_model_picker_typing_active))
+        def model_picker_filter_backspace(event):
+            state = self._model_picker_state
+            if state:
+                self._update_model_picker_filter(
+                    (state.get("filter", "") or "")[:-1]
+                )
+                event.app.invalidate()
+
         @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
         def model_picker_escape(event):
-            """ESC closes the /model picker."""
+            """Clear an active model filter first; otherwise close the picker."""
+            state = self._model_picker_state
+            if (
+                state
+                and state.get("stage") == "model"
+                and not state.get("fusion")
+                and (state.get("filter") or "")
+            ):
+                self._update_model_picker_filter("")
+                event.app.invalidate()
+                return
             self._close_model_picker()
             event.app.current_buffer.reset()
             event.app.invalidate()
@@ -15488,11 +15576,34 @@ class ClioCLI:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
-                if model_list:
-                    hint = f"Select a model ({len(model_list)} available)"
+                if state.get("fusion"):
+                    # Fusion has separate phased selection semantics and keeps
+                    # its existing unfiltered list.
+                    choices = list(model_list) + ["← Back", "Cancel"]
+                    hint = (
+                        f"Select a model ({len(model_list)} available)"
+                        if model_list
+                        else "No models listed for this provider. Use Back or Cancel."
+                    )
                 else:
-                    hint = "No models listed for this provider. Use Back or Cancel."
+                    query = state.get("filter", "") or ""
+                    filtered_pairs = cli_ref._filter_model_picker_entries(
+                        model_list, query
+                    )
+                    model_labels = [label for _index, label in filtered_pairs]
+                    choices = list(model_labels) + ["← Back", "Cancel"]
+                    if query:
+                        hint = (
+                            f"Filter: {query}▏ ({len(model_labels)}/{len(model_list)} "
+                            "match — Backspace edits, Esc clears)"
+                        )
+                    elif model_list:
+                        hint = (
+                            f"Select a model ({len(model_list)} available) — "
+                            "type to fuzzy-filter"
+                        )
+                    else:
+                        hint = "No models listed for this provider. Use Back or Cancel."
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
