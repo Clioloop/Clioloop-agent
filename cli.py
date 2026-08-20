@@ -6250,8 +6250,46 @@ class ClioCLI:
         provider = getattr(self, "provider", None) or "unknown"
         from clio_cli.providers import get_label
         provider_display = get_label(provider) if provider != "unknown" else provider
-        model = getattr(self, "model", None) or "(unknown)"
+        model = getattr(agent, "model", None) or getattr(self, "model", None) or "(unknown)"
         is_running = bool(getattr(self, "_agent_running", False))
+
+        # Resolve the same effective reasoning state shown by /reasoning.
+        reasoning_config = getattr(agent, "reasoning_config", None)
+        if reasoning_config is None:
+            reasoning_config = getattr(self, "reasoning_config", None)
+        if reasoning_config is None:
+            reasoning_level = "medium (default)"
+        elif reasoning_config.get("enabled") is False:
+            reasoning_level = "none (disabled)"
+        else:
+            reasoning_level = str(reasoning_config.get("effort") or "medium")
+        reasoning_display = "on" if getattr(self, "show_reasoning", False) else "off"
+
+        approval_label = "unavailable"
+        try:
+            from tools.approval import _get_approval_mode
+
+            approval_label = _get_approval_mode()
+            if self._is_session_yolo_active():
+                approval_label += " (YOLO bypass active)"
+        except Exception:
+            pass
+
+        context_label = "not available yet"
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            context_tokens = max(0, int(snapshot.get("context_tokens") or 0))
+            context_length = int(snapshot.get("context_length") or 0)
+            context_percent = snapshot.get("context_percent")
+            if context_length > 0:
+                left = ""
+                if isinstance(context_percent, (int, float)):
+                    left = f"{max(0, 100 - int(context_percent))}% left · "
+                context_label = (
+                    f"{left}{context_tokens:,} / {context_length:,} tokens used"
+                )
+        except Exception:
+            pass
 
         lines = [
             "Clio CLI Status",
@@ -6263,6 +6301,9 @@ class ClioCLI:
             lines.append(f"Title: {title}")
         lines.extend([
             f"Model: {model} ({provider_display})",
+            f"Reasoning: {reasoning_level} (display: {reasoning_display})",
+            f"Approvals: {approval_label}",
+            f"Context: {context_label}",
             f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {total_tokens:,}",
@@ -6284,9 +6325,29 @@ class ClioCLI:
             return self._fast_command_available()
         return True
 
-    def show_help(self):
-        """Display help information with categorized commands."""
-        from clio_cli.commands import COMMANDS_BY_CATEGORY
+    def show_help(self, arg: str = ""):
+        """Display categorized core help, a skill list, or filtered matches."""
+        from clio_cli.commands import COMMANDS_BY_CATEGORY, HELP_SESSION_SUBGROUPS
+
+        arg = (arg or "").strip()
+        query = arg.lower()
+        skill_commands = _ensure_skill_commands()
+
+        if query in {"skill", "skills"}:
+            if not skill_commands:
+                _cprint("\n  No skill commands installed.\n")
+                return
+            _cprint(
+                f"\n  ⚡ {_BOLD}Skill Commands{_RST} "
+                f"({len(skill_commands)} installed):"
+            )
+            for cmd, info in sorted(skill_commands.items()):
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] "
+                    f"{_escape(info['description'])}"
+                )
+            _cprint("")
+            return
 
         try:
             from clio_cli.skin_engine import get_active_help_header
@@ -6301,25 +6362,85 @@ class ClioCLI:
         _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
+        def _matches(cmd: str, desc: str) -> bool:
+            return not query or query in cmd.lower() or query in desc.lower()
+
+        def _emit(cmd: str, desc: str) -> bool:
+            if not self._command_available(cmd) or not _matches(cmd, desc):
+                return False
+            ChatConsole().print(
+                f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] "
+                f"{_escape(desc)}"
+            )
+            return True
+
         for category, commands in COMMANDS_BY_CATEGORY.items():
+            if category == "Session":
+                subgroup_for = {
+                    f"/{name}": subgroup
+                    for subgroup, names in HELP_SESSION_SUBGROUPS.items()
+                    for name in names
+                }
+                buckets: dict[str, list[tuple[str, str]]] = {
+                    "Session": [],
+                    **{subgroup: [] for subgroup in HELP_SESSION_SUBGROUPS},
+                }
+                for cmd, desc in commands.items():
+                    buckets[subgroup_for.get(cmd, "Session")].append((cmd, desc))
+                for subgroup, rows in buckets.items():
+                    matching = [
+                        (cmd, desc)
+                        for cmd, desc in rows
+                        if self._command_available(cmd) and _matches(cmd, desc)
+                    ]
+                    if not matching:
+                        continue
+                    _cprint(f"\n  {_BOLD}── {subgroup} ──{_RST}")
+                    for cmd, desc in matching:
+                        _emit(cmd, desc)
+                continue
+
+            matching = [
+                (cmd, desc)
+                for cmd, desc in commands.items()
+                if self._command_available(cmd) and _matches(cmd, desc)
+            ]
+            if not matching:
+                continue
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
-            for cmd, desc in commands.items():
-                if not self._command_available(cmd):
-                    continue
-                ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
+            for cmd, desc in matching:
+                _emit(cmd, desc)
 
-        skill_commands = _ensure_skill_commands()
-        if skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
+        if query:
+            matched_skills = [
+                (cmd, info)
+                for cmd, info in sorted(skill_commands.items())
+                if query in cmd.lower()
+                or query in info.get("description", "").lower()
+            ]
+            if matched_skills:
+                _cprint(
+                    f"\n  ⚡ {_BOLD}Skill Commands{_RST} "
+                    f"(matching '{arg}'):"
                 )
+                for cmd, info in matched_skills:
+                    ChatConsole().print(
+                        f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] "
+                        f"{_escape(info['description'])}"
+                    )
+        elif skill_commands:
+            _cprint(
+                f"\n  ⚡ {_BOLD}Skill Commands{_RST}: "
+                f"{len(skill_commands)} installed — {_DIM}/help skills{_RST} to list them"
+            )
 
-        _bundles_now = get_skill_bundles()
-        if _bundles_now:
-            _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(_bundles_now)} installed):")
-            for cmd, info in sorted(_bundles_now.items()):
+        bundles = get_skill_bundles()
+        if bundles and not query:
+            _cprint(
+                f"\n  ▣ {_BOLD}Skill Bundles{_RST} "
+                f"({len(bundles)} installed):"
+            )
+            for cmd, info in sorted(bundles.items()):
                 skill_count = len(info.get("skills", []))
                 desc = info.get("description") or f"Load {skill_count} skills"
                 ChatConsole().print(
@@ -6327,7 +6448,16 @@ class ClioCLI:
                     f"{_escape(desc)} [dim]({skill_count} skills)[/]"
                 )
 
-        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Clio!{_RST}")
+        if query:
+            _cprint(
+                f"\n  {_DIM}Filtered by '{arg}' — run /help for the full list.{_RST}\n"
+            )
+            return
+
+        _cprint(
+            f"\n  {_DIM}Tip: /help skills lists skill commands · "
+            f"/help <text> filters the list{_RST}"
+        )
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
@@ -9115,7 +9245,11 @@ class ClioCLI:
                 return True
             return False
         elif canonical == "help":
-            self.show_help()
+            help_parts = cmd_original.split(None, 1)
+            if len(help_parts) > 1:
+                self.show_help(help_parts[1].strip())
+            else:
+                self.show_help()
         elif canonical == "whoami":
             self._handle_whoami_command()
         elif canonical == "profile":

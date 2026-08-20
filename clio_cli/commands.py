@@ -240,6 +240,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
+    # Keep the long-standing description stable for autocomplete/gateway clients;
+    # the interactive help footer documents its optional skills/filter argument.
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
@@ -356,6 +358,41 @@ SUBCOMMANDS: dict[str, list[str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if _cmd.subcommands:
         SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+
+
+# Help-only subgrouping for the oversized Session category. Keep the
+# registry's load-bearing categories unchanged: gateway help, autocomplete,
+# and every other command surface continue to derive from COMMAND_REGISTRY.
+# Include aliases because COMMANDS_BY_CATEGORY exposes them as help rows.
+HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
+    "Context": (
+        "compress",
+        "context",
+        "ctx",
+        "status",
+    ),
+    "Background & Automation": (
+        "background",
+        "bg",
+        "btw",
+        "agents",
+        "tasks",
+        "queue",
+        "q",
+        "steer",
+        "goal",
+        "subgoal",
+        "heartbeat",
+        "hb",
+        "loop",
+        "proactive",
+        "journey",
+        "learning",
+        "memory-graph",
+        "moa",
+        "refine",
+    ),
+}
 
 # Also extract subcommands hinted in args_hint via pipe-separated patterns
 # e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.
