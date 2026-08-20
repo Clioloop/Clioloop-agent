@@ -12720,6 +12720,7 @@ def _set_chat_arg_defaults(args) -> None:
         ("model", None),
         ("provider", None),
         ("toolsets", None),
+        ("skills", None),
         ("verbose", False),
         ("resume", None),
         ("continue_last", None),
@@ -12777,6 +12778,11 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                **(
+                    {"skills": getattr(args, "skills")}
+                    if getattr(args, "skills", None)
+                    else {}
+                ),
             )
         )
 
@@ -16320,6 +16326,11 @@ Examples:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                **(
+                    {"skills": getattr(args, "skills")}
+                    if getattr(args, "skills", None)
+                    else {}
+                ),
             )
         )
 

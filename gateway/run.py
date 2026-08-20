@@ -12903,6 +12903,13 @@ class GatewayRunner:
 
         if not arg:
             checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                all_checkpoints = mgr.list_all_checkpoints()
+                if all_checkpoints:
+                    return (
+                        f"No checkpoints for {cwd} — showing all directories.\n\n"
+                        + format_checkpoint_list(all_checkpoints, "all directories")
+                    )
             return format_checkpoint_list(checkpoints, cwd)
 
         # Restore by number or hash

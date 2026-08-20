@@ -5731,8 +5731,16 @@ class ClioCLI:
         args = parts[1:] if len(parts) > 1 else []
 
         if not args:
-            # List checkpoints
+            # If this cwd has none, provide a read-only, labeled view across
+            # registered directories. Restore/diff below remain scoped to cwd,
+            # so a global listing cannot restore against the wrong tree.
             checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                all_checkpoints = mgr.list_all_checkpoints()
+                if all_checkpoints:
+                    print(f"  No checkpoints for {cwd} — showing all directories.")
+                    print(format_checkpoint_list(all_checkpoints, "all directories"))
+                    return
             print(format_checkpoint_list(checkpoints, cwd))
             return
 
@@ -6489,6 +6497,22 @@ class ClioCLI:
         print()
         print(f"  Profile: {profile_name}")
         print(f"  Home:    {display}")
+        print()
+
+    def _handle_whoami_command(self):
+        """Display slash-command access for the local CLI surface."""
+        import getpass
+
+        try:
+            user_name = getpass.getuser() or "?"
+        except Exception:
+            user_name = "?"
+
+        print()
+        print("  You:            cli (local terminal)")
+        print(f"  User:           {user_name}")
+        print("  Tier:           unrestricted")
+        print("  Slash commands: all available")
         print()
 
     def show_config(self):
@@ -9090,6 +9114,8 @@ class ClioCLI:
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "whoami":
+            self._handle_whoami_command()
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":

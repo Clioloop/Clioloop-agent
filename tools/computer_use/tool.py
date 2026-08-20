@@ -1133,6 +1133,11 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             or image_dimensions[1] < _MIN_PROVIDER_IMAGE_DIMENSION
         )
     )
+    screenshot_path = (
+        _persist_capture_image(cap)
+        if cap.png_b64 and cap.mode != "ax" and not image_too_small
+        else None
+    )
 
     # Index only what's actually surfaced in the response — otherwise the
     # human-readable summary references element indices the model cannot
@@ -1147,6 +1152,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if element_index:
         summary_lines.extend(element_index)
+    if screenshot_path:
+        summary_lines.append(
+            f"  (shareable screenshot saved to {screenshot_path})"
+        )
     # Off-viewport content warning — computed over the FULL element list
     # (not the max_elements-truncated view) so a long form's below-the-fold
     # fields register even when the response is capped.
@@ -1178,7 +1187,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # main models tripped HTTP 404 / 400 at the provider boundary even
         # when auxiliary.vision was explicitly configured to handle this.
         if _should_route_through_aux_vision():
-            routed = _route_capture_through_aux_vision(cap, summary)
+            routed = _route_capture_through_aux_vision(
+                cap, summary, screenshot_path=screenshot_path
+            )
             if routed is not None:
                 return routed
             # Aux routing was requested but failed (vision node down, aux call
@@ -1213,6 +1224,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 payload["scroll_state"] = scroll_state
             if truncated_elements:
                 payload["truncated_elements"] = truncated_elements
+            if screenshot_path:
+                payload["screenshot_path"] = screenshot_path
             return json.dumps(payload)
 
         # Prefer the explicit MIME type cua-driver attaches to its image
@@ -1237,6 +1250,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
                      "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                     **({"screenshot_path": screenshot_path} if screenshot_path else {}),
                      **({"scroll_state": scroll_state} if scroll_state else {})},
         }
     # AX-only (or image-missing fallback): text path actually carries the
@@ -1330,6 +1344,7 @@ def _should_route_through_aux_vision() -> bool:
 def _route_capture_through_aux_vision(
     cap: CaptureResult,
     summary: str,
+    screenshot_path: Optional[str] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -1419,7 +1434,7 @@ def _route_capture_through_aux_vision(
     if not analysis_text:
         return None
 
-    return json.dumps({
+    payload = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
@@ -1429,7 +1444,61 @@ def _route_capture_through_aux_vision(
         "summary": summary,
         "vision_analysis": analysis_text,
         "vision_analysis_routed_via": "auxiliary.vision",
-    })
+    }
+    if screenshot_path:
+        payload["screenshot_path"] = screenshot_path
+    return json.dumps(payload)
+
+
+# Keep user-shareable capture files bounded independently from the gateway's
+# periodic media-cache cleanup. CLI-only sessions may never start the gateway,
+# and capture_after can otherwise leave an unbounded screenshot trail.
+_MAX_CAPTURE_FILES = 20
+
+
+def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
+    """Save a capture in Clio's profile media cache and return its path.
+
+    Captures are normally embedded only in the model's tool context. Persisting
+    a bounded copy gives attachment-capable surfaces a real file to deliver
+    when the user explicitly asks for the screenshot. This is best-effort: an
+    unwritable cache must never break computer control.
+    """
+    if not cap.png_b64:
+        return None
+    try:
+        import uuid as _uuid
+
+        from clio_constants import get_clio_home
+
+        raw = base64.b64decode(cap.png_b64, validate=False)
+        mime = str(cap.image_mime_type or "").lower()
+        ext = ".jpg" if mime == "image/jpeg" or (
+            not mime and cap.png_b64[:8].startswith("/9j/")
+        ) else ".png"
+
+        # Derive this path directly from the active profile home. A legacy
+        # shared image_cache must never redirect profile-scoped screenshots.
+        cache_dir = get_clio_home() / "cache" / "images"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        path.write_bytes(raw)
+
+        # Prune after writing so a successful call leaves at most the bound.
+        # Cleanup is best-effort and must not break computer control.
+        try:
+            captures = sorted(
+                cache_dir.glob("computer_use_*.*"),
+                key=lambda candidate: candidate.stat().st_mtime,
+            )
+            for stale in captures[: max(0, len(captures) - _MAX_CAPTURE_FILES)]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return str(path.resolve())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: screenshot persistence failed: %s", exc)
+        return None
 
 
 def _maybe_follow_capture(

@@ -695,6 +695,28 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
+    def list_all_checkpoints(self) -> List[Dict]:
+        """List checkpoints across every registered project, newest first.
+
+        Each entry includes its ``workdir`` so read-only cross-project views
+        can label it. Restore and diff operations deliberately remain scoped
+        to their caller's working directory.
+        """
+        store = _store_path(CHECKPOINT_BASE)
+        if not (store / "HEAD").exists():
+            return []
+
+        results: List[Dict] = []
+        for meta in _list_projects(store):
+            workdir = meta.get("workdir") or ""
+            if not workdir:
+                continue
+            for entry in self.list_checkpoints(workdir):
+                entry["workdir"] = workdir
+                results.append(entry)
+        results.sort(key=lambda entry: entry.get("timestamp", ""), reverse=True)
+        return results
+
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
@@ -1192,7 +1214,15 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
         else:
             stat = ""
 
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+        workdir = cp.get("workdir", "")
+        if workdir and directory == "all directories":
+            workdir_short = Path(workdir).name or workdir
+            lines.append(
+                f"  {i}. {cp['short_hash']}  {ts}  [{workdir_short}]  "
+                f"{cp['reason']}{stat}"
+            )
+        else:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
 
     lines.append("\n  /rollback <N>             restore to checkpoint N")
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")
