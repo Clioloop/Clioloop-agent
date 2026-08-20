@@ -176,13 +176,20 @@ class TestClarifySchema:
         assert "description" in CLARIFY_SCHEMA
         assert len(CLARIFY_SCHEMA["description"]) > 50
 
-    def test_schema_question_required(self):
-        """Question parameter should be required."""
-        assert "question" in CLARIFY_SCHEMA["parameters"]["required"]
+    def test_schema_requires_single_question_or_batch(self):
+        """The schema must accept either legacy single mode or batch mode."""
+        required_alternatives = CLARIFY_SCHEMA["parameters"]["anyOf"]
+        assert {tuple(item["required"]) for item in required_alternatives} == {
+            ("question",),
+            ("questions",),
+        }
 
     def test_schema_choices_optional(self):
-        """Choices parameter should be optional."""
-        assert "choices" not in CLARIFY_SCHEMA["parameters"]["required"]
+        """Choices parameter should be optional in both modes."""
+        assert all(
+            "choices" not in item["required"]
+            for item in CLARIFY_SCHEMA["parameters"]["anyOf"]
+        )
 
     def test_schema_choices_max_items(self):
         """Schema should specify max items for choices."""

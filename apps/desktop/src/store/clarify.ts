@@ -6,7 +6,16 @@ export interface ClarifyRequest {
   requestId: string
   question: string
   choices: string[] | null
+  questions?: ClarifyQuestion[]
   sessionId: string | null
+}
+
+export interface ClarifyQuestion {
+  qid: string
+  id?: string | null
+  question: string
+  choices: string[] | null
+  multiSelect: boolean
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

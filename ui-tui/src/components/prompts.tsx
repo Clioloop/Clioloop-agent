@@ -113,7 +113,60 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   )
 }
 
-export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: ClarifyPromptProps) {
+export function ClarifyPrompt(props: ClarifyPromptProps) {
+  if (props.req.questions?.length) {
+    return <BatchClarifyPrompt {...props} questions={props.req.questions} />
+  }
+
+  return <SingleClarifyPrompt {...props} />
+}
+
+function BatchClarifyPrompt({ cols = 80, onAnswer, onCancel, questions, req, t }: ClarifyPromptProps & {
+  questions: NonNullable<ClarifyReq['questions']>
+}) {
+  const [index, setIndex] = useState(0)
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const current = questions[index]!
+
+  const multiSelectOptions = current.multi_select && current.choices?.length
+    ? `\nChoose one or more, comma-separated: ${current.choices.join(', ')}`
+    : ''
+
+  const currentReq: ClarifyReq = {
+    choices: current.multi_select ? null : current.choices,
+    question: `${current.question}${multiSelectOptions}`,
+    requestId: req.requestId
+  }
+
+  const accept = (answer: string) => {
+    const next = { ...answers, [current.qid]: answer }
+
+    if (index + 1 < questions.length) {
+      setAnswers(next)
+      setIndex(value => value + 1)
+
+      return
+    }
+
+    onAnswer(JSON.stringify({ answers: next }))
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Text color={t.color.muted}>Question {index + 1} of {questions.length}</Text>
+      <SingleClarifyPrompt
+        cols={cols}
+        key={current.qid}
+        onAnswer={accept}
+        onCancel={onCancel}
+        req={currentReq}
+        t={t}
+      />
+    </Box>
+  )
+}
+
+function SingleClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: ClarifyPromptProps) {
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)

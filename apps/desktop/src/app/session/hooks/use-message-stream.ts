@@ -112,6 +112,33 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+function normalizeClarifyQuestions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.slice(0, 5).flatMap((entry, index) => {
+    const row = asRecord(entry)
+    const question = typeof row.question === 'string' ? row.question.trim() : ''
+
+    if (!question) {
+      return []
+    }
+
+    const choices = Array.isArray(row.choices)
+      ? row.choices.filter((choice): choice is string => typeof choice === 'string').slice(0, 4)
+      : []
+
+    return [{
+      qid: typeof row.qid === 'string' && row.qid.trim() ? row.qid.trim() : `q${index}`,
+      id: typeof row.id === 'string' ? row.id : null,
+      question,
+      choices: choices.length ? choices : null,
+      multiSelect: Boolean(row.multi_select) && choices.length > 0
+    }]
+  })
+}
+
 interface FusionStatusPayload {
   data?: Record<string, unknown>
   detail?: string
@@ -864,13 +891,18 @@ export function useMessageStream({
         // gone). Parking it per-session lets the user answer once they switch
         // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-        const question = typeof payload?.question === 'string' ? payload.question : ''
+        const questions = normalizeClarifyQuestions(payload?.questions)
 
-        if (requestId && question) {
+        const question = typeof payload?.question === 'string'
+          ? payload.question
+          : questions[0]?.question ?? ''
+
+        if (requestId && (question || questions.length)) {
           setClarifyRequest({
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
+            questions: questions.length ? questions : undefined,
             sessionId: sessionId ?? null
           })
 

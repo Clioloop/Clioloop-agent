@@ -2312,8 +2312,14 @@ def _agent_cbs(sid: str) -> dict:
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+        "clarify_callback": lambda q, c, questions=None: _block(
+            "clarify.request",
+            sid,
+            {
+                "question": q,
+                "choices": c,
+                **({"questions": questions} if questions else {}),
+            },
         ),
     }
 

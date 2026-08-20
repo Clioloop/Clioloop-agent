@@ -103,9 +103,18 @@ export interface ConfirmReq {
   title: string
 }
 
+export interface ClarifyQuestion {
+  choices: string[] | null
+  id?: string | null
+  multi_select?: boolean
+  qid: string
+  question: string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string
+  questions?: ClarifyQuestion[]
   requestId: string
 }
 

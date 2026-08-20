@@ -504,7 +504,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             revising: '🔁 ',
             working: '🛠️ '
           }
+
           const prefix = phasePrefixes[String(p.phase || '')]
+
           if (prefix !== undefined) {
             const text = String(p.text || '')
             const head = prefix && !text.trimStart().startsWith(prefix.trim()) ? prefix : ''
@@ -722,7 +724,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'clarify.request':
         patchOverlayState({
-          clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
+          clarify: {
+            choices: ev.payload.choices,
+            question: ev.payload.question,
+            questions: ev.payload.questions,
+            requestId: ev.payload.request_id
+          }
         })
         setStatus('waiting for input…')
 

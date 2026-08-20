@@ -10,13 +10,47 @@ import { Textarea } from '@/components/ui/textarea'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, HelpCircle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest, type ClarifyQuestion, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 interface ClarifyArgs {
   question?: string
   choices?: string[] | null
+  questions?: ClarifyQuestion[]
+}
+
+function normalizeQuestionBatch(value: unknown): ClarifyQuestion[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.slice(0, 5).flatMap((entry, index) => {
+    const row = typeof entry === 'string' ? { question: entry } : entry
+
+    if (!row || typeof row !== 'object') {
+      return []
+    }
+
+    const record = row as Record<string, unknown>
+    const question = typeof record.question === 'string' ? record.question.trim() : ''
+
+    if (!question) {
+      return []
+    }
+
+    const choices = Array.isArray(record.choices)
+      ? record.choices.filter((choice): choice is string => typeof choice === 'string').slice(0, 4)
+      : []
+
+    return [{
+      qid: typeof record.qid === 'string' && record.qid.trim() ? record.qid.trim() : `q${index}`,
+      id: typeof record.id === 'string' ? record.id : null,
+      question,
+      choices: choices.length ? choices : null,
+      multiSelect: Boolean(record.multi_select) && choices.length > 0
+    }]
+  })
 }
 
 function readClarifyArgs(args: unknown): ClarifyArgs {
@@ -26,10 +60,12 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 
   const row = args as Record<string, unknown>
   const choices = Array.isArray(row.choices) ? row.choices.filter((c): c is string => typeof c === 'string') : null
+  const questions = normalizeQuestionBatch(row.questions)
 
   return {
     question: typeof row.question === 'string' ? row.question : undefined,
-    choices: choices && choices.length > 0 ? choices : null
+    choices: choices && choices.length > 0 ? choices : null,
+    questions: questions.length ? questions : undefined
   }
 }
 
@@ -59,7 +95,118 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
     return <ToolFallback {...props} />
   }
 
+  const parsed = readClarifyArgs(props.args)
+
+  if (parsed.questions?.length) {
+    return <ClarifyBatchToolPending questions={parsed.questions} />
+  }
+
   return <ClarifyToolPending {...props} />
+}
+
+function ClarifyBatchToolPending({ questions }: { questions: ClarifyQuestion[] }) {
+  const request = useStore($clarifyRequest)
+  const gateway = useStore($gateway)
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
+  const [submitting, setSubmitting] = useState(false)
+  const ready = Boolean(request?.requestId)
+
+  const setAnswer = useCallback((qid: string, value: string | string[]) => {
+    setAnswers(current => ({ ...current, [qid]: value }))
+  }, [])
+
+  const submit = useCallback(async () => {
+    if (!ready || !request || !gateway) {
+      notifyError(new Error('Clarify request is not ready yet'), 'Could not send clarify responses')
+
+      return
+    }
+
+    const wireAnswers = Object.fromEntries(questions.map(item => {
+      const value = answers[item.qid]
+
+      return [item.qid, Array.isArray(value) ? JSON.stringify(value) : value ?? '']
+    }))
+
+    setSubmitting(true)
+
+    try {
+      await gateway.request<{ ok?: boolean }>('clarify.respond', {
+        request_id: request.requestId,
+        answer: JSON.stringify({ answers: wireAnswers })
+      })
+      triggerHaptic('submit')
+      clearClarifyRequest(request.requestId, request.sessionId)
+    } catch (error) {
+      notifyError(error, 'Could not send clarify responses')
+      setSubmitting(false)
+    }
+  }, [answers, gateway, questions, ready, request])
+
+  return (
+    <div
+      className="relative mb-3 mt-2 grid gap-3 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-3 text-sm"
+      data-slot="clarify-batch-inline"
+    >
+      <span aria-hidden className="arc-border" />
+      <div className="flex items-center gap-2">
+        <HelpCircle className="size-4 text-primary" />
+        <strong>{questions.length} questions</strong>
+      </div>
+
+      {questions.map((item, index) => {
+        const value = answers[item.qid]
+        const selected = Array.isArray(value) ? value : value ? [value] : []
+
+        return (
+          <section className="grid gap-1.5 rounded-md border border-border/50 p-2.5" key={item.qid}>
+            <div className="font-medium"><span className="mr-1 text-muted-foreground">{index + 1}.</span>{item.question}</div>
+            {item.choices?.length ? (
+              <div className="grid gap-1">
+                {item.choices.map(choice => {
+                  const checked = selected.includes(choice)
+
+                  return (
+                    <button
+                      className={cn(OPTION_ROW_CLASS, checked ? 'bg-accent/70' : 'hover:bg-accent/40')}
+                      disabled={submitting}
+                      key={choice}
+                      onClick={() => {
+                        if (item.multiSelect) {
+                          setAnswer(item.qid, checked ? selected.filter(entry => entry !== choice) : [...selected, choice])
+                        } else {
+                          setAnswer(item.qid, choice)
+                        }
+                      }}
+                      type="button"
+                    >
+                      <RadioDot selected={checked} />
+                      <span className="flex-1">{choice}</span>
+                      {checked && <Check className="size-4 text-primary" />}
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <Textarea
+                className="min-h-16 resize-y"
+                disabled={submitting}
+                onChange={event => setAnswer(item.qid, event.target.value)}
+                placeholder="Type your answer (leave blank to skip)…"
+                value={typeof value === 'string' ? value : ''}
+              />
+            )}
+          </section>
+        )
+      })}
+
+      <div className="flex justify-end">
+        <Button disabled={!ready || submitting} onClick={() => void submit()} size="sm" type="button">
+          {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Submit answers'}
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
