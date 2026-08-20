@@ -1163,15 +1163,19 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     """
     reasoning_parts = []
     
-    # Check direct reasoning field
-    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-        reasoning_parts.append(assistant_message.reasoning)
+    # Check direct reasoning field.  SDK response objects occasionally expose
+    # dynamic attributes (and mocks expose every attribute), so only accept the
+    # string shape that providers are documented to return.
+    reasoning = getattr(assistant_message, "reasoning", None)
+    if isinstance(reasoning, str) and reasoning:
+        reasoning_parts.append(reasoning)
     
     # Check reasoning_content field (alternative name used by some providers)
-    if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+    reasoning_content = getattr(assistant_message, "reasoning_content", None)
+    if isinstance(reasoning_content, str) and reasoning_content:
         # Don't duplicate if same as reasoning
-        if assistant_message.reasoning_content not in reasoning_parts:
-            reasoning_parts.append(assistant_message.reasoning_content)
+        if reasoning_content not in reasoning_parts:
+            reasoning_parts.append(reasoning_content)
     
     # Check reasoning_details array (OpenRouter unified format)
     # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -1185,7 +1189,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                     or detail.get('content')
                     or detail.get('text')
                 )
-                if summary and summary not in reasoning_parts:
+                if isinstance(summary, str) and summary and summary not in reasoning_parts:
                     reasoning_parts.append(summary)
 
     # Some providers embed reasoning directly inside assistant content
@@ -1201,8 +1205,8 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         # Refs #21944.
         for block in content:
             if isinstance(block, dict) and block.get("type") == "thinking":
-                thinking_text = block.get("thinking") or block.get("text") or ""
-                thinking_text = thinking_text.strip()
+                raw_thinking = block.get("thinking") or block.get("text") or ""
+                thinking_text = raw_thinking.strip() if isinstance(raw_thinking, str) else ""
                 if thinking_text and thinking_text not in reasoning_parts:
                     reasoning_parts.append(thinking_text)
     if not reasoning_parts and isinstance(content, str) and content:

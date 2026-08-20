@@ -487,6 +487,15 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg()
         assert agent._extract_reasoning(msg) is None
 
+    def test_dynamic_non_string_reasoning_fields_are_ignored(self, agent):
+        msg = MagicMock()
+        msg.content = "response"
+        msg.reasoning = MagicMock()
+        msg.reasoning_content = None
+        msg.reasoning_details = MagicMock()
+
+        assert agent._extract_reasoning(msg) is None
+
     def test_combined_reasoning(self, agent):
         msg = _mock_assistant_msg(
             reasoning="part1",
