@@ -95,6 +95,7 @@ import { UpdatesOverlay } from './updates-overlay'
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
+const BotsView = lazy(async () => ({ default: (await import('./bots')).BotsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const KanbanView = lazy(async () => ({ default: (await import('./kanban')).KanbanView }))
@@ -641,6 +642,40 @@ export function DesktopController() {
     toggleCommandCenter
   })
 
+  const openBotChat = useCallback(
+    (profile: string, sessionId: string, displayName: string) => {
+      setSessions(current => {
+        if (current.some(session => session.id === sessionId)) {
+          return current
+        }
+
+        const now = Date.now() / 1000
+
+        return [
+          {
+            ended_at: null,
+            id: sessionId,
+            input_tokens: 0,
+            is_active: false,
+            last_active: now,
+            message_count: 0,
+            model: null,
+            output_tokens: 0,
+            preview: 'Canonical Bot Chat',
+            profile,
+            source: 'bot',
+            started_at: now,
+            title: `${displayName} · Bot Chat`,
+            tool_call_count: 0
+          },
+          ...current
+        ]
+      })
+      navigate(sessionRoute(sessionId))
+    },
+    [navigate]
+  )
+
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
@@ -860,6 +895,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <BotsView onOpenBotChat={openBotChat} requestGateway={requestGateway} />
+              </Suspense>
+            }
+            path="bots"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="kanban" />

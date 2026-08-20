@@ -9,10 +9,12 @@ export const CRON_ROUTE = '/cron'
 export const KANBAN_ROUTE = '/kanban'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
+export const BOTS_ROUTE = '/bots'
 
 export type AppView =
   | 'agents'
   | 'artifacts'
+  | 'bots'
   | 'chat'
   | 'command-center'
   | 'cron'
@@ -25,6 +27,7 @@ export type AppView =
 export type AppRouteId =
   | 'agents'
   | 'artifacts'
+  | 'bots'
   | 'command-center'
   | 'cron'
   | 'kanban'
@@ -47,6 +50,7 @@ export const APP_ROUTES = [
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
+  { id: 'bots', path: BOTS_ROUTE, view: 'bots' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'kanban', path: KANBAN_ROUTE, view: 'kanban' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
