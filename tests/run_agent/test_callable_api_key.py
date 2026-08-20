@@ -325,10 +325,13 @@ class TestInlinedDisplayMasks:
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
                / "cli.py").read_text()
-        assert "is_token_provider(self.api_key)" in src, (
-            "cli.ClioCLI.show_config must guard self.api_key via "
+        assert "is_token_provider(display_key)" in src, (
+            "cli.ClioCLI.show_config must guard the resolved live credential via "
             "is_token_provider so callable Entra ID providers don't "
             "crash /config."
+        )
+        assert 'display_key = agent.api_key' in src, (
+            "/config must prefer the live agent credential over the constructor seed."
         )
         assert '"Microsoft Entra ID"' in src, (
             "cli.ClioCLI.show_config must print the static "

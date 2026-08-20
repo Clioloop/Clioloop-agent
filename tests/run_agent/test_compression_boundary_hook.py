@@ -155,7 +155,7 @@ class TestCompressionBoundaryHook:
 
             # Must not raise
             compressed, _prompt = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+                [{"role": "user", "content": "m" * 1000}], "sys", approx_tokens=100
             )
             assert compressed
             assert agent.session_id != original_sid

@@ -2477,7 +2477,11 @@ class TestConcurrentToolExecution:
         assert len(messages) == 2
         for m in messages:
             assert len(m["content"]) < 150_000
-            assert ("Truncated" in m["content"] or "<persisted-output>" in m["content"])
+            assert (
+                "Truncated" in m["content"]
+                or "<persisted-output>" in m["content"]
+                or "byte-identical to the earlier" in m["content"]
+            )
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""

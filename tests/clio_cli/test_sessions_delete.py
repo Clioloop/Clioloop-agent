@@ -1,5 +1,7 @@
 import sys
 
+import pytest
+
 
 def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     import clio_cli.main as main_mod
@@ -58,8 +60,10 @@ def test_sessions_delete_reports_not_found_when_prefix_is_unknown(monkeypatch, c
         ["clio", "sessions", "delete", "missing-prefix", "--yes"],
     )
 
-    main_mod.main()
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
 
+    assert exc_info.value.code == 1
     output = capsys.readouterr().out
     assert "Session 'missing-prefix' not found." in output
 

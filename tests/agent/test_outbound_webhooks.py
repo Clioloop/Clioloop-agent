@@ -36,7 +36,8 @@ def test_lifecycle_webhook_filters_redacts_signs_and_delivers(tmp_path, monkeypa
         )
         assert len(queued) == 2
         result = manager.dispatcher.flush(timeout=2, max_items=4)
-        assert result["delivered"] == 2
+        assert result["drained"] is True
+        assert len(sent) == 2
     finally:
         manager.shutdown(1)
 

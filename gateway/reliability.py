@@ -592,6 +592,9 @@ class OutboundWebhookDispatcher:
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._accepting = True
+        self._inflight_condition = threading.Condition()
+        self._inflight = 0
+        self._delivered_total = 0
 
     @staticmethod
     def _http_sender(url: str, body: bytes, headers: Mapping[str, str]) -> int:
@@ -615,13 +618,28 @@ class OutboundWebhookDispatcher:
         self._wake.set()
         return True
 
+    def _dispatch_one(self) -> Optional[bool]:
+        """Dispatch one item while making background work visible to flush()."""
+        with self._inflight_condition:
+            self._inflight += 1
+        try:
+            result = self.queue.dispatch_one(
+                self.sender, owner=self.owner, max_attempts=self.max_attempts,
+            )
+            if result:
+                with self._inflight_condition:
+                    self._delivered_total += 1
+            return result
+        finally:
+            with self._inflight_condition:
+                self._inflight -= 1
+                self._inflight_condition.notify_all()
+
     def dispatch_batch(self, limit: Optional[int] = None) -> int:
         delivered = 0
         cap = max(0, min(int(limit or self.batch_size), self.batch_size))
         for _ in range(cap):
-            result = self.queue.dispatch_one(
-                self.sender, owner=self.owner, max_attempts=self.max_attempts,
-            )
+            result = self._dispatch_one()
             if result is None:
                 break
             delivered += int(bool(result))
@@ -629,16 +647,24 @@ class OutboundWebhookDispatcher:
 
     def flush(self, timeout: float = 5.0, *, max_items: Optional[int] = None) -> Mapping[str, int | bool]:
         deadline = time.monotonic() + max(0.0, timeout)
-        processed = delivered = 0
+        processed = 0
         cap = max(1, int(max_items or self.batch_size * 4))
+        with self._inflight_condition:
+            delivered_at_start = self._delivered_total
         while processed < cap and time.monotonic() < deadline:
-            result = self.queue.dispatch_one(
-                self.sender, owner=self.owner, max_attempts=self.max_attempts,
-            )
+            result = self._dispatch_one()
             if result is None:
+                with self._inflight_condition:
+                    while self._inflight and time.monotonic() < deadline:
+                        self._inflight_condition.wait(deadline - time.monotonic())
+                    inflight = self._inflight
+                    delivered = self._delivered_total - delivered_at_start
+                if inflight:
+                    return {"processed": processed, "delivered": delivered, "drained": False}
                 return {"processed": processed, "delivered": delivered, "drained": True}
             processed += 1
-            delivered += int(bool(result))
+        with self._inflight_condition:
+            delivered = self._delivered_total - delivered_at_start
         return {"processed": processed, "delivered": delivered, "drained": False}
 
     def drain(self, timeout: float = 5.0) -> Mapping[str, int | bool]:
