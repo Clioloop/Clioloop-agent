@@ -1,25 +1,25 @@
 schema_version: 2
 source:
   repository: https://github.com/NousResearch/hermes-agent
-  revision: 6f31cfad7825a78b69c46eedbd31f2ac2abacfb8
-  previous_audited_revision: de322448ac435b720177b94496e51ae6c10ad543
+  revision: fda54a613eec6ad87709b7716669a022ea685d4f
+  previous_audited_revision: 6f31cfad7825a78b69c46eedbd31f2ac2abacfb8
   audited_at: 2026-08-20
 local:
   repository: https://github.com/Clioloop/Clioloop-agent
-  candidate_revision: 75e7af327050a62ba68309c9f0b24e8f2d074c91
+  candidate_revision: fa32ffbf3489a01c4500414bdf5c65986584005f
   previous_baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
   implementation_branch: feat/hermes-current-parity-20260820-0321
 audit:
   kind: source_backed_incremental_delta
-  comparison: "Clio candidate 75e7af32 against Hermes 6f31cfad; portable behavior is implemented natively and service-specific or visual-only changes are recorded as exclusions"
+  comparison: "Clio candidate fa32ffbf against Hermes fda54a61; portable behavior is implemented natively and service-specific or visual-only changes are recorded as exclusions"
   inherited_ledger_note: Broad capability rows below were delivered before this delta; the full frozen-candidate suite remains the release gate.
   exclusions:
     - Nous billing, subscription, top-up, keyless vendor relay, and branding
     - Nous relay transport and live-card protocol without a shipped Clio relay equivalent
     - Visual-only themes, glass/material styling, accent retinting, and HUD layout without a shipped Clio equivalent
   evidence:
-    - "Hermes: first-parent log and focused source diff for de322448..6f31cfad (243 commits)"
-    - "Clio: git log 6e5a6353..75e7af32 plus focused source/test inspection"
+    - "Hermes: first-parent log and focused source diff for de322448..fda54a61 (307 commits; latest increment 64 commits)"
+    - "Clio: git log 6e5a6353..fa32ffbf plus focused source/test inspection"
     - "Detailed prior audit: hermes-clio-parity-plan-2026-08-20.md at Hermes 449471c"
 migration_rules:
   - Preserve Agentic Fusion, Gmail, music generation, ACP delegation overrides, cross-profile cron, managed provider, Portal, ComfyUI, Vidu, and Clio branding.
@@ -80,10 +80,46 @@ current_delta:
     local_revisions: [26f7ee6d]
     summary: Profile activation fails closed, session RPCs route through their owning profile gateway, and Bot Chat wake waits for the owning backend.
     evidence: [apps/desktop/src/store/session-request-router.ts, apps/desktop/src/store/gateway.ts, apps/desktop/src/store/profile.ts]
+  - id: unlimited-turn-resolution
+    status: matched-clio-equivalent
+    upstream_revisions: [50462828, 64505a2b, c32119b1]
+    local_revisions: [3b3ff572]
+    summary: One resolver handles finite and unlimited turn limits across CLI, agent, gateway, cron, API, TUI, ACP, and setup; fresh installs default to unlimited while explicit finite values remain compatible.
+    evidence: [clio_cli/config.py, agent/iteration_budget.py, clio_cli/setup.py, tests/clio_cli/test_turn_limit.py]
+  - id: positive-process-identity-and-update-handoff
+    status: matched-clio-equivalent
+    upstream_revisions: [95fa8142, 6d85d790, d5edb661, 2d927930, 5dd221d4, 1647d030]
+    local_revisions: [fda58236, fe63eba7, 87579564]
+    summary: Clio records install/profile/PID/create-time identity under an interprocess lock, stamps Desktop children, attaches Windows jobs, reaps only ledger-proven orphan backends, hands dependency sync across shim locks without recursion, parks local edits on managed updates, and classifies GitHub failures accurately.
+    evidence: [clio_cli/process_identity.py, clio_cli/main.py, apps/desktop/electron/process-identity.cjs, tests/clio_cli/test_windows_update_handoff.py]
+  - id: bot-room-user-handoffs
+    status: matched-clio-equivalent
+    upstream_revisions: [c757f99e, 1179f148, 21e9d453, 5ab74737, d29f76c7]
+    local_revisions: [2a10d836, 55c663e0]
+    summary: Local and authenticated remote room members surface clarify and approval requests through private epoch/session-bound handoffs; user decisions resume the exact turn, supersession cancels pending work, and canonical room/chat adoption avoids forks and duplicate panes.
+    evidence: [clio_bot_mode.py, gateway/platforms/api_server.py, tui_gateway/server.py, apps/desktop/src/app/bots/index.tsx]
+  - id: preview-drive-and-annotations
+    status: matched-clio-equivalent
+    upstream_revisions: [0d19e37b]
+    local_revisions: [857734de, daf31132]
+    summary: Session-scoped Desktop tools inventory and drive the active preview with trusted input, durable navigation-aware refs, bounded reload/strobe scans, deltas, and sanitized persistent annotations; non-Desktop sessions receive no schemas.
+    evidence: [tools/desktop_ui_tools.py, apps/desktop/src/app/chat/right-rail/preview-runtime.ts, apps/desktop/src/lib/preview-act]
+  - id: cli-status-help-and-model-filter
+    status: matched-clio-equivalent
+    upstream_revisions: [05b4ab0c, 9bdff6ab, e931081a]
+    local_revisions: [92c72ea9, 4655f8e9]
+    summary: Classic CLI status shows reasoning, approvals, and context; help supports focused groups/filters without registry duplication; the model picker fuzzy-filters while preserving arrows, custom providers, and escape behavior.
+    evidence: [cli.py, clio_cli/commands.py, tests/cli/test_cli_polish.py, tests/clio_cli/test_model_picker_filter.py]
+  - id: desktop-remote-projects-sessions-and-updates
+    status: matched-clio-equivalent
+    upstream_revisions: [bd5b221a, 61700217, 4dcefed0, f9838280]
+    local_revisions: [c7a81bff, a08af478, 3e8c4f97, fa32ffbf]
+    summary: Connection/profile route keys aggregate last-known sessions across outages, remote project trees execute only on the authenticated owning backend, and updates fan out with bounded idempotent per-target results before updating the local app.
+    evidence: [apps/desktop/src/desktop/remote-lifecycle.ts, tui_gateway/remote_lifecycle.py, apps/desktop/src/app/right-sidebar/files/ipc.ts, apps/desktop/src/store/updates.ts]
   - id: desktop-multi-connection-aggregation-and-updates
-    status: partial
-    summary: Stable connection/profile route keys and owner-pinned session calls exist; Hermes's unified all-gateway session aggregation, remote-project scan, and update-every-target UI are not fully exposed in the shipped Clio renderer.
-    evidence: [apps/desktop/src/desktop/backend-foundations.ts, apps/desktop/src/store/session-request-router.ts]
+    status: matched-clio-equivalent
+    summary: Stable connection/profile routes, owner-pinned session calls, stale/offline inventories, backend-local project RPCs, and per-target update outcomes are live in the shipped renderer while Clio retains isolated profile gateways.
+    evidence: [apps/desktop/src/desktop/remote-lifecycle.ts, apps/desktop/src/store/session-request-router.ts, tui_gateway/remote_lifecycle.py]
   - id: generic-gateway-profile-multiplex
     status: partial-intentional
     summary: Bot and Desktop session routes are profile-aware; Clio intentionally retains isolated profile gateways rather than mirroring every sessions/cron/platform route under one multi-tenant process.
