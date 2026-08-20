@@ -37,7 +37,13 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
+function PreviewRoutingHarness({
+  onEvent,
+  requestGateway = vi.fn()
+}: {
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  requestGateway?: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
   const activeSessionIdRef = useRef<string | null>('session-1')
 
   const routing = usePreviewRouting({
@@ -45,7 +51,7 @@ function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEven
     baseHandleGatewayEvent: vi.fn(),
     currentCwd: '/work',
     currentView: 'chat',
-    requestGateway: vi.fn(),
+    requestGateway,
     routedSessionId: 'session-1',
     selectedStoredSessionId: null
   })
@@ -164,5 +170,54 @@ describe('usePreviewRouting', () => {
     await waitFor(() => {
       expect($previewTarget.get()?.source).toBe('preview-demo.html')
     })
+  })
+
+  it('handles explicit desktop preview open and close events', async () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() => handleEvent({ type: 'preview.open', session_id: 'session-1', payload: { url: 'example.com', label: 'Example' } }))
+    await waitFor(() => expect($previewTarget.get()?.label).toBe('Example'))
+
+    act(() => handleEvent({ type: 'preview.close', session_id: 'session-1', payload: { url: 'example.com' } }))
+    await waitFor(() => expect($previewTarget.get()).toBeNull())
+  })
+
+  it('answers bounded desktop preview read requests', async () => {
+    const requestGatewayMock = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({ status: 'ok' }))
+
+    const requestGateway = requestGatewayMock as unknown as <T = unknown>(
+      method: string,
+      params?: Record<string, unknown>
+    ) => Promise<T>
+
+    const target = previewTarget('https://example.com')
+    registerSessionPreview('session-1', target, 'tool-result')
+
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+
+    act(() => handleEvent({
+      type: 'desktop_ui.request',
+      session_id: 'session-1',
+      payload: { request_id: 'req-1', action: 'preview.read', payload: { start: 0, count: 100 } }
+    }))
+
+    await waitFor(() => {
+      expect(requestGatewayMock).toHaveBeenCalledWith('desktop_ui.respond', expect.objectContaining({ request_id: 'req-1' }))
+    })
+    const response = requestGatewayMock.mock.calls[0]?.[1] as unknown as { result: string }
+    expect(JSON.parse(response.result)).toMatchObject({ open: true, url: 'https://example.com' })
   })
 })

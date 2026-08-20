@@ -7,6 +7,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { registerDesktopTerminalBridge } from '@/store/desktop-terminal'
+import { setPaneOpen } from '@/store/panes'
 
 import { isAddSelectionShortcut, terminalSelectionAnchor, terminalSelectionLabel, terminalTheme } from './selection'
 
@@ -278,6 +280,37 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     term.unicode.activeVersion = '11'
     term.open(host)
     term.focus()
+
+    const unregisterDesktopBridge = registerDesktopTerminalBridge({
+      read: (start, count) => {
+        const buffer = term.buffer.active
+        const lines: string[] = []
+
+        for (let index = 0; index < buffer.length; index += 1) {
+          lines.push(buffer.getLine(index)?.translateToString(true) ?? '')
+        }
+
+        const fullText = lines.join('\n').replace(/\n+$/, '')
+        const offset = Math.max(0, Math.floor(start))
+        const limit = Math.max(1, Math.min(Math.floor(count), 20_000))
+        const text = fullText.slice(offset, offset + limit)
+
+        return {
+          available: true,
+          start: offset,
+          count: text.length,
+          has_more: offset + text.length < fullText.length,
+          text
+        }
+      },
+      close: () => {
+        setPaneOpen('terminal', false)
+
+        return true
+      }
+    })
+
+    cleanup.push(unregisterDesktopBridge)
 
     // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
     // renderer paints SGR via CSS classes that visibly mute against our skins.

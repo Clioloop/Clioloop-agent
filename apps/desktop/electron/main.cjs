@@ -4292,6 +4292,7 @@ async function spawnPoolBackend(profile, entry) {
       ...process.env,
       CLIO_HOME,
       ...backend.env,
+      CLIO_DESKTOP: '1',
       CLIO_DASHBOARD_SESSION_TOKEN: token,
       CLIO_WEB_DIST: webDist
     },
@@ -4433,6 +4434,7 @@ async function startClio() {
         // can't reliably do that, so we set it inline for every spawn.
         CLIO_HOME,
         ...backend.env,
+        CLIO_DESKTOP: '1',
         CLIO_DASHBOARD_SESSION_TOKEN: token,
         CLIO_WEB_DIST: webDist
       },

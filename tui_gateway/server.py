@@ -517,6 +517,48 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
+_desktop_ui_wired = False
+
+
+def _wire_desktop_ui() -> None:
+    """Install the session-addressed bridge for desktop-only model tools."""
+    global _desktop_ui_wired
+    if _desktop_ui_wired:
+        return
+    try:
+        from tools.desktop_ui import configure_bridge
+
+        def emit_action(action: str, sid: str, payload: dict) -> bool:
+            if not sid:
+                return False
+            _emit(action, sid, payload)
+            return True
+
+        def request_snapshot(action: str, sid: str, payload: dict, timeout: float):
+            if not sid:
+                raise RuntimeError("desktop renderer session is unavailable")
+            raw = _block(
+                "desktop_ui.request",
+                sid,
+                {"action": action, "payload": payload},
+                timeout=max(1, int(timeout)),
+            )
+            if raw == "":
+                raise TimeoutError(f"desktop did not answer {action}")
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError):
+                return raw
+
+        configure_bridge(
+            emit_callback=emit_action,
+            request_callback=request_snapshot,
+        )
+        _desktop_ui_wired = True
+    except Exception:
+        logger.debug("failed to wire desktop UI tools", exc_info=True)
+
+
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
@@ -1091,6 +1133,17 @@ def _cwd_for_session_key(session_key: str) -> str:
     return ""
 
 
+def _ui_sid_for_session_key(session_key: str) -> str:
+    """Resolve a durable session key (or runtime id) to its renderer id."""
+    with _sessions_lock:
+        if session_key in _sessions:
+            return session_key
+        for sid, session in _sessions.items():
+            if session.get("session_key") == session_key:
+                return sid
+    return ""
+
+
 def _set_session_context(session_key: str, cwd: str | None = None) -> list:
     try:
         from gateway.session_context import set_session_vars
@@ -1100,7 +1153,11 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         # know the parent workspace pass it explicitly so spawned agents inherit
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
-        return set_session_vars(session_key=session_key, cwd=resolved)
+        return set_session_vars(
+            session_key=session_key,
+            cwd=resolved,
+            ui_session_id=_ui_sid_for_session_key(session_key),
+        )
     except Exception:
         return []
 
@@ -1341,6 +1398,12 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    def add_surface_toolsets(values: list[str]) -> list[str]:
+        result = list(values)
+        if is_truthy_value(os.environ.get("CLIO_DESKTOP")) and "desktop_ui" not in result:
+            result.append("desktop_ui")
+        return result
+
     explicit = [
         item.strip()
         for item in os.environ.get("CLIO_TUI_TOOLSETS", "").split(",")
@@ -1383,7 +1446,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             return None
 
         if not unresolved:
-            return built_in
+            return add_surface_toolsets(built_in)
 
         mcp_names: set[str] = set()
         mcp_disabled: set[str] = set()
@@ -1433,7 +1496,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             )
 
         if valid:
-            return valid
+            return add_surface_toolsets(valid)
 
         fallback_notice = (
             "[tui] no valid CLIO_TUI_TOOLSETS entries; using configured CLI toolsets"
@@ -1456,6 +1519,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         )
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
+        enabled = add_surface_toolsets(enabled)
         return enabled or None
     except Exception:
         if fallback_notice is not None:
@@ -2604,6 +2668,8 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
     from run_agent import AIAgent
     from clio_cli.runtime_provider import resolve_runtime_provider
 
+    _wire_desktop_ui()
+
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell (see tui_gateway/entry.py).  The agent
     # snapshots its tool list once here and never re-reads it, so briefly wait
@@ -2658,7 +2724,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),
-        platform="tui",
+        platform="desktop" if is_truthy_value(os.environ.get("CLIO_DESKTOP")) else "tui",
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -5350,6 +5416,12 @@ def _(rid, params: dict) -> dict:
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "value")
+
+
+@method("desktop_ui.respond")
+def _(rid, params: dict) -> dict:
+    """Resolve a bounded read request issued by a desktop UI model tool."""
+    return _respond(rid, params, "result")
 
 
 @method("approval.respond")

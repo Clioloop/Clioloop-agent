@@ -56,6 +56,10 @@ _SESSION_USER_ID: ContextVar = ContextVar("CLIO_SESSION_USER_ID", default=_UNSET
 _SESSION_USER_NAME: ContextVar = ContextVar("CLIO_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("CLIO_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("CLIO_SESSION_ID", default=_UNSET)
+# Runtime renderer/session id for GUI-only capabilities.  This is deliberately
+# separate from the durable session key: one backend can serve several desktop
+# windows and tools must target the window that initiated the turn.
+_UI_SESSION_ID: ContextVar = ContextVar("CLIO_UI_SESSION_ID", default=_UNSET)
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
@@ -76,6 +80,7 @@ _VAR_MAP = {
     "CLIO_SESSION_USER_NAME": _SESSION_USER_NAME,
     "CLIO_SESSION_KEY": _SESSION_KEY,
     "CLIO_SESSION_ID": _SESSION_ID,
+    "CLIO_UI_SESSION_ID": _UI_SESSION_ID,
     "CLIO_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "CLIO_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "CLIO_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -108,6 +113,7 @@ def set_session_vars(
     session_key: str = "",
     message_id: str = "",
     cwd: str = "",
+    ui_session_id: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -128,6 +134,7 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_MESSAGE_ID.set(message_id),
+        _UI_SESSION_ID.set(ui_session_id),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -158,6 +165,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_MESSAGE_ID,
+        _UI_SESSION_ID,
     ):
         var.set("")
     try:

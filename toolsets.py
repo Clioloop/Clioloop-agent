@@ -165,6 +165,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    # Session-surface capabilities for the Electron client.  This toolset is
+    # injected only by the desktop gateway; it is intentionally absent from
+    # core/CLI/messaging/cron defaults so other sessions pay zero schema cost.
+    "desktop_ui": {
+        "description": "Operate and inspect the current Clio Desktop window",
+        "tools": [
+            "read_terminal", "close_terminal", "open_preview",
+            "close_preview", "read_preview", "read_window_below",
+            "focus_pane", "react_to_message", "tour", "apply_layout",
+        ],
+        "includes": [],
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

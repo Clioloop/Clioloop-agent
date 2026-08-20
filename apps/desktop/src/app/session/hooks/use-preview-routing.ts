@@ -1,13 +1,19 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
+import { handleDesktopUiAction } from '@/lib/desktop-ui-actions'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { readDesktopTerminal } from '@/store/desktop-terminal'
 import {
+  $filePreviewTarget,
   $previewTarget,
   $sessionPreviewRegistry,
   beginPreviewServerRestart,
+  closePreviewByUrl,
+  closeRightRail,
   completePreviewServerRestart,
   getSessionPreviewRecord,
+  type PreviewTarget,
   progressPreviewServerRestart,
   requestPreviewReload,
   setPreviewTarget,
@@ -85,6 +91,69 @@ function structuredPreviewCandidate(payload: unknown): string {
   }
 
   return ''
+}
+
+export function desktopUiPreviewSnapshot(start = 0, count = 12_000): Record<string, unknown> {
+  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const offset = Math.max(0, Math.floor(start))
+  const limit = Math.max(1, Math.min(Math.floor(count), 20_000))
+
+  if (!target) {
+    return { open: false, start: offset, count: 0, text: '' }
+  }
+
+  // File/source text and remote Browser text are owned by their dedicated
+  // panes.  The stable snapshot always reports identity; pane implementations
+  // can add renderedText without changing the tool protocol.
+  const renderedText = typeof (target as PreviewTarget & { renderedText?: unknown }).renderedText === 'string'
+    ? String((target as PreviewTarget & { renderedText?: string }).renderedText)
+    : ''
+
+  const text = renderedText.slice(offset, offset + limit)
+
+  return {
+    open: true,
+    kind: target.kind,
+    label: target.label,
+    mime_type: target.mimeType ?? null,
+    path: target.path ?? null,
+    source: target.source,
+    url: target.url,
+    start: offset,
+    count: text.length,
+    text,
+    has_more: offset + text.length < renderedText.length
+  }
+}
+
+export function desktopUiTourTargets(root: ParentNode = document): Array<{ target: string; label: string }> {
+  const seen = new Set<string>()
+  const targets: Array<{ target: string; label: string }> = []
+  const nodes = root.querySelectorAll<HTMLElement>('[data-tour-id], [aria-label], button, input, textarea, [role="tab"]')
+
+  for (const node of nodes) {
+    const tourId = node.dataset.tourId || ''
+    const label = node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent?.trim() || ''
+
+    const selector = tourId
+      ? `[data-tour-id="${CSS.escape(tourId)}"]`
+      : node.id
+        ? `#${CSS.escape(node.id)}`
+        : ''
+
+    if (!selector || !label || seen.has(selector)) {
+      continue
+    }
+
+    seen.add(selector)
+    targets.push({ target: selector, label: label.slice(0, 160) })
+
+    if (targets.length >= 100) {
+      break
+    }
+  }
+
+  return targets
 }
 
 export function usePreviewRouting({
@@ -210,13 +279,95 @@ export function usePreviewRouting({
         return
       }
 
+      if (event.type === 'preview.open') {
+        const { label, url } = asRecord(event.payload)
+        const rawUrl = typeof url === 'string' ? url.trim() : ''
+        const desktop = window.clioDesktop
+
+        if (rawUrl && desktop?.normalizePreviewTarget && previewSessionId) {
+          void desktop.normalizePreviewTarget(rawUrl, currentCwd || undefined)
+            .then(target => {
+              if (target) {
+                setSessionPreviewTarget(
+                  previewSessionId,
+                  typeof label === 'string' && label.trim() ? { ...target, label: label.trim() } : target,
+                  'tool-result',
+                  rawUrl
+                )
+              }
+            })
+            .catch(() => undefined)
+        }
+
+        return
+      }
+
+      if (event.type === 'preview.close') {
+        const { url } = asRecord(event.payload)
+        const rawUrl = typeof url === 'string' ? url.trim() : ''
+
+        if (!rawUrl) {
+          closeRightRail()
+        } else if (!closePreviewByUrl(rawUrl)) {
+          void window.clioDesktop?.normalizePreviewTarget?.(rawUrl, currentCwd || undefined)
+            .then(target => {
+              if (target) {
+                closePreviewByUrl(target.url)
+              }
+            })
+            .catch(() => undefined)
+        }
+
+        return
+      }
+
+      if (event.type === 'desktop_ui.request') {
+        const request = asRecord(event.payload)
+        const requestId = typeof request.request_id === 'string' ? request.request_id : ''
+        const action = typeof request.action === 'string' ? request.action : ''
+        const args = asRecord(request.payload)
+        let result: unknown
+
+        if (action === 'preview.read') {
+          result = desktopUiPreviewSnapshot(Number(args.start || 0), Number(args.count || 12_000))
+        } else if (action === 'tour.targets') {
+          result = { targets: desktopUiTourTargets() }
+        } else if (action === 'terminal.read') {
+          result = readDesktopTerminal(Number(args.start || 0), Number(args.count || 12_000))
+        } else if (action === 'window.read_below') {
+          result = { error: 'Window-below metadata is unavailable on this desktop backend' }
+        } else {
+          result = { error: `Unsupported desktop UI request: ${action || '(empty)'}` }
+        }
+
+        if (requestId) {
+          void requestGateway('desktop_ui.respond', {
+            request_id: requestId,
+            result: JSON.stringify(result)
+          }).catch(() => undefined)
+        }
+
+        return
+      }
+
+      if (handleDesktopUiAction(event.type, asRecord(event.payload))) {
+        return
+      }
+
       void registerStructuredPreview(event)
 
       if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent, registerStructuredPreview]
+    [
+      activeSessionIdRef,
+      baseHandleGatewayEvent,
+      currentCwd,
+      previewSessionId,
+      registerStructuredPreview,
+      requestGateway
+    ]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

@@ -11,6 +11,7 @@ import {
   beginPreviewServerRestart,
   clearSessionPreviewRegistry,
   closeActiveRightRailTab,
+  closePreviewByUrl,
   dismissPreviewTarget,
   getSessionPreviewRecord,
   type PreviewTarget,
@@ -131,5 +132,21 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('closes a matching live preview or file tab by normalized URL', () => {
+    const file = previewTarget('/work/file.html')
+    const live = previewTarget('/work/live.html')
+
+    setCurrentSessionPreviewTarget(file, 'manual')
+    setCurrentSessionPreviewTarget(live, 'tool-result')
+
+    expect(closePreviewByUrl(file.url)).toBe(true)
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($previewTarget.get()).not.toBeNull()
+
+    expect(closePreviewByUrl(live.url)).toBe(true)
+    expect($previewTarget.get()).toBeNull()
+    expect(closePreviewByUrl('file:///missing.html')).toBe(false)
   })
 })

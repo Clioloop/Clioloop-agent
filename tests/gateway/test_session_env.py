@@ -190,6 +190,15 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("CLIO_SESSION_KEY") == ""
 
 
+def test_ui_session_id_is_scoped_and_cleared(monkeypatch):
+    monkeypatch.setenv("CLIO_UI_SESSION_ID", "stale-window")
+    tokens = set_session_vars(session_key="stored", ui_session_id="window-7")
+    assert get_session_env("CLIO_UI_SESSION_ID") == "window-7"
+
+    clear_session_vars(tokens)
+    assert get_session_env("CLIO_UI_SESSION_ID") == ""
+
+
 def test_set_session_env_includes_session_key():
     """_set_session_env should propagate session_key from SessionContext."""
     runner = object.__new__(GatewayRunner)

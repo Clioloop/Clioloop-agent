@@ -398,6 +398,34 @@ export function closeRightRailTab(tabId: RightRailTabId) {
   closeFilePreviewTab(tabId)
 }
 
+/** Close the preview/file tab whose normalized URL matches `url`. */
+export function closePreviewByUrl(url: string): boolean {
+  const target = url.trim()
+
+  if (!target) {
+    return false
+  }
+
+  const preview = $previewTarget.get()
+
+  if (preview?.url === target || preview?.source === target || preview?.path === target) {
+    dismissPreviewTarget()
+
+    return true
+  }
+
+  const tab = $filePreviewTabs.get().find(item =>
+    item.target.url === target || item.target.source === target || item.target.path === target)
+
+  if (!tab) {
+    return false
+  }
+
+  closeFilePreviewTab(tab.id)
+
+  return true
+}
+
 export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
 
 /** Dismisses the active preview + every file tab so the rail pane unmounts. */
