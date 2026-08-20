@@ -50,7 +50,13 @@ class _FakeProvider(ImageGenProvider):
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
+    # Keep these registry unit tests independent from global plugin-discovery
+    # state. Otherwise whichever test first triggers discovery repopulates the
+    # registry with ambient providers after the fixture reset.
+    from clio_cli import plugins
+
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", lambda: None)
     image_gen_registry._reset_for_tests()
     yield
     image_gen_registry._reset_for_tests()
@@ -129,6 +135,18 @@ class TestPluginPickerInjection:
         match = next(r for r in rows if r.get("image_gen_plugin_name") == "plain_img")
         assert "post_setup" not in match
 
+    def test_xai_provider_picker_uses_shared_auth_setup(self):
+        from clio_cli import tools_config
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        image_gen_registry.register_provider(XAIImageGenProvider())
+
+        rows = tools_config._plugin_image_gen_providers()
+        match = next(r for r in rows if r.get("image_gen_plugin_name") == "xai")
+        assert match["name"] == "xAI Grok Imagine (image)"
+        assert match["env_vars"] == []
+        assert match["post_setup"] == "xai_grok"
+
 
 class TestPluginCatalog:
     def test_plugin_catalog_returns_models(self):
@@ -176,6 +194,7 @@ class TestConfigPrompt:
 
         monkeypatch.setenv("CLIO_HOME", str(tmp_path))
         monkeypatch.setenv("FAL_KEY", "fal-test")
+        image_gen_registry.register_provider(_FakeProvider("fal", available=True))
 
         assert tools_config._toolset_needs_configuration_prompt("image_gen", {}) is True
 

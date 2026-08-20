@@ -318,6 +318,58 @@ class TestGenerate:
             f"resolution must be the literal '1k' or '2k', got {payload['resolution']!r}"
         )
 
+    def test_configured_future_model_does_not_depend_on_live_catalog(self, monkeypatch):
+        from plugins.image_gen import xai
+
+        monkeypatch.setattr(xai, "_load_xai_config", lambda: {"model": "future-image-model"})
+        monkeypatch.setattr(
+            xai,
+            "_catalog",
+            MagicMock(side_effect=AssertionError("generation selection must not fetch the catalog")),
+        )
+
+        model_id, metadata = xai._resolve_model()
+
+        assert model_id == "future-image-model"
+        assert metadata == {}
+
+    def test_edit_routes_source_images_to_edits_endpoint(self, monkeypatch):
+        from plugins.image_gen import xai
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"data": [{"b64_json": "aW1hZ2U="}]}
+        post = MagicMock(return_value=mock_resp)
+        monkeypatch.setattr(xai.requests, "post", post)
+        monkeypatch.setattr(
+            xai,
+            "_catalog",
+            lambda: {
+                "grok-imagine-image-quality": {"input_modalities": ["text", "image"]},
+            },
+        )
+        monkeypatch.setattr(xai, "save_b64_image", lambda *_a, **_kw: "/tmp/edit.png")
+
+        result = xai.XAIImageGenProvider().generate(
+            "add a hat",
+            action="edit",
+            input_images=["https://images.example/source.png"],
+            model="grok-imagine-image-quality",
+        )
+
+        assert result["success"] is True
+        assert result["endpoint"] == "images/edits"
+        request = post.call_args
+        assert request.args[0].endswith("/images/edits")
+        assert request.kwargs["json"] == {
+            "model": "grok-imagine-image-quality",
+            "prompt": "add a hat",
+            "image": {
+                "url": "https://images.example/source.png",
+                "type": "image_url",
+            },
+        }
+
 
 # ---------------------------------------------------------------------------
 # Registration test
