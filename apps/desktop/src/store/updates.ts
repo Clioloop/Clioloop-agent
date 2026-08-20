@@ -9,7 +9,8 @@ import {
   normalizeUpdateTargetResult,
   routeFor,
   updateBatchSucceeded,
-  type UpdateTarget
+  type UpdateTarget,
+  type UpdateTargetResult
 } from '@/desktop/remote-lifecycle'
 import type {
   DesktopUpdateApplyOptions,
@@ -21,6 +22,7 @@ import type {
 } from '@/global'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { connectedGatewayRoutes, requestGatewayForProfile } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 
 export interface UpdateApplyState {
@@ -32,6 +34,7 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
+  targets: readonly UpdateTargetResult[]
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -42,6 +45,7 @@ const IDLE: UpdateApplyState = {
   percent: null,
   error: null,
   command: null,
+  targets: [],
   log: []
 }
 
@@ -218,6 +222,70 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
   }
 }
 
+const REMOTE_UPDATE_TIMEOUT_MS = 11 * 60 * 1000
+const REMOTE_UPDATE_CONCURRENCY = 3
+
+function updateOperationId(): string {
+  const suffix = globalThis.crypto?.randomUUID?.().replace(/[^a-zA-Z0-9_-]/g, '')
+
+  return `desktop-${suffix || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`
+}
+
+async function updateConnectedRemoteGateways(): Promise<UpdateTargetResult[]> {
+  const routes = [
+    ...new Map(
+      connectedGatewayRoutes()
+        .filter(route => route.mode === 'remote')
+        .map(route => [route.routeKey, route])
+    ).values()
+  ]
+
+  const results: UpdateTargetResult[] = []
+
+  for (let offset = 0; offset < routes.length; offset += REMOTE_UPDATE_CONCURRENCY) {
+    const batch = routes.slice(offset, offset + REMOTE_UPDATE_CONCURRENCY)
+
+    const settled = await Promise.all(
+      batch.map(async route => {
+        const target: UpdateTarget = {
+          connectionId: route.connectionId,
+          kind: 'remote-backend',
+          label: route.label,
+          profile: route.profile,
+          routeKey: route.routeKey
+        }
+
+        try {
+          const response = await requestGatewayForProfile<Record<string, unknown>>(
+            route.profile,
+            'system.update',
+            {
+              connection_id: route.connectionId,
+              operation_id: updateOperationId(),
+              profile: route.profile,
+              route_key: route.routeKey
+            },
+            REMOTE_UPDATE_TIMEOUT_MS
+          )
+
+          return normalizeUpdateTargetResult(target, response)
+        } catch (error) {
+          return {
+            ...target,
+            detail: error instanceof Error ? error.message : String(error),
+            error: 'remote-update-failed',
+            ok: false
+          }
+        }
+      })
+    )
+
+    results.push(...settled)
+  }
+
+  return results
+}
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   const bridge = window.clioDesktop?.updates
 
@@ -226,45 +294,78 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 
   dismissNotification(UPDATE_TOAST_ID)
-  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Starting update…' })
+  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Updating connected backends…' })
 
   try {
+    const remoteResults = await updateConnectedRemoteGateways()
+
+    $updateApply.set({
+      ...$updateApply.get(),
+      message: 'Updating this device…',
+      stage: 'fetch',
+      targets: remoteResults
+    })
+
     const result = await bridge.apply(opts)
     const route = routeFor('local', 'desktop')
     const target: UpdateTarget = { ...route, kind: 'local-app', label: 'Clio Desktop' }
-    const normalized = normalizeUpdateTargetResult(target, result)
+    const localResult = normalizeUpdateTargetResult(target, result)
+    const targets = [...remoteResults, localResult]
+    const failures = targets.filter(item => !item.ok && !item.skipped)
+    const skipped = targets.filter(item => item.skipped)
 
-    // CLI install with no staged updater: not an error — the user just runs
-    // `clio update` themselves. Land on a dedicated manual state so the
-    // overlay shows the command + copy button instead of a dead retry loop.
-    if (result?.manual) {
-      $updateApply.set({
-        ...IDLE,
-        applying: false,
-        stage: 'manual',
-        message: result.command ?? 'clio update',
-        command: result.command ?? 'clio update'
-      })
-    }
+    if (failures.length) {
+      const message = failures.map(item => `${item.label}: ${item.detail || item.error || 'failed'}`).join('; ')
 
-    // IPC responses are not optimistic: only an explicit ok=true closes the
-    // target successfully. Manual results remain a deliberate skipped state.
-    if (!normalized.skipped && !updateBatchSucceeded([normalized])) {
-      const message = normalized.detail || normalized.error || 'The updater did not confirm success.'
       $updateApply.set({
         ...$updateApply.get(),
         applying: false,
+        error: 'apply-failed',
+        message,
         stage: 'error',
-        error: normalized.error || 'apply-failed',
-        message
+        targets
       })
 
-      return { ...result, ok: false, error: normalized.error || result.error || 'apply-failed', message }
+      return { ...result, error: result.error || 'apply-failed', message, ok: false }
     }
+
+    if (skipped.length) {
+      const command = result.command ?? 'clio update'
+      const message = skipped.map(item => `${item.label}: ${item.detail || 'manual update required'}`).join('; ')
+
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        command,
+        message: message || command,
+        stage: 'manual',
+        targets
+      })
+
+      return { ...result, manual: true, message: message || result.message }
+    }
+
+    if (!updateBatchSucceeded(targets)) {
+      const message = 'One or more update targets did not confirm success.'
+
+      $updateApply.set({
+        ...$updateApply.get(),
+        applying: false,
+        error: 'update-not-confirmed',
+        message,
+        stage: 'error',
+        targets
+      })
+
+      return { ...result, error: 'update-not-confirmed', message, ok: false }
+    }
+
+    $updateApply.set({ ...$updateApply.get(), targets })
 
     return result
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+
     $updateApply.set({ ...$updateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
 
     return { ok: false, error: 'apply-failed', message }
@@ -282,6 +383,7 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     message: payload.message,
     percent: payload.percent,
     error: payload.error,
+    targets: current.targets,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,
     log
