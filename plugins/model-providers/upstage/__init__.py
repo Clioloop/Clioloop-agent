@@ -9,10 +9,20 @@ class UpstageProfile(ProviderProfile):
             return {}, {}
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             return {}, {}
-        effort = (reasoning_config or {}).get("effort", "medium") if isinstance(reasoning_config, dict) else "medium"
-        if str(effort).lower() == "minimal":
+        effort = (
+            (reasoning_config or {}).get("effort", "medium")
+            if isinstance(reasoning_config, dict)
+            else "medium"
+        )
+        effort = str(effort).strip().lower()
+        if effort == "minimal":
             return {}, {}
-        mapped = str(effort).lower() if str(effort).lower() in {"low", "medium", "high"} else "high"
+
+        from agent.reasoning_effort import SOLAR_EFFORTS, clamp_effort
+
+        mapped = clamp_effort(effort, SOLAR_EFFORTS)
+        if mapped not in SOLAR_EFFORTS:
+            mapped = "high"
         return {}, {"reasoning_effort": mapped}
 
 upstage = UpstageProfile(

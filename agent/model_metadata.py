@@ -946,46 +946,82 @@ def get_context_length_from_provider_error(
 
 
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
-    """Detect an "output cap too large" error and return how many output tokens are available.
-
-    Background — two distinct context errors exist:
-      1. "Prompt too long"  — the INPUT itself exceeds the context window.
-           Fix: compress history, and only reduce context_length if the
-           provider explicitly reports the actual lower limit.
-      2. "max_tokens too large" — input is fine, but input + requested_output > window.
-           Fix: reduce max_tokens (the output cap) for this call.
-           Do NOT touch context_length — the window hasn't shrunk.
-
-    Anthropic's API returns errors like:
-      "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
-
-    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
-    the error does not look like a max_tokens-too-large error.
-    """
+    """Return a safe output budget from a known output-cap error, if parseable."""
     error_lower = error_msg.lower()
-
-    # Must look like an output-cap error, not a prompt-length error.
-    is_output_cap_error = (
+    output_cap_error = (
         "max_tokens" in error_lower
         and ("available_tokens" in error_lower or "available tokens" in error_lower)
+    ) or (
+        "in the output" in error_lower and "maximum context length" in error_lower
+    ) or (
+        "maximum context length" in error_lower
+        and "requested" in error_lower
+        and "output tokens" in error_lower
+    ) or ("range of max_tokens should be" in error_lower) or (
+        "exceeds model" in error_lower and "maximum output tokens" in error_lower
     )
-    if not is_output_cap_error:
+    if not output_cap_error:
         return None
 
-    # Extract the available_tokens figure.
-    # Anthropic format: "… = available_tokens: 10000"
-    patterns = [
-        r'available_tokens[:\s]+(\d+)',
-        r'available\s+tokens[:\s]+(\d+)',
-        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
-        r'=\s*(\d+)\s*$',
-    ]
-    for pattern in patterns:
+    match = re.search(
+        r"exceeds model(?:'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?",
+        error_lower,
+    )
+    if match and int(match.group(1)) >= 1:
+        return int(match.group(1))
+
+    match = re.search(
+        r"range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]",
+        error_lower,
+    )
+    if match and int(match.group(1)) >= 1:
+        return int(match.group(1))
+
+    for pattern in (
+        r"available_tokens[:\s]+(\d+)",
+        r"available\s+tokens[:\s]+(\d+)",
+        r"=\s*(\d+)\s*$",
+    ):
         match = re.search(pattern, error_lower)
-        if match:
-            tokens = int(match.group(1))
-            if tokens >= 1:
-                return tokens
+        if match and int(match.group(1)) >= 1:
+            return int(match.group(1))
+
+    context_match = re.search(r"maximum context length is (\d+)", error_lower)
+    parts_match = re.search(
+        r"\((\d+)\s+of text input,\s*(\d+)\s+of tool input,\s*(\d+)\s+in the output\)",
+        error_lower,
+    )
+    if context_match and parts_match:
+        available = (
+            int(context_match.group(1))
+            - int(parts_match.group(1))
+            - int(parts_match.group(2))
+        )
+        if available >= 1:
+            return available
+
+    context_tokens = re.search(
+        r"maximum context length is (\d+)\s*token", error_lower
+    )
+    prompt_chars = re.search(r"prompt contains (\d+)\s*character", error_lower)
+    if context_tokens and prompt_chars:
+        estimated_input = (int(prompt_chars.group(1)) + 2) // 3
+        available = int(context_tokens.group(1)) - estimated_input
+        if available >= 1:
+            return available
+
+    prompt_tokens = re.search(
+        r"prompt contains (?:at least )?(\d+)\s*input tokens", error_lower
+    )
+    if context_tokens and prompt_tokens:
+        available = int(context_tokens.group(1)) - int(prompt_tokens.group(1))
+        requested = re.search(r"requested (\d+)\s*output tokens", error_lower)
+        if "at least" in error_lower and requested:
+            requested_tokens = int(requested.group(1))
+            if available >= requested_tokens - 1:
+                return max(1, requested_tokens // 2)
+        if available >= 1:
+            return available
     return None
 
 

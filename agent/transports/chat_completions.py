@@ -13,6 +13,18 @@ import copy
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.reasoning_effort import (
+    GEMINI_FLASH_EFFORTS,
+    GEMINI_PRO_EFFORTS,
+    KIMI_K3_EFFORTS,
+    KIMI_K3_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    TOKENHUB_EFFORTS,
+    clamp_effort,
+    kimi_supported_efforts,
+    normalize_reasoning_config,
+    requested_effort,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.screenshot_eviction import evict_openai_screenshots
@@ -54,23 +66,22 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+    # Config/API entry points validate Clio's public ladder. Keep the legacy
+    # fallback for direct internal callers that provide a bespoke value.
+    if effort not in OPENAI_COMPAT_WIRE_EFFORTS:
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Clio' wider effort set to what each
+    # is stricter (low/high). Clamp Clio's wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
     if normalized_model.startswith(("gemini-3", "gemini-3.1")):
         if "flash" in normalized_model:
-            if effort in {"minimal", "low"}:
-                thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
-                thinking_config["thinkingLevel"] = "high"
-            else:
-                thinking_config["thinkingLevel"] = "medium"
+            thinking_config["thinkingLevel"] = clamp_effort(
+                effort, GEMINI_FLASH_EFFORTS
+            )
         elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
+            thinking_config["thinkingLevel"] = clamp_effort(
+                effort, GEMINI_PRO_EFFORTS
             )
 
     return thinking_config
@@ -347,11 +358,17 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _kimi_effort = _e
+                _supported = kimi_supported_efforts(model)
+                _overrides = (
+                    KIMI_K3_OVERRIDES if _supported is KIMI_K3_EFFORTS else None
+                )
+                _e = requested_effort(reasoning_config)
+                if _e is None:
+                    _kimi_effort = (
+                        "high" if _supported is KIMI_K3_EFFORTS else "medium"
+                    )
+                else:
+                    _kimi_effort = clamp_effort(_e, _supported, _overrides)
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
@@ -362,11 +379,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 and reasoning_config.get("enabled") is False
             )
             if not _tokenhub_thinking_off:
-                _tokenhub_effort = "high"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _e = (reasoning_config.get("effort") or "").strip().lower()
-                    if _e in {"low", "medium", "high"}:
-                        _tokenhub_effort = _e
+                _e = requested_effort(reasoning_config)
+                _tokenhub_effort = (
+                    "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
+                )
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # LM Studio: top-level reasoning_effort. Only emit when the model
@@ -427,7 +443,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                normalized_reasoning = normalize_reasoning_config(
+                    reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS
+                )
+                extra_body["reasoning"] = (
+                    normalized_reasoning
+                    if normalized_reasoning is not None
+                    else {"enabled": True, "effort": "medium"}
+                )
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

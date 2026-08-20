@@ -7,6 +7,12 @@ streaming, or the _run_codex_stream() call path.
 
 from typing import Any, Dict, List, Optional
 
+from agent.reasoning_effort import (
+    ACTUAL_RELAY_EFFORTS,
+    clamp_effort,
+    codex_supported_efforts,
+    xai_supported_efforts,
+)
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -125,8 +131,13 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+        if is_xai_responses:
+            supported_efforts = xai_supported_efforts(model)
+        elif (params.get("provider") or "").strip().lower() == "actual":
+            supported_efforts = ACTUAL_RELAY_EFFORTS
+        else:
+            supported_efforts = codex_supported_efforts(model)
+        reasoning_effort = clamp_effort(reasoning_effort, supported_efforts)
 
         response_tools = _responses_tools(tools)
         # ``tools`` MUST be omitted entirely when there are no functions to

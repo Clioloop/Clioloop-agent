@@ -34,12 +34,13 @@ class CopilotProfile(ProviderProfile):
 
                 supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Normalize non-standard effort levels to the nearest supported
-                    if effort == "xhigh":
-                        effort = "high"
-                    if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
+                    from agent.reasoning_effort import clamp_effort, requested_effort
+
+                    effort = requested_effort(reasoning_config)
+                    if effort is not None:
+                        clamped = clamp_effort(effort, supported_efforts)
+                        if clamped in supported_efforts:
+                            extra_body["reasoning"] = {"effort": clamped}
                 elif supported_efforts:
                     extra_body["reasoning"] = {"effort": "medium"}
             except Exception:

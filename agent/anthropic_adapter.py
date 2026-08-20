@@ -56,22 +56,6 @@ def _get_anthropic_sdk():
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
-# Clio effort → Anthropic adaptive-thinking effort (output_config.effort).
-# Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
-# Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
-# We preserve xhigh as xhigh on 4.7+ (the recommended default for coding/
-# agentic work) and downgrade it to max on pre-4.7 adaptive models (which
-# is the strongest level they accept).  "minimal" is a legacy alias that
-# maps to low on every model.  See:
-# https://platform.claude.com/docs/en/about-claude/models/migration-guide
-ADAPTIVE_EFFORT_MAP = {
-    "max":     "max",
-    "xhigh":   "xhigh",
-    "high":    "high",
-    "medium":  "medium",
-    "low":     "low",
-    "minimal": "low",
-}
 
 # Models that accept the "xhigh" output_config.effort level.  Opus 4.7 added
 # xhigh as a distinct level between high and max; older adaptive-thinking
@@ -2254,14 +2238,22 @@ def build_anthropic_kwargs(
                     "type": "adaptive",
                     "display": "summarized",
                 }
-                adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-                # Downgrade xhigh→max on models that don't list xhigh as a
-                # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
-                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
-                    adaptive_effort = "max"
-                kwargs["output_config"] = {
-                    "effort": adaptive_effort,
-                }
+                from agent.reasoning_effort import (
+                    ANTHROPIC_47_EFFORTS,
+                    ANTHROPIC_LEGACY_ADAPTIVE_EFFORTS,
+                    ANTHROPIC_LEGACY_ADAPTIVE_OVERRIDES,
+                    clamp_effort,
+                )
+
+                if _supports_xhigh_effort(model):
+                    adaptive_effort = clamp_effort(effort, ANTHROPIC_47_EFFORTS)
+                else:
+                    adaptive_effort = clamp_effort(
+                        effort,
+                        ANTHROPIC_LEGACY_ADAPTIVE_EFFORTS,
+                        ANTHROPIC_LEGACY_ADAPTIVE_OVERRIDES,
+                    )
+                kwargs["output_config"] = {"effort": adaptive_effort}
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models

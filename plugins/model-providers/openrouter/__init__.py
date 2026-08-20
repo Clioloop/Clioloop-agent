@@ -85,7 +85,14 @@ class OpenRouterProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
             if reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                from agent.reasoning_effort import (
+                    OPENAI_COMPAT_WIRE_EFFORTS,
+                    normalize_reasoning_config,
+                )
+
+                extra_body["reasoning"] = normalize_reasoning_config(
+                    reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS
+                )
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

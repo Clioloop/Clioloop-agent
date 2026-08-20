@@ -102,6 +102,29 @@ class TestParseAvailableOutputTokens:
         msg = "rate_limit_error: too many requests per minute"
         assert self._parse(msg) is None
 
+    def test_model_maximum_output_cap(self):
+        msg = (
+            "[400]: max_tokens (98304) exceeds model's maximum output tokens "
+            "(65536)"
+        )
+        assert self._parse(msg) == 65536
+
+    def test_vllm_back_computed_input_halves_requested_cap(self):
+        msg = (
+            "This model's maximum context length is 102400 tokens. However, "
+            "you requested 65536 output tokens and your prompt contains at "
+            "least 36865 input tokens, for a total of at least 102401 tokens."
+        )
+        assert self._parse(msg) == 32768
+
+    def test_vllm_measured_input_is_trusted(self):
+        msg = (
+            "This model's maximum context length is 131072 tokens. However, "
+            "you requested 65536 output tokens and your prompt contains "
+            "100000 input tokens, for a total of 165536 tokens."
+        )
+        assert self._parse(msg) == 31072
+
 
 # ---------------------------------------------------------------------------
 # Context-overflow recovery — only trust provider-reported limits

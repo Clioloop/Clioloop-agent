@@ -69,15 +69,23 @@ class DeepSeekProfile(ProviderProfile):
         if not enabled:
             return extra_body, top_level
 
-        # Effort mapping.  Pass low/medium/high through; xhigh/max → max.
-        # When no effort is set we omit reasoning_effort so DeepSeek applies
-        # its server default (currently high).
+        # Effort mapping uses the canonical vocabulary. DeepSeek V4 accepts
+        # low/medium/high/max and documents xhigh as a request for its max tier.
+        # When unset, omit the field so the server default applies.
         if isinstance(reasoning_config, dict):
+            from agent.reasoning_effort import (
+                DEEPSEEK_V4_EFFORTS,
+                DEEPSEEK_V4_OVERRIDES,
+                clamp_effort,
+            )
+
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                clamped = clamp_effort(
+                    effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES
+                )
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
         return extra_body, top_level
 

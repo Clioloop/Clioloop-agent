@@ -41,7 +41,15 @@ class OmniLoopPortalProfile(ProviderProfile):
                 return {"reasoning": {"enabled": True, "effort": "medium"}}, {}
             return {}, {}
         if reasoning_config.get("enabled"):
-            return {"reasoning": dict(reasoning_config)}, {}
+            from agent.reasoning_effort import (
+                OPENAI_COMPAT_WIRE_EFFORTS,
+                normalize_reasoning_config,
+            )
+
+            normalized = normalize_reasoning_config(
+                reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS
+            )
+            return {"reasoning": normalized}, {}
         return {}, {}
 
 

@@ -735,10 +735,14 @@ class _CodexCompletionsAdapter:
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
                     effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
+                    # Keep auxiliary Responses calls on the same per-model
+                    # vocabulary and clamp policy as the main Codex transport.
+                    from agent.reasoning_effort import (
+                        clamp_effort,
+                        codex_supported_efforts,
+                    )
+
+                    effort = clamp_effort(effort, codex_supported_efforts(model))
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",

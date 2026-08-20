@@ -70,10 +70,12 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
-                top_level["reasoning_effort"] = "high"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import KIMI_K2_EFFORTS, clamp_effort
+
+                clamped = clamp_effort(effort, KIMI_K2_EFFORTS)
+                if clamped in KIMI_K2_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):
@@ -89,10 +91,18 @@ class OpenCodeGoProfile(ProviderProfile):
 
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+            if effort and effort != "none":
+                from agent.reasoning_effort import (
+                    DEEPSEEK_V4_EFFORTS,
+                    DEEPSEEK_V4_OVERRIDES,
+                    clamp_effort,
+                )
+
+                clamped = clamp_effort(
+                    effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES
+                )
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
 
         return extra_body, top_level
 

@@ -2927,7 +2927,15 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                # Relays can wrap an upstream output-cap 400 as HTTP 429. This
+                # deterministic request-shape failure belongs in the output
+                # clamp below, not provider fallback or generic rate retries.
+                output_cap_budget = parse_available_output_tokens_from_error(error_msg)
+                if (
+                    is_rate_limited
+                    and output_cap_budget is None
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2972,6 +2980,7 @@ def run_conversation(
                 # successful response.
                 if (
                     is_rate_limited
+                    and output_cap_budget is None
                     and agent.provider == "managed"
                     and classified.reason == FailoverReason.rate_limit
                     and not recovered_with_pool
@@ -3111,6 +3120,7 @@ def run_conversation(
                 # server disconnect + large session pattern (#2153).
                 is_context_length_error = (
                     classified.reason == FailoverReason.context_overflow
+                    or output_cap_budget is not None
                 )
 
                 if is_context_length_error:
@@ -3127,7 +3137,7 @@ def run_conversation(
                     #
                     # Note: max_tokens = output token cap (one response).
                     #       context_length = total window (input + output combined).
-                    available_out = parse_available_output_tokens_from_error(error_msg)
+                    available_out = output_cap_budget
                     if available_out is not None:
                         # Error is purely about the output cap being too large.
                         # Cap output to the available space and retry without
