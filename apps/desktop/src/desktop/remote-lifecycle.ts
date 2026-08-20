@@ -198,6 +198,19 @@ export function normalizeUpdateTargetResult(
   const result = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
   const detail = typeof result.message === 'string' && result.message.trim() ? result.message.trim() : undefined
 
+  // Backend targets only succeed when the authenticated gateway echoes the
+  // exact route. This prevents a stale/focused socket response from closing a
+  // different target optimistically. Electron-local updater responses predate
+  // route metadata and remain governed by their explicit ok flag.
+  if (
+    target.kind !== 'local-app' &&
+    (result.connection_id !== target.connectionId ||
+      result.profile !== target.profile ||
+      result.route_key !== target.routeKey)
+  ) {
+    return { ...target, ok: false, error: 'update-route-mismatch', ...(detail ? { detail } : {}) }
+  }
+
   if (result.ok === true && result.manual !== true) {
     return { ...target, ok: true, ...(detail ? { detail } : {}) }
   }

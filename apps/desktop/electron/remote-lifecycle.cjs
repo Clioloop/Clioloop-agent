@@ -105,6 +105,13 @@ function normalizeUpdateTargetResult(target, value) {
   const result = value && typeof value === 'object' ? value : {}
   const detail = typeof result.message === 'string' && result.message.trim() ? result.message.trim() : undefined
 
+  if (
+    target.kind !== 'local-app' &&
+    (result.connection_id !== target.connectionId || result.profile !== target.profile || result.route_key !== target.routeKey)
+  ) {
+    return { ...target, ok: false, error: 'update-route-mismatch', ...(detail ? { detail } : {}) }
+  }
+
   if (result.ok === true && result.manual !== true) {
     return { ...target, ok: true, ...(detail ? { detail } : {}) }
   }

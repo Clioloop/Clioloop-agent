@@ -53,4 +53,13 @@ test('update batches require explicit success and reject manual optimism', () =>
   assert.equal(manual.ok, false)
   assert.equal(manual.skipped, true)
   assert.equal(updateBatchSucceeded([manual]), false)
+
+  const remote = { ...routeFor('url:https://box.test', 'default'), kind: 'remote-backend', label: 'Box' }
+  const routed = {
+    connection_id: remote.connectionId,
+    profile: remote.profile,
+    route_key: remote.routeKey
+  }
+  assert.equal(normalizeUpdateTargetResult(remote, { ...routed, ok: true }).ok, true)
+  assert.equal(normalizeUpdateTargetResult(remote, { ...routed, ok: true, profile: 'other' }).ok, false)
 })

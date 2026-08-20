@@ -32,6 +32,15 @@ from tui_gateway.transport import (
     current_transport,
     reset_transport,
 )
+from tui_gateway.remote_lifecycle import (
+    UPDATE_COORDINATOR,
+    RouteScopeError,
+    discover_projects,
+    perform_backend_update,
+    read_project_tree,
+    update_operation_key,
+    validate_route_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +193,7 @@ _LONG_HANDLERS = frozenset(
         "shell.exec",
         "skills.manage",
         "slash.exec",
+        "system.update",
     }
 )
 
@@ -3142,6 +3152,79 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 
 # ── Methods: session ─────────────────────────────────────────────────
+
+
+def _desktop_route_scope(params: dict):
+    """Validate the authenticated WS's exact connection/profile route."""
+    return validate_route_scope(
+        params,
+        launch_home=Path(_clio_home),
+        transport=current_transport(),
+    )
+
+
+@method("project.discover")
+def _(rid, params: dict) -> dict:
+    """Return backend-local project roots and short-lived tree grants."""
+    try:
+        scope = _desktop_route_scope(params)
+        return _ok(rid, discover_projects(scope, params.get("roots")))
+    except RouteScopeError as exc:
+        return _err(rid, 4031, str(exc))
+    except Exception as exc:
+        logger.exception("project.discover failed")
+        return _err(rid, 5031, f"project discovery failed: {exc}")
+
+
+@method("project.tree")
+def _(rid, params: dict) -> dict:
+    """List one directory inside a route-bound backend browse grant."""
+    try:
+        scope = _desktop_route_scope(params)
+        result = read_project_tree(
+            scope,
+            browse_token=str(params.get("browse_token") or ""),
+            path=str(params.get("path") or ""),
+            limit=int(params.get("limit") or 2_000),
+        )
+        return _ok(rid, result)
+    except (TypeError, ValueError, RouteScopeError) as exc:
+        return _err(rid, 4032, str(exc))
+    except Exception as exc:
+        logger.exception("project.tree failed")
+        return _err(rid, 5032, f"project tree failed: {exc}")
+
+
+@method("system.update")
+def _(rid, params: dict) -> dict:
+    """Apply one idempotent backend update and wait for a confirmed result."""
+    try:
+        scope = _desktop_route_scope(params)
+        operation_id = str(params.get("operation_id") or "").strip()
+        key = update_operation_key(scope, operation_id)
+        result = UPDATE_COORDINATOR.run(
+            key,
+            lambda: perform_backend_update(
+                scope,
+                branch=(str(params.get("branch") or "").strip() or None),
+                timeout=int(params.get("timeout") or 900),
+            ),
+        )
+        return _ok(
+            rid,
+            {
+                "connection_id": scope.connection_id,
+                "profile": scope.profile,
+                "route_key": scope.route_key,
+                "operation_id": operation_id,
+                **result,
+            },
+        )
+    except (TypeError, ValueError, RouteScopeError) as exc:
+        return _err(rid, 4033, str(exc))
+    except Exception as exc:
+        logger.exception("system.update failed")
+        return _err(rid, 5033, f"system update failed: {exc}")
 
 
 @method("bot.list")

@@ -64,14 +64,23 @@ describe('remote lifecycle updates', () => {
     routeKey: routeFor('lab', 'default').routeKey
   }
 
-  it('never turns an ambiguous or manual update response into success', () => {
-    expect(normalizeUpdateTargetResult(target, {})).toMatchObject({ ok: false, error: 'update-not-confirmed' })
-    expect(normalizeUpdateTargetResult(target, { ok: true, manual: true, message: 'run clio update' })).toMatchObject({
+  it('never turns an ambiguous, cross-route, or manual update response into success', () => {
+    const routed = {
+      connection_id: target.connectionId,
+      profile: target.profile,
+      route_key: target.routeKey
+    }
+
+    expect(normalizeUpdateTargetResult(target, routed)).toMatchObject({ ok: false, error: 'update-not-confirmed' })
+    expect(
+      normalizeUpdateTargetResult(target, { ...routed, ok: true, manual: true, message: 'run clio update' })
+    ).toMatchObject({ ok: false, skipped: true })
+    expect(normalizeUpdateTargetResult(target, { ...routed, ok: true })).toMatchObject({ ok: true })
+    expect(normalizeUpdateTargetResult(target, { ...routed, ok: true, profile: 'other' })).toMatchObject({
       ok: false,
-      skipped: true
+      error: 'update-route-mismatch'
     })
-    expect(normalizeUpdateTargetResult(target, { ok: true })).toMatchObject({ ok: true })
-    expect(updateBatchSucceeded([normalizeUpdateTargetResult(target, { ok: true })])).toBe(true)
-    expect(updateBatchSucceeded([normalizeUpdateTargetResult(target, {})])).toBe(false)
+    expect(updateBatchSucceeded([normalizeUpdateTargetResult(target, { ...routed, ok: true })])).toBe(true)
+    expect(updateBatchSucceeded([normalizeUpdateTargetResult(target, routed)])).toBe(false)
   })
 })

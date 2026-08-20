@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 from tui_gateway import server
@@ -73,6 +74,19 @@ class WSTransport:
         self._loop = loop
         self._peer = peer
         self._closed = False
+        self._route_lock = threading.Lock()
+        self._backend_route: str | None = None
+
+    def bind_backend_route(self, route_key: str) -> bool:
+        """Pin route-scoped RPCs on this authenticated socket to one exact route."""
+        route = str(route_key or "").strip()
+        if not route:
+            return False
+        with self._route_lock:
+            if self._backend_route is None:
+                self._backend_route = route
+                return True
+            return self._backend_route == route
 
     def write(self, obj: dict) -> bool:
         if self._closed:
