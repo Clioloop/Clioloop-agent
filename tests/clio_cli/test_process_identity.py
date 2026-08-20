@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -221,3 +222,40 @@ def test_windows_job_attachment_is_idempotent(monkeypatch):
     assert identity.attach_self_to_kill_on_close_job() is True
     assert identity.attach_self_to_kill_on_close_job() is True
     assert calls == {"create": 1, "assign": 1, "close": 0}
+
+
+def test_register_self_attaches_windows_job_after_ledger_write(monkeypatch, tmp_path):
+    attached = []
+
+    @contextmanager
+    def fake_lock(_path):
+        yield True
+
+    monkeypatch.setattr(identity, "_IS_WINDOWS", True)
+    monkeypatch.setattr(identity, "_interprocess_lock", fake_lock)
+    monkeypatch.setattr(identity, "_own_create_time", lambda: 100.0)
+    monkeypatch.setattr(identity, "install_id", lambda project_root=None: "abcdef123456")
+    monkeypatch.setattr(identity, "profile_id", lambda profile_home=None: "123456abcdef")
+    monkeypatch.setattr(identity, "_parent_identity", lambda: (9, 90.0))
+    monkeypatch.setattr(identity, "_ledger_path", lambda project_root=None: tmp_path / "ledger.json")
+    monkeypatch.setattr(
+        identity,
+        "attach_self_to_kill_on_close_job",
+        lambda: attached.append(True) or True,
+    )
+
+    assert identity.register_self("dashboard", project_root=tmp_path) is True
+    assert attached == [True]
+
+
+def test_long_lived_processes_and_desktop_spawns_are_identity_wired():
+    root = Path(__file__).resolve().parents[2]
+    gateway = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+    cli_main = (root / "clio_cli" / "main.py").read_text(encoding="utf-8")
+    desktop = (root / "apps" / "desktop" / "electron" / "main.cjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'register_self("gateway"' in gateway
+    assert 'register_self("dashboard"' in cli_main
+    assert desktop.count("CLIO_SPAWN: buildSpawnTag('dashboard', clioCwd)") == 2

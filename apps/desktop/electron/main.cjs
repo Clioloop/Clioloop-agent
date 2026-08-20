@@ -27,6 +27,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportClioCli, clioCliSupportsUpdateFlag, verifyClioCli } = require('./backend-probes.cjs')
+const { buildSpawnTag } = require('./process-identity.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { createCrashJournal } = require('./backend-foundations.cjs')
 const {
@@ -4301,6 +4302,7 @@ async function spawnPoolBackend(profile, entry) {
       CLIO_HOME,
       ...backend.env,
       CLIO_DESKTOP: '1',
+      CLIO_SPAWN: buildSpawnTag('dashboard', clioCwd),
       CLIO_DASHBOARD_SESSION_TOKEN: token,
       CLIO_WEB_DIST: webDist
     },
@@ -4443,6 +4445,7 @@ async function startClio() {
         CLIO_HOME,
         ...backend.env,
         CLIO_DESKTOP: '1',
+        CLIO_SPAWN: buildSpawnTag('dashboard', clioCwd),
         CLIO_DASHBOARD_SESSION_TOKEN: token,
         CLIO_WEB_DIST: webDist
       },

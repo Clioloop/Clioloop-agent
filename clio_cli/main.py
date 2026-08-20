@@ -12723,6 +12723,18 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    try:
+        from clio_cli.process_identity import register_self
+
+        if not register_self("dashboard", project_root=PROJECT_ROOT):
+            print(
+                "⚠ Dashboard process identity could not be registered; "
+                "automatic update cleanup will fail closed.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(f"⚠ Dashboard process identity unavailable: {exc}", file=sys.stderr)
+
     from clio_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always

@@ -20512,6 +20512,19 @@ def main():
             data = yaml.safe_load(f) or {}
             config = GatewayConfig.from_dict(data)
     
+    # Register only once the command line/config has parsed successfully. This
+    # positive identity lets the updater distinguish a supervised gateway from
+    # an unrelated Python process without broad cmdline heuristics.
+    try:
+        from clio_cli.process_identity import register_self
+
+        if not register_self("gateway", project_root=Path(__file__).resolve().parent.parent):
+            logger.warning(
+                "Gateway process identity could not be registered; update cleanup will fail closed"
+            )
+    except Exception as exc:
+        logger.warning("Gateway process identity unavailable: %s", exc)
+
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
     success = asyncio.run(start_gateway(config))

@@ -495,7 +495,12 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None) -> bool:
             # Unknown entries are retained, never silently erased.
             retained.append(existing)
         retained.append(asdict(entry))
-        return _atomic_write_ledger(path, retained)
+        written = _atomic_write_ledger(path, retained)
+    if written and _IS_WINDOWS:
+        # Best effort: the positive ledger remains useful even when an older
+        # Windows build or restrictive policy refuses Job Object attachment.
+        attach_self_to_kill_on_close_job()
+    return written
 
 
 def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
