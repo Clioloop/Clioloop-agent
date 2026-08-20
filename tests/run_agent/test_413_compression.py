@@ -417,6 +417,30 @@ class TestHTTP413Compression:
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
 
+    def test_disabled_compression_warns_before_oversized_provider_call(self, agent):
+        agent.compression_enabled = False
+        agent.context_compressor.context_length = 100
+        agent._emit_warning = MagicMock()
+
+        def _provider_call(**_kwargs):
+            assert agent._emit_warning.call_count == 1
+            return _mock_response(content="provider accepted request")
+
+        agent.client.chat.completions.create.side_effect = _provider_call
+        with (
+            patch(
+                "agent.conversation_loop.estimate_request_tokens_rough",
+                return_value=101,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert "compression is disabled" in agent._emit_warning.call_args.args[0]
+
     def test_compress_context_emits_lifecycle_status_before_work(self, agent):
         """Direct context compression should tell gateway users why the turn paused."""
         # This test calls _compress_context directly and asserts the FIRST
@@ -437,6 +461,10 @@ class TestPreflightCompression:
             patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
             patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
             patch("run_agent.estimate_request_tokens_rough", return_value=42),
+            patch(
+                "agent.conversation_compression.estimate_messages_tokens_rough",
+                side_effect=[1_000, 100],
+            ),
         ):
             compressed, new_system_prompt = agent._compress_context(
                 [{"role": "user", "content": "hello"}],

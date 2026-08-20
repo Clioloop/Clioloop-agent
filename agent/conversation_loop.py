@@ -109,6 +109,60 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _guard_uncompressed_context_overflow(agent: Any, request_tokens: int) -> bool:
+    """Warn once when a compression-disabled request exceeds its model window.
+
+    This runs immediately before every provider request, so it covers both a
+    large history at turn start and mid-turn growth from tool results. The
+    dedup re-arms as soon as a later request fits again; a subsequent overflow
+    therefore produces a fresh warning instead of being suppressed forever.
+    Returns ``True`` only when this call emitted a warning.
+    """
+    state_attr = "_last_uncompressed_context_overflow_warning"
+    if getattr(agent, "compression_enabled", True):
+        setattr(agent, state_attr, None)
+        return False
+
+    context_length = getattr(
+        getattr(agent, "context_compressor", None),
+        "context_length",
+        None,
+    )
+    if (
+        not isinstance(request_tokens, int)
+        or isinstance(request_tokens, bool)
+        or not isinstance(context_length, int)
+        or isinstance(context_length, bool)
+        or request_tokens <= 0
+        or context_length <= 0
+    ):
+        return False
+
+    if request_tokens <= context_length:
+        setattr(agent, state_attr, None)
+        return False
+
+    warning_key = (
+        getattr(agent, "session_id", None) or "",
+        context_length,
+    )
+    if getattr(agent, state_attr, None) == warning_key:
+        return False
+
+    emit_warning = getattr(agent, "_emit_warning", None)
+    if not callable(emit_warning):
+        return False
+    setattr(agent, state_attr, warning_key)
+    emit_warning(
+        f"⚠ Session context (~{request_tokens:,} tokens) exceeds this model's "
+        f"~{context_length:,}-token context window while compression is "
+        "disabled (`compression.enabled: false`). Enable compression and run "
+        "`/compress`, use `/new`, or switch to a larger-context model before "
+        "the provider rejects the request."
+    )
+    return True
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -1148,6 +1202,8 @@ def run_conversation(
             except Exception:
                 pass
             break
+
+        _guard_uncompressed_context_overflow(agent, approx_request_tokens)
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None

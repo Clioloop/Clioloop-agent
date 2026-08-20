@@ -116,6 +116,120 @@ _FALLBACK_TURN_MAX_CHARS = 700
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 
+# Appended when a standalone user-role summary needs an explicit boundary.
+# Salvage also uses the marker after capping an oversized generated summary.
+_SUMMARY_END_MARKER = (
+    "--- END OF CONTEXT SUMMARY — "
+    "respond to the message below, not the summary above ---"
+)
+_SALVAGE_SUMMARY_MAX_CHARS = 8_000
+_SALVAGE_KEEP_RECENT_TOOLS = 2
+_SALVAGE_REASONING_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+)
+
+
+def _looks_like_generated_summary(message: Dict[str, Any], content: str) -> bool:
+    """Return whether ``content`` is a standalone compressor-owned handoff.
+
+    Content heuristics alone are deliberately insufficient: a real user turn
+    can quote the compaction prefix or end marker. Batch and micro summaries
+    carry ``COMPRESSED_SUMMARY_METADATA_KEY`` so salvage can safely cap only
+    generated content and never truncate a live turn.
+    """
+    return (
+        message.get(COMPRESSED_SUMMARY_METADATA_KEY) is True
+        and message.get("role") in {"user", "assistant"}
+        and content.lstrip().startswith(SUMMARY_PREFIX)
+    )
+
+
+def salvage_grown_transcript(
+    original: List[Dict[str, Any]],
+    candidate: List[Dict[str, Any]],
+    *,
+    budget: Optional[int] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Mechanically shrink a grown compression candidate, if safely possible.
+
+    The candidate is copied before modification. Shrink operations retain the
+    existing message roles and tool-call IDs: stale reasoning sidecars are
+    removed, older retained tool bodies are replaced with the normal pruning
+    placeholder, and an explicitly marked generated summary may be capped.
+    A synthetic todo snapshot is removed only as a last resort. The result is
+    accepted only when the same rough estimator proves it is strictly smaller
+    than the original and still contains a user turn.
+    """
+    if not original or not candidate:
+        return None
+    if budget is None:
+        budget = estimate_messages_tokens_rough(original)
+    if budget <= 0:
+        return None
+
+    out: List[Dict[str, Any]] = [
+        dict(message) if isinstance(message, dict) else message
+        for message in candidate
+    ]
+    tool_indices = [
+        index
+        for index, message in enumerate(out)
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    assistant_indices = [
+        index
+        for index, message in enumerate(out)
+        if isinstance(message, dict) and message.get("role") == "assistant"
+    ]
+    newest_assistant = assistant_indices[-1] if assistant_indices else -1
+    keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
+
+    for index, message in enumerate(out):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant" and index != newest_assistant:
+            for key in _SALVAGE_REASONING_KEYS:
+                message.pop(key, None)
+        if message.get("role") == "tool" and index not in keep_tools:
+            content = message.get("content")
+            if isinstance(content, str) and len(content) > 200:
+                message["content"] = _PRUNED_TOOL_PLACEHOLDER
+        content = message.get("content")
+        if (
+            isinstance(content, str)
+            and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
+            and _looks_like_generated_summary(message, content)
+        ):
+            message["content"] = (
+                content[:_SALVAGE_SUMMARY_MAX_CHARS].rstrip()
+                + "\n…[summary truncated so compression can shrink]\n\n"
+                + _SUMMARY_END_MARKER
+            )
+
+    # Todo state is useful continuity context, so keep it whenever the cheaper
+    # reductions above already recover a shrinking candidate.
+    if estimate_messages_tokens_rough(out) >= budget:
+        for index in range(len(out) - 1, -1, -1):
+            message = out[index]
+            if (
+                isinstance(message, dict)
+                and message.get("_todo_snapshot_synthetic") is True
+                and message.get("role") == "user"
+            ):
+                del out[index]
+                break
+
+    if not any(
+        isinstance(message, dict) and message.get("role") == "user"
+        for message in out
+    ):
+        return None
+    if estimate_messages_tokens_rough(out) < budget:
+        return out
+    return None
+
 
 def _micro_tool_call_ids(message: Dict[str, Any]) -> set[str]:
     """Return non-empty call ids from one assistant message."""
@@ -595,6 +709,10 @@ class ContextCompressor(ContextEngine):
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
+        self._last_compress_refused_would_grow = False
+        self._last_compression_candidate_accepted = False
+        self._last_compression_attempt_previous_summary = None
+        self._last_compression_attempt_ineffective_count = 0
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
@@ -724,6 +842,13 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+        # Set when anti-growth rejects a generated candidate. Manual command
+        # feedback reads this exact flag instead of inferring success from a
+        # changed message count.
+        self._last_compress_refused_would_grow: bool = False
+        self._last_compression_candidate_accepted: bool = False
+        self._last_compression_attempt_previous_summary: Optional[str] = None
+        self._last_compression_attempt_ineffective_count: int = 0
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -801,6 +926,33 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    def record_rejected_compaction(self, *, rollback_candidate: bool = False) -> None:
+        """Record one candidate rejected before a compression boundary commit.
+
+        A would-grow refusal leaves the same over-threshold transcript in
+        place. Counting one ineffective strike lets the existing two-strike
+        anti-thrash latch stop automatic retries of that identical transcript.
+        When the outer commit layer rejects an otherwise accepted built-in
+        candidate (for example after todo reinjection tips it over budget), it
+        also rolls back the in-memory summary/count bookkeeping.
+        """
+        if rollback_candidate:
+            base_count = self._last_compression_attempt_ineffective_count
+            self._previous_summary = self._last_compression_attempt_previous_summary
+            if self._last_compression_candidate_accepted:
+                self.compression_count = max(0, self.compression_count - 1)
+            self._last_compression_candidate_accepted = False
+            self._ineffective_compression_count = base_count + 1
+        else:
+            self._ineffective_compression_count += 1
+        self._last_compression_savings_pct = 0.0
+        if not self.quiet_mode:
+            logger.warning(
+                "Compression candidate rejected before commit; "
+                "ineffective_compression_count=%d",
+                self._ineffective_compression_count,
+            )
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -1968,6 +2120,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
         """
+        original_messages = messages
+        self._last_compression_attempt_previous_summary = self._previous_summary
+        self._last_compression_attempt_ineffective_count = (
+            self._ineffective_compression_count
+        )
+        self._last_compression_candidate_accepted = False
+
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
@@ -1976,6 +2135,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_refused_would_grow = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2139,22 +2299,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # end marker — the same one used in the merge-into-tail path — so
         # the model has a clear "summary above, not new input" signal.
         if not _merge_summary_into_tail and summary_role == "user":
-            summary = (
-                summary
-                + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
-            )
+            summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+            compressed.append({
+                "role": summary_role,
+                "content": summary,
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            })
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
                 merged_prefix = (
                     summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
+                    + "\n\n"
+                    + _SUMMARY_END_MARKER
+                    + "\n\n"
                 )
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),
@@ -2163,8 +2324,6 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
                 _merge_summary_into_tail = False
             compressed.append(msg)
-
-        self.compression_count += 1
 
         compressed = self._sanitize_tool_pairs(compressed)
 
@@ -2176,7 +2335,46 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Port of Kilo-Org/kilocode#9434.
         compressed = _strip_historical_media(compressed)
 
+        # Compare transcript estimates like-for-like. ``current_tokens`` may
+        # include the system prompt and tool schemas, so using it for an
+        # anti-growth verdict can falsely accept a transcript that got larger.
+        original_estimate = estimate_messages_tokens_rough(original_messages)
         new_estimate = estimate_messages_tokens_rough(compressed)
+        # ``current_tokens`` identifies a real compression boundary.  Direct
+        # engine calls without request context are retained for backwards
+        # compatibility (notably plugin/tests that use ``compress`` as a pure
+        # transform); the owning boundary still applies its unconditional
+        # transcript guard before committing or rotating a session.
+        if current_tokens is not None and new_estimate > original_estimate:
+            salvaged = salvage_grown_transcript(
+                original_messages,
+                compressed,
+                budget=original_estimate,
+            )
+            if salvaged is not None:
+                compressed = salvaged
+                new_estimate = estimate_messages_tokens_rough(compressed)
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression salvage recovered a shrinking candidate "
+                        "(~%d -> ~%d tokens)",
+                        original_estimate,
+                        new_estimate,
+                    )
+            else:
+                self._last_compress_refused_would_grow = True
+                self.record_rejected_compaction(rollback_candidate=True)
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression refused: generated transcript would grow "
+                        "(~%d -> ~%d tokens)",
+                        original_estimate,
+                        new_estimate,
+                    )
+                return original_messages
+
+        self.compression_count += 1
+        self._last_compression_candidate_accepted = True
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness

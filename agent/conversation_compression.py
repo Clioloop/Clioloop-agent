@@ -36,7 +36,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from agent.model_metadata import estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +477,29 @@ def compress_context(
         _release_lock()  # compression aborted — no rotation will happen
         return messages, _existing_sp
 
+    # The built-in compressor performs its own like-for-like anti-growth
+    # check before accepting a generated candidate. Keep refusal handling at
+    # this host boundary so every surface gets the same warning and, crucially,
+    # no session rotation or system-prompt rebuild occurs for a no-op.
+    if (
+        getattr(
+            agent.context_compressor,
+            "_last_compress_refused_would_grow",
+            False,
+        )
+        is True
+    ):
+        agent._emit_warning(
+            "⚠ Compression refused: the generated summary would have grown "
+            "the conversation instead of shrinking it. No messages were "
+            "dropped — conversation continues unchanged."
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
@@ -502,7 +528,77 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
+        compressed.append({
+            "role": "user",
+            "content": todo_snapshot,
+            "_todo_snapshot_synthetic": True,
+        })
+
+    # Commit-boundary anti-growth guard. Todo reinjection (or a plugin context
+    # engine) can make the final candidate larger even when the built-in
+    # compressor's own output shrank. Compare transcript estimates using the
+    # same estimator on both sides; request-wide system/tool overhead is shared
+    # and must not hide transcript growth. Give near-break-even candidates one
+    # safe mechanical salvage pass before refusing the boundary.
+    _rough_in = estimate_messages_tokens_rough(messages)
+    _rough_out = estimate_messages_tokens_rough(compressed)
+    if _rough_out > _rough_in:
+        from agent.context_compressor import salvage_grown_transcript
+
+        _salvaged = salvage_grown_transcript(
+            messages,
+            compressed,
+            budget=_rough_in,
+        )
+        if _salvaged is not None:
+            compressed = _salvaged
+            _rough_out = estimate_messages_tokens_rough(compressed)
+            logger.info(
+                "Compression salvage recovered a shrinking transcript "
+                "(session=%s, ~%s -> ~%s tokens)",
+                agent.session_id or "none",
+                f"{_rough_in:,}",
+                f"{_rough_out:,}",
+            )
+
+    if _rough_out > _rough_in:
+        logger.warning(
+            "Compression refused: generated transcript would grow "
+            "(session=%s, ~%s -> ~%s tokens); keeping original unchanged",
+            agent.session_id or "none",
+            f"{_rough_in:,}",
+            f"{_rough_out:,}",
+        )
+        try:
+            agent.context_compressor._last_compress_refused_would_grow = True
+        except Exception:
+            pass
+        _record_rejection = getattr(
+            agent.context_compressor,
+            "record_rejected_compaction",
+            None,
+        )
+        if callable(_record_rejection):
+            try:
+                _record_rejection(rollback_candidate=True)
+            except TypeError:
+                # Plugin context engines may expose a simpler no-argument hook.
+                _record_rejection()
+            except Exception:
+                logger.debug(
+                    "Could not record rejected compression strike",
+                    exc_info=True,
+                )
+        agent._emit_warning(
+            "⚠ Compression refused: the generated summary would have grown "
+            "the conversation instead of shrinking it. No messages were "
+            "dropped — conversation continues unchanged."
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

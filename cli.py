@@ -10936,8 +10936,20 @@ class ClioCLI:
                     self.conversation_history,
                     approx_tokens,
                     new_tokens,
+                    compression_state=getattr(
+                        self.agent,
+                        "context_compressor",
+                        None,
+                    ),
                 )
-                icon = "🗜️" if summary["noop"] else "✅"
+                if (
+                    summary.get("aborted")
+                    or summary.get("fallback_used")
+                    or summary.get("refused_would_grow")
+                ):
+                    icon = "⚠️"
+                else:
+                    icon = "🗜️" if summary["noop"] else "✅"
                 print(f"  {icon} {summary['headline']}")
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
