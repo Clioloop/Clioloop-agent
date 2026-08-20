@@ -1,19 +1,94 @@
-schema_version: 1
+schema_version: 2
 source:
   repository: https://github.com/NousResearch/hermes-agent
-  revision: 165c889e5b4277b56dadd42949a4112c1e6175a6
-  audited_at: 2026-08-15
+  revision: de322448ac435b720177b94496e51ae6c10ad543
+  previous_audited_revision: 449471c33424f529863f982a31ef70fcd97f8e44
+  audited_at: 2026-08-20
 local:
   repository: https://github.com/Clioloop/Clioloop-agent
-  baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
-  preserved_local_revision: 6043c96
-  implementation_branch: feat/hermes-parity-20260816-003022
+  candidate_revision: 2939f78ab2ec7a3f045c94531a000211c6f148e3
+  previous_baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
+  implementation_branch: port/current-parity-audit-20260820
+audit:
+  kind: fast_source_backed_delta
+  comparison: "Clio candidate 2939f78 against Hermes de322448; this branch adds the recorded peer-roster closure"
+  inherited_ledger_note: Broad capability rows below were delivered before this delta and were not exhaustively re-proven in this fast audit.
+  exclusions:
+    - Nous billing, subscription, top-up, and branding
+    - Visual-only HUD Glass/material/layout styling without a shipped Clio HUD equivalent
+  evidence:
+    - "Hermes: git log/stat and source for 4a83b03c3..de322448"
+    - "Clio: git log 6e5a6353..2939f78 plus focused source/test inspection"
+    - "Detailed prior audit: hermes-clio-parity-plan-2026-08-20.md at Hermes 449471c"
 migration_rules:
   - Preserve Agentic Fusion, Gmail, music generation, ACP delegation overrides, cross-profile cron, managed provider, Portal, ComfyUI, Vidu, and Clio branding.
   - Port portable behavior rather than Nous-specific commercial endpoints or branding.
   - Keep old config, plugin manifests, state databases, and public imports compatible through additive migrations and adapters.
   - Require focused tests, migration notes, and a full-suite result before marking a capability ported.
   - Do not restart the running gateway during implementation or verification.
+current_delta:
+  - id: runtime-run-budget-and-stall-guards
+    status: matched
+    upstream_revisions: [803397ecc, 449471c33]
+    local_revisions: [fa927d4, c1538a8]
+    evidence:
+      - agent/run_budget.py
+      - agent/tool_guardrails.py
+      - tests/agent/test_run_budget.py
+      - tests/agent/test_stall_guards.py
+  - id: profile-bot-routing
+    status: matched-clio-equivalent
+    summary: Clio routes authenticated Bot roster and DM requests directly by profile instead of mirroring every API under /p/<profile>.
+    evidence:
+      - gateway/platforms/api_server.py:/api/bots/{profile}/dm
+      - clio_bot_mode.py:local_dm
+      - tests/gateway/test_bot_mode_surfaces.py
+  - id: peer-dm-and-connection-roster
+    status: matched
+    summary: Registered authenticated peers support profile-qualified DMs and live multi-source inventories with collision-safe handles and explicit offline errors.
+    evidence:
+      - clio_bot_mode.py:peer_dm
+      - clio_bot_mode.py:list_connected_bot_roster
+      - clio_cli/bot_mode.py:peer roster
+      - tests/test_bot_mode.py:test_connected_roster_uses_authenticated_peer_and_qualifies_collisions
+  - id: generic-gateway-profile-multiplex
+    status: partial
+    summary: Bot endpoints and subprocess-isolated profile turns are routed; Clio does not expose Hermes's generic /p/<profile> mirror for sessions, cron, and all platform adapters in one process.
+    evidence:
+      - clio_bot_mode.py:run_profile_turn
+      - gateway/platforms/api_server.py
+  - id: desktop-multi-connection-bot-roster
+    status: partial
+    summary: Stable (connection, profile) route keys and per-profile remote overrides exist, but the shipped renderer has no live aggregated Bots roster/connection picker yet.
+    evidence:
+      - apps/desktop/src/desktop/backend-foundations.ts:backendRouteKey
+      - apps/desktop/electron/connection-config.cjs:profileRemoteOverride
+      - apps/desktop/src/desktop/backend-foundations.test.ts
+  - id: terminal-overlay-unfocused-tab-switch
+    status: matched-clio-equivalent
+    upstream_revisions: [2473e5685, 7f3d25593]
+    summary: Hermes needed hidden-pane sampling because inactive keep-alive panes retain the terminal slot. Clio conditionally unmounts TerminalSlot on a right-sidebar tab switch, and its effect clears the overlay rect/pointer events; the upstream patch is not portable as-is.
+    evidence:
+      - apps/desktop/src/app/right-sidebar/index.tsx
+      - apps/desktop/src/app/right-sidebar/terminal/persistent.tsx
+  - id: hud-voice-menu
+    status: excluded-no-equivalent
+    upstream_revisions: [701314c6d, de322448a]
+    summary: The behavior only folds existing voice controls inside Hermes HUD mode. Clio has conversational voice/dictation but no shipped equivalent HUD composer mode to patch.
+    evidence:
+      - apps/desktop/src/app/chat/composer/controls.tsx
+      - apps/desktop/src/app/chat/composer/hooks/use-voice-conversation.ts
+  - id: hud-glass-material-and-band-layout
+    status: excluded-visual-only
+    upstream_revisions: [7f9e79b2e, cba8efce2, de322448a]
+  - id: tool-budget-read-guard
+    status: not-applicable
+    upstream_revisions: [4a83b03c3]
+    summary: The changed Hermes-only mcp_result_size_chars reader has no Clio counterpart; Clio's existing config hot paths already use load_config_readonly.
+    evidence:
+      - clio_cli/config.py:load_config_readonly
+      - tools/budget_config.py
+
 capabilities:
   - id: runtime-reliability
     title: Unified deadlines, bounded I/O, cancellation, retry state, finalization, pause/resume, and gateway recovery

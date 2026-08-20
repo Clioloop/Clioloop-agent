@@ -1230,6 +1230,93 @@ def _peer_request(url: str, key: str, *, method: str = "GET", body: Optional[Map
     return parsed
 
 
+def fetch_peer_roster(
+    name: str,
+    *,
+    include_hidden: bool = False,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """Fetch one registered peer's authenticated, source-stamped Bot inventory."""
+    name = _validate_source(name)
+    peer = load_peers().get(name)
+    if not isinstance(peer, dict) or not peer.get("url"):
+        raise BotModeError(f"No peer named '{name}'")
+    key = peer_secret(name)
+    if not key:
+        raise BotModeError(f"No API key configured for peer '{name}' ({_peer_key_env(name)})")
+    base = str(peer["url"]).rstrip("/")
+    query = "?include_hidden=true" if include_hidden else ""
+    try:
+        payload = _peer_request(f"{base}/api/bots{query}", key, timeout=max(0.1, float(timeout)))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:1000]
+        raise BotModeError(f"Peer rejected roster request (HTTP {exc.code}): {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise BotModeError(f"Could not read Bot roster from peer '{name}': {exc}") from exc
+
+    raw_bots = payload.get("data")
+    if not isinstance(raw_bots, list):
+        raw_bots = payload.get("bots")
+    if not isinstance(raw_bots, list):
+        raise BotModeError(f"Peer '{name}' returned no Bot roster")
+    label = str(peer.get("label") or peer.get("note") or name).strip() or name
+    bots: List[Dict[str, Any]] = []
+    for raw in raw_bots:
+        if not isinstance(raw, dict):
+            continue
+        profile = _validate_profile(str(raw.get("profile") or raw.get("name") or ""))
+        bots.append(
+            {
+                **raw,
+                "profile": profile,
+                "source": name,
+                "source_label": label,
+                "key": f"{name}:{profile}",
+            }
+        )
+    return {"source": name, "label": label, "url": base, "bots": bots}
+
+
+def list_connected_bot_roster(
+    peer_names: Optional[Sequence[str]] = None,
+    *,
+    include_local: bool = True,
+    include_hidden: bool = False,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """Merge connection inventories and report offline peers without hiding healthy sources."""
+    selected = list(peer_names) if peer_names is not None else sorted(load_peers())
+    sources: Dict[str, Mapping[str, Any]] = {}
+    errors: Dict[str, str] = {}
+    if include_local:
+        sources["local"] = {
+            "label": "This device",
+            "bots": list_bot_roster(include_hidden=include_hidden),
+        }
+    for raw_name in selected:
+        try:
+            name = _validate_source(raw_name)
+            sources[name] = fetch_peer_roster(
+                name,
+                include_hidden=include_hidden,
+                timeout=timeout,
+            )
+        except (BotModeError, OSError, ValueError) as exc:
+            errors[str(raw_name)] = str(exc)
+    return {
+        "bots": source_qualified_roster(sources),
+        "sources": [
+            {
+                "id": name,
+                "label": str(payload.get("label") or name),
+                "bot_count": len(payload.get("bots") or []),
+            }
+            for name, payload in sources.items()
+        ],
+        "errors": errors,
+    }
+
+
 def peer_dm(target: str, message: str, *, sender: str = "user", timeout: float = 600.0) -> Dict[str, Any]:
     peer_name, separator, profile = str(target or "").strip().partition("/")
     peer_name = _validate_source(peer_name)
@@ -1296,9 +1383,11 @@ __all__ = [
     "ensure_bot_chat",
     "ensure_canonical_session",
     "ensure_group_session",
+    "fetch_peer_roster",
     "get_room",
     "list_bot_roster",
     "list_bot_routines",
+    "list_connected_bot_roster",
     "list_rooms",
     "load_peers",
     "local_dm",

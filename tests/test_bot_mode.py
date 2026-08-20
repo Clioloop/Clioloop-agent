@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -293,6 +295,75 @@ def test_peer_tls_policy_and_remote_room_delivery(bot_env, monkeypatch):
     monkeypatch.setattr(bots, "run_profile_turn", lambda *_args, **_kwargs: "PASS")
     result = bots.send_room_message(room["id"], "@research-remote investigate", root=root)
     assert any("remote/research" in message["content"] for message in result.messages)
+
+
+def test_connected_roster_uses_authenticated_peer_and_qualifies_collisions(bot_env, monkeypatch):
+    class PeerHandler(BaseHTTPRequestHandler):
+        auth = []
+
+        def do_GET(self):  # noqa: N802 - stdlib handler contract
+            type(self).auth.append(self.headers.get("Authorization"))
+            assert self.path == "/api/bots?include_hidden=true"
+            body = json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {"profile": "alpha", "display_name": "Remote Alpha"},
+                        {"profile": "research", "display_name": "Research"},
+                    ],
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), PeerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        monkeypatch.setattr(bots, "load_peers", lambda: {"lab": {"url": base, "label": "Lab"}})
+        monkeypatch.setattr(bots, "peer_secret", lambda _name: "peer-secret")
+        result = bots.list_connected_bot_roster(include_hidden=True)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    by_key = {row["key"]: row for row in result["bots"]}
+    assert by_key["local:alpha"]["handle"] == "alpha-this-device"
+    assert by_key["lab:alpha"]["handle"] == "alpha-lab"
+    assert by_key["lab:research"]["handle"] == "research-lab"
+    assert result["errors"] == {}
+    assert PeerHandler.auth == ["Bearer peer-secret"]
+
+
+def test_connected_roster_keeps_healthy_sources_and_reports_peer_errors(bot_env, monkeypatch):
+    monkeypatch.setattr(bots, "load_peers", lambda: {"offline": {"url": "http://127.0.0.1:1"}})
+    monkeypatch.setattr(bots, "peer_secret", lambda _name: "peer-secret")
+    result = bots.list_connected_bot_roster(timeout=0.1)
+    assert any(row["source"] == "local" for row in result["bots"])
+    assert "offline" in result["errors"]
+
+
+def test_peer_roster_alias_dispatches(monkeypatch, capsys):
+    from clio_cli.bot_mode import _cmd_peer
+
+    monkeypatch.setattr(bots, "list_connected_bot_roster", lambda *args, **kwargs: {"bots": ["ok"]})
+    _cmd_peer(
+        argparse.Namespace(
+            peer_action="bots",
+            peers=[],
+            no_local=True,
+            include_hidden=False,
+            timeout=1.0,
+        )
+    )
+    assert json.loads(capsys.readouterr().out) == {"bots": ["ok"]}
 
 
 def test_protocol_is_injected_only_for_canonical_bot_chat(bot_env):

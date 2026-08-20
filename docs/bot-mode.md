@@ -26,6 +26,7 @@ clio group send ROOM_ID --file /path/to/request.txt
 clio routine add PROFILE "Daily review" "0 9 * * *" --file prompt.txt
 
 clio peer add laptop https://host.example --key '...'
+clio peer roster
 clio peer dm laptop/researcher --from reviewer --file message.txt
 ```
 
@@ -89,6 +90,8 @@ When the API Server platform is enabled:
 - `POST /api/bot-rooms/{room_id}/messages`
 
 The endpoints use the API server's existing bearer authentication. Peer URLs are ordinary configuration; peer keys are stored separately in the profile `.env`.
+
+`clio peer roster [PEER ...]` authenticates to each selected connection's `GET /api/bots`, merges it with the local roster, and source-qualifies handles when the same profile name exists on more than one gateway. An unreachable peer is reported in the JSON `errors` object while healthy sources remain usable; peer credentials are never included in roster output.
 
 ## Canonical prompt behavior
 

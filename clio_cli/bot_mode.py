@@ -39,7 +39,7 @@ def _cmd_bot(args: argparse.Namespace) -> None:
     )
 
     action = args.bot_action or "list"
-    if action == "list":
+    if action in {"list", "ls"}:
         _emit(list_bot_roster(include_hidden=bool(args.include_hidden)))
     elif action == "show":
         _emit({"profile": args.profile, **read_bot_metadata(args.profile)})
@@ -64,24 +64,33 @@ def _cmd_group(args: argparse.Namespace) -> None:
     from clio_bot_mode import create_room, delete_room, get_room, list_rooms, send_room_message
 
     action = args.group_action or "list"
-    if action == "list":
+    if action in {"list", "ls"}:
         _emit(list_rooms())
     elif action == "create":
         _emit(create_room(args.name, args.members))
     elif action == "show":
         _emit(get_room(args.room_id))
-    elif action == "delete":
+    elif action in {"delete", "rm"}:
         _emit({"room_id": args.room_id, "deleted": delete_room(args.room_id)})
     elif action == "send":
         _emit(send_room_message(args.room_id, _message(args), thread_id=args.thread))
 
 
 def _cmd_peer(args: argparse.Namespace) -> None:
-    from clio_bot_mode import load_peers, peer_dm, remove_peer, save_peer
+    from clio_bot_mode import list_connected_bot_roster, load_peers, peer_dm, remove_peer, save_peer
 
     action = args.peer_action or "list"
-    if action == "list":
+    if action in {"list", "ls"}:
         _emit(load_peers())
+    elif action in {"roster", "bots"}:
+        _emit(
+            list_connected_bot_roster(
+                args.peers or None,
+                include_local=not args.no_local,
+                include_hidden=bool(args.include_hidden),
+                timeout=args.timeout,
+            )
+        )
     elif action == "add":
         _emit({
             "name": args.name,
@@ -93,7 +102,7 @@ def _cmd_peer(args: argparse.Namespace) -> None:
                 allow_insecure=bool(args.allow_insecure),
             ),
         })
-    elif action == "remove":
+    elif action in {"remove", "rm"}:
         _emit({"name": args.name, "removed": remove_peer(args.name)})
     elif action == "dm":
         _emit(peer_dm(args.target, _message(args), sender=args.sender, timeout=args.timeout))
@@ -103,7 +112,7 @@ def _cmd_routine(args: argparse.Namespace) -> None:
     from clio_bot_mode import create_bot_routine, list_bot_routines
 
     action = args.routine_action or "list"
-    if action == "list":
+    if action in {"list", "ls"}:
         _emit(list_bot_routines(args.profile))
     elif action == "add":
         _emit(
@@ -178,6 +187,11 @@ def register_cli(subparsers: argparse._SubParsersAction) -> None:
     peer = subparsers.add_parser("peer", help="Manage authenticated Bot peer gateways")
     peer_sub = peer.add_subparsers(dest="peer_action")
     peer_sub.add_parser("list", aliases=["ls"], help="List peers (secrets omitted)")
+    roster = peer_sub.add_parser("roster", aliases=["bots"], help="List Bots across local and peer connections")
+    roster.add_argument("peers", nargs="*", help="Optional peer names (default: all registered peers)")
+    roster.add_argument("--no-local", action="store_true", help="Omit Bots on this device")
+    roster.add_argument("--include-hidden", action="store_true")
+    roster.add_argument("--timeout", type=float, default=30.0)
     add = peer_sub.add_parser("add", help="Register an authenticated peer API server")
     add.add_argument("name")
     add.add_argument("url")
