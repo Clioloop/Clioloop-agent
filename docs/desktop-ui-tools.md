@@ -8,6 +8,8 @@ Tools:
 
 - `open_preview` / `close_preview` — open or dismiss the current window's preview.
 - `read_preview` — return the active preview identity and bounded rendered text when available.
+- `drive_preview` — inventory and drive the active preview tab with durable refs and trusted Electron input.
+- `annotate_preview` — add, hold, remove, or clear persistent element-bound preview marks.
 - `read_terminal` / `close_terminal` — inspect the visible terminal buffer or hide its pane without killing the shell process.
 - `focus_pane` — reveal chat, sessions, files, preview, review, or terminal.
 - `apply_layout` — apply a bounded pane preset (`default`, `focus`, `coding`, `review`, `research`).
@@ -25,3 +27,11 @@ session; they never use a process-global "last window" pointer.
 Read operations use a bounded request/reply protocol (`desktop_ui.request` /
 `desktop_ui.respond`) with an eight-second tool timeout. Renderer absence,
 window closure, and unsupported OS capabilities fail closed.
+
+`drive_preview` uses that same session-addressed request/reply bridge to
+inventory and operate the active preview tab. Inventory refs remain valid
+across framework re-renders and return compact deltas after the first survey;
+navigation invalidates every ref. Click, hover, type, press, and scroll are sent
+through Electron's trusted input path and fail explicitly when a live webview
+cannot receive real input. `annotate_preview` annotations persist across later
+actions, follow their elements, and are cleared by navigation.

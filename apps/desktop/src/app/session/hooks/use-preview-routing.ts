@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
+import { annotateActivePreview, driveActivePreview } from '@/app/chat/right-rail/preview-runtime'
 import { handleDesktopUiAction } from '@/lib/desktop-ui-actions'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import { readDesktopTerminal } from '@/store/desktop-terminal'
@@ -326,26 +327,33 @@ export function usePreviewRouting({
         const requestId = typeof request.request_id === 'string' ? request.request_id : ''
         const action = typeof request.action === 'string' ? request.action : ''
         const args = asRecord(request.payload)
-        let result: unknown
 
-        if (action === 'preview.read') {
-          result = desktopUiPreviewSnapshot(Number(args.start || 0), Number(args.count || 12_000))
-        } else if (action === 'tour.targets') {
-          result = { targets: desktopUiTourTargets() }
-        } else if (action === 'terminal.read') {
-          result = readDesktopTerminal(Number(args.start || 0), Number(args.count || 12_000))
-        } else if (action === 'window.read_below') {
-          result = { error: 'Window-below metadata is unavailable on this desktop backend' }
-        } else {
-          result = { error: `Unsupported desktop UI request: ${action || '(empty)'}` }
-        }
+        void (async () => {
+          let result: unknown
 
-        if (requestId) {
-          void requestGateway('desktop_ui.respond', {
-            request_id: requestId,
-            result: JSON.stringify(result)
-          }).catch(() => undefined)
-        }
+          if (action === 'preview.read') {
+            result = desktopUiPreviewSnapshot(Number(args.start || 0), Number(args.count || 12_000))
+          } else if (action === 'preview.drive') {
+            result = await driveActivePreview(args)
+          } else if (action === 'preview.annotate') {
+            result = await annotateActivePreview(args)
+          } else if (action === 'tour.targets') {
+            result = { targets: desktopUiTourTargets() }
+          } else if (action === 'terminal.read') {
+            result = readDesktopTerminal(Number(args.start || 0), Number(args.count || 12_000))
+          } else if (action === 'window.read_below') {
+            result = { error: 'Window-below metadata is unavailable on this desktop backend' }
+          } else {
+            result = { error: `Unsupported desktop UI request: ${action || '(empty)'}` }
+          }
+
+          if (requestId) {
+            await requestGateway('desktop_ui.respond', {
+              request_id: requestId,
+              result: JSON.stringify(result)
+            }).catch(() => undefined)
+          }
+        })()
 
         return
       }

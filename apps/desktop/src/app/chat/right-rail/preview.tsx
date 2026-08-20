@@ -19,8 +19,10 @@ import {
   closeRightRailTab,
   type PreviewTarget
 } from '@/store/preview'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
+import { previewRuntimeKey } from './preview-runtime'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
 export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
@@ -56,6 +58,8 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
@@ -78,6 +82,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
+  const sessionId = selectedStoredSessionId || activeSessionId || ''
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)">
@@ -160,6 +165,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
           embedded
           onRestartServer={isPreview ? onRestartServer : undefined}
           reloadRequest={previewReloadRequest}
+          runtimeKey={sessionId ? previewRuntimeKey(sessionId, activeTab.id) : ''}
           setTitlebarToolGroup={setTitlebarToolGroup}
           target={activeTab.target}
         />

@@ -19,20 +19,26 @@ import {
 } from './preview-console'
 import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { registerPreviewRuntime } from './preview-runtime'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
+  executeJavaScript?: (code: string) => Promise<unknown>
   getURL?: () => string
+  goBack?: () => void
+  goForward?: () => void
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
+  sendInputEvent?: (event: object) => Promise<void> | void
 }
 
 interface PreviewPaneProps {
   embedded?: boolean
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
+  runtimeKey?: string
   setTitlebarToolGroup?: SetTitlebarToolGroup
   target: PreviewTarget
 }
@@ -119,6 +125,7 @@ export function PreviewPane({
   embedded = false,
   onRestartServer,
   reloadRequest = 0,
+  runtimeKey = '',
   setTitlebarToolGroup,
   target
 }: PreviewPaneProps) {
@@ -591,7 +598,30 @@ export function PreviewPane({
     host.appendChild(webview)
     webviewRef.current = webview
 
+    const unregisterRuntime = runtimeKey
+      ? registerPreviewRuntime(runtimeKey, {
+          back: () => webview.goBack?.(),
+          focus: () => webview.focus(),
+          forward: () => webview.goForward?.(),
+          run: code => {
+            if (!webview.executeJavaScript) {
+              return Promise.reject(new Error('Preview page scripting is unavailable'))
+            }
+
+            return webview.executeJavaScript(code)
+          },
+          send: async event => {
+            if (!webview.sendInputEvent) {
+              throw new Error('Electron trusted input is unavailable for the active preview')
+            }
+
+            await webview.sendInputEvent(event)
+          }
+        })
+      : () => undefined
+
     return () => {
+      unregisterRuntime()
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('did-fail-load', onFail)
       webview.removeEventListener('did-navigate', onNavigate)
@@ -600,7 +630,7 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, isWebPreview, runtimeKey, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">

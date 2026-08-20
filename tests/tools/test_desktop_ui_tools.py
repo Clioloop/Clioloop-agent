@@ -6,9 +6,11 @@ from gateway.session_context import clear_session_vars, set_session_vars
 from tools import desktop_ui
 from tools.desktop_ui_tools import (
     _normalize_preview_target,
+    annotate_preview,
     apply_layout,
     close_preview,
     desktop_ui_available,
+    drive_preview,
     open_preview,
     read_preview,
 )
@@ -90,3 +92,51 @@ def test_request_without_renderer_returns_tool_error(monkeypatch):
         clear_session_vars(tokens)
     assert "error" in result
     assert "only available in Clio Desktop" in result["error"]
+
+
+def test_preview_drive_and_annotation_route_to_trusted_renderer(monkeypatch):
+    monkeypatch.setenv("CLIO_DESKTOP", "1")
+    calls = []
+
+    def request(action, sid, payload, timeout):
+        calls.append((action, sid, payload, timeout))
+        return {"success": True, "acted": payload["action"]}
+
+    desktop_ui.configure_bridge(emit_callback=None, request_callback=request)
+    tokens = set_session_vars(session_key="stored", ui_session_id="runtime-preview")
+    try:
+        driven = json.loads(drive_preview("type", ref="inp-name", text="Ada", submit=True))
+        annotated = json.loads(annotate_preview("add", ref="inp-name", label="Author"))
+    finally:
+        clear_session_vars(tokens)
+
+    assert driven == {"success": True, "acted": "type"}
+    assert annotated == {"success": True, "acted": "add"}
+    assert calls == [
+        (
+            "preview.drive",
+            "runtime-preview",
+            {"action": "type", "ref": "inp-name", "submit": True, "text": "Ada"},
+            8.0,
+        ),
+        (
+            "preview.annotate",
+            "runtime-preview",
+            {"action": "add", "ref": "inp-name", "label": "Author"},
+            8.0,
+        ),
+    ]
+
+
+def test_trusted_preview_actions_fail_closed_without_a_renderer(monkeypatch):
+    monkeypatch.setenv("CLIO_DESKTOP", "1")
+    tokens = set_session_vars(session_key="stored", ui_session_id="runtime-missing")
+    try:
+        driven = json.loads(drive_preview("click", ref="btn-save"))
+        annotated = json.loads(annotate_preview("hold"))
+    finally:
+        clear_session_vars(tokens)
+
+    assert "error" in driven
+    assert "Clio Desktop" in driven["error"]
+    assert "error" in annotated

@@ -173,7 +173,8 @@ TOOLSETS = {
         "tools": [
             "read_terminal", "close_terminal", "open_preview",
             "close_preview", "read_preview", "read_window_below",
-            "focus_pane", "react_to_message", "tour", "apply_layout",
+            "drive_preview", "annotate_preview", "focus_pane",
+            "react_to_message", "tour", "apply_layout",
         ],
         "includes": [],
     },
