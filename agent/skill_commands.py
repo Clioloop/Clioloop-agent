@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+# Publish and inspect the command map and its platform tag as one snapshot.
+# Scanning stays outside this lock because it performs file I/O.
+_publish_lock = threading.Lock()
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -282,8 +286,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands, _skill_commands_platform
-    _skill_commands_platform = _resolve_skill_commands_platform()
-    _skill_commands = {}
+    platform = _resolve_skill_commands_platform()
+    # Build privately so readers never observe an empty or partially populated
+    # map while a scan is in progress.
+    commands: Dict[str, Dict[str, Any]] = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
@@ -332,7 +338,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -342,7 +348,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
-    return _skill_commands
+    # The map and the scope that produced it are one logical value. Publishing
+    # them under the lookup lock prevents a reader from accepting a map built
+    # for another platform with the previous platform tag.
+    with _publish_lock:
+        _skill_commands = commands
+        _skill_commands_platform = platform
+    return commands
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
@@ -352,12 +364,15 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     process serving Telegram and Discord concurrently) so each platform
     sees its own ``skills.platform_disabled`` view (#14536).
     """
-    if (
-        not _skill_commands
-        or _skill_commands_platform != _resolve_skill_commands_platform()
-    ):
-        scan_skill_commands()
-    return _skill_commands
+    current_platform = _resolve_skill_commands_platform()
+    with _publish_lock:
+        commands = _skill_commands
+        is_fresh = bool(commands) and _skill_commands_platform == current_platform
+    if is_fresh:
+        return commands
+    # Return this scan's own completed map. Another platform may publish after
+    # this scan, but it must not change the result of the current lookup.
+    return scan_skill_commands()
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -401,8 +416,8 @@ def reload_skills() -> Dict[str, Any]:
 
     before = _snapshot(_skill_commands)
 
-    # Rescan the skills dir. ``scan_skill_commands`` resets
-    # ``_skill_commands = {}`` internally and repopulates it.
+    # Rescan the skills dir. ``scan_skill_commands`` builds privately and
+    # atomically replaces the published command map.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)

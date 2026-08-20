@@ -1072,10 +1072,35 @@ class TestBuildSystemPrompt:
         assert "Custom instruction" in prompt
 
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
-        from agent.prompt_builder import MEMORY_GUIDANCE
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
 
+        agent_with_memory_tool._memory_enabled = True
+        agent_with_memory_tool._user_profile_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
+        assert USER_PROFILE_GUIDANCE not in prompt
+
+    def test_user_profile_only_guidance_when_notes_store_disabled(
+        self, agent_with_memory_tool
+    ):
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = True
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert USER_PROFILE_GUIDANCE in prompt
+        assert MEMORY_GUIDANCE not in prompt
+
+    def test_no_builtin_memory_guidance_when_both_stores_disabled(
+        self, agent_with_memory_tool
+    ):
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = False
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert USER_PROFILE_GUIDANCE not in prompt
 
     def test_no_memory_guidance_without_tool(self, agent):
         from agent.prompt_builder import MEMORY_GUIDANCE

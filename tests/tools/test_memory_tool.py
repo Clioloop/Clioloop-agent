@@ -6,6 +6,8 @@ from pathlib import Path
 
 from tools.memory_tool import (
     MemoryStore,
+    builtin_memory_stores_enabled,
+    check_memory_requirements,
     memory_tool,
     _scan_memory_content,
     MEMORY_SCHEMA,
@@ -24,6 +26,43 @@ class TestMemorySchema:
         assert "like a diary" not in description
         assert "temporary task state" in description
         assert ">80%" not in description
+
+    @pytest.mark.parametrize(
+        ("memory_enabled", "user_profile_enabled", "expected"),
+        [
+            (True, True, True),
+            (True, False, True),
+            (False, True, True),
+            (False, False, False),
+        ],
+    )
+    def test_tool_availability_tracks_builtin_store_config(
+        self, monkeypatch, memory_enabled, user_profile_enabled, expected
+    ):
+        from clio_cli import config as config_module
+
+        monkeypatch.setattr(
+            config_module,
+            "load_config_readonly",
+            lambda: {
+                "memory": {
+                    "memory_enabled": memory_enabled,
+                    "user_profile_enabled": user_profile_enabled,
+                }
+            },
+        )
+
+        assert builtin_memory_stores_enabled() is expected
+        assert check_memory_requirements() is expected
+
+    def test_tool_availability_fails_open_on_unreadable_config(self, monkeypatch):
+        from clio_cli import config as config_module
+
+        def _raise():
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(config_module, "load_config_readonly", _raise)
+        assert builtin_memory_stores_enabled() is True
 
 
 # =========================================================================

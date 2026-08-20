@@ -649,9 +649,29 @@ def memory_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
+def builtin_memory_stores_enabled() -> bool:
+    """Return whether either built-in store (MEMORY.md / USER.md) is enabled.
+
+    Fail open if merged config cannot be read: optional surface trimming must
+    never hide a tool that might otherwise work.
+    """
+    try:
+        from clio_cli.config import load_config_readonly
+
+        section = (load_config_readonly() or {}).get("memory")
+        if not isinstance(section, dict):
+            return True
+        return bool(section.get("memory_enabled", True)) or bool(
+            section.get("user_profile_enabled", True)
+        )
+    except Exception:
+        logger.debug("Could not read memory config for availability", exc_info=True)
+        return True
+
+
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Available unless both built-in memory stores are disabled in config."""
+    return builtin_memory_stores_enabled()
 
 
 # =============================================================================

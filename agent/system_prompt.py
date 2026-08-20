@@ -32,6 +32,7 @@ from agent.prompt_builder import (
     CLIO_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    USER_PROFILE_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
@@ -113,7 +114,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
+        memory_enabled = getattr(agent, "_memory_enabled", True)
+        user_profile_enabled = getattr(agent, "_user_profile_enabled", True)
+        if memory_enabled:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        elif user_profile_enabled:
+            # The notes store is off, so avoid generic guidance that can send
+            # writes to target='memory'; advertise only the live USER.md store.
+            tool_guidance.append(USER_PROFILE_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:

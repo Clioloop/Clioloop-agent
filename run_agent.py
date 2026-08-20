@@ -4797,10 +4797,11 @@ class AIAgent:
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: Any,
         *,
         failed: bool,
-    ) -> str:
+        tool_call_id: str = "",
+    ) -> Any:
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,
@@ -4810,13 +4811,25 @@ class AIAgent:
         # Observe the raw result before appending the existing loop-warning
         # suffix, whose changing count would otherwise defeat result identity.
         stall_notice = None
+        result_stub = None
         if self._stall_guards_enabled():
             try:
-                stall_notice = self._tool_guardrails.observe_identical_call(
-                    tool_name, function_args, function_result
+                observation = self._tool_guardrails.observe_call(
+                    tool_name,
+                    function_args,
+                    function_result,
+                    tool_call_id=tool_call_id,
+                    failed=failed,
                 )
+                stall_notice = observation.notice
+                result_stub = observation.stub
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
+        # The tool executed freshly. Only its append-only context
+        # representation is compacted, preserving role/tool_call_id pairing,
+        # provider prompt caches, and changed-result polling semantics.
+        if result_stub and isinstance(function_result, str):
+            function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:

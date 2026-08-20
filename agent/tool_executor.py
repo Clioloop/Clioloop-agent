@@ -44,6 +44,7 @@ from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
+    extract_persisted_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,26 @@ logger = logging.getLogger(__name__)
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+
+
+def _record_persisted_path_for_stub(agent, tool_call_id: str, result: Any) -> None:
+    """Best-effort bridge from existing spill storage to result stubs."""
+    try:
+        path = extract_persisted_path(result) if isinstance(result, str) else None
+        if path:
+            agent._tool_guardrails.record_persisted_result(tool_call_id, path)
+    except Exception as exc:
+        logger.debug("persisted-path record for result stub failed: %s", exc)
+
+
+def _record_persisted_tool_messages_for_stubs(agent, tool_messages: list[dict]) -> None:
+    """Record paths added by aggregate turn-budget spill enforcement."""
+    for message in tool_messages:
+        _record_persisted_path_for_stub(
+            agent,
+            str(message.get("tool_call_id") or ""),
+            message.get("content"),
+        )
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -652,6 +673,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_args,
                     function_result,
                     failed=is_error,
+                    tool_call_id=getattr(tc, "id", "") or "",
                 )
 
             if is_error:
@@ -712,6 +734,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _record_persisted_path_for_stub(agent, tc.id, function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -745,6 +768,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
         enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        _record_persisted_tool_messages_for_stubs(agent, turn_tool_msgs)
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1208,6 +1232,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_args,
                 function_result,
                 failed=_is_error_result,
+                tool_call_id=getattr(tool_call, "id", "") or "",
             )
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -1259,6 +1284,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _record_persisted_path_for_stub(agent, tool_call.id, function_result)
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -1308,7 +1334,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+        turn_tool_msgs = messages[-num_tools_seq:]
+        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        _record_persisted_tool_messages_for_stubs(agent, turn_tool_msgs)
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

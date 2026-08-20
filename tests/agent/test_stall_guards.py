@@ -2,6 +2,7 @@
 
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
+    IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
     ToolCallGuardrailController,
     is_stall_guard_repeatable,
@@ -67,6 +68,89 @@ def test_raw_result_identity_survives_existing_warning_suffixes():
             assert notice is None
     assert notice is not None
     assert "Clio note" in notice
+
+
+# ── result-reference stubbing ─────────────────────────────────────────────
+
+
+def test_second_large_byte_identical_result_becomes_reference_stub():
+    controller = ToolCallGuardrailController()
+    result = "x" * IDENTICAL_RESULT_STUB_MIN_CHARS
+    args = {"query": "runtime tools"}
+
+    first = controller.observe_call(
+        "web_search", args, result, tool_call_id="call-1"
+    )
+    second = controller.observe_call(
+        "web_search", args, result, tool_call_id="call-2"
+    )
+
+    assert first.stub is None
+    assert second.stub is not None
+    assert "byte-identical" in second.stub
+    assert "tool_call_id call-1" in second.stub
+    assert "runtime tools" in second.stub
+    assert len(second.stub) < len(result)
+
+
+def test_changed_errors_small_and_multimodal_results_are_not_stubbed():
+    controller = ToolCallGuardrailController()
+    large = "x" * IDENTICAL_RESULT_STUB_MIN_CHARS
+    args = {"id": "job-1"}
+
+    assert controller.observe_call("process", args, large).stub is None
+    assert controller.observe_call("process", args, "y" + large).stub is None
+
+    controller.reset_for_turn()
+    assert controller.observe_call("process", args, large, failed=True).stub is None
+    assert controller.observe_call("process", args, large, failed=True).stub is None
+
+    controller.reset_for_turn()
+    small = "z" * (IDENTICAL_RESULT_STUB_MIN_CHARS - 1)
+    assert controller.observe_call("process", args, small).stub is None
+    assert controller.observe_call("process", args, small).stub is None
+
+    controller.reset_for_turn()
+    assert controller.observe_call("process", args, large).stub is None
+    assert controller.observe_call("process", args, [{"type": "image"}]).stub is None
+    assert controller.observe_call("process", args, large).stub is None
+
+
+def test_repeatable_pollers_stub_unchanged_payload_without_loop_notice():
+    controller = ToolCallGuardrailController()
+    result = "pending\n" * IDENTICAL_RESULT_STUB_MIN_CHARS
+    observations = [
+        controller.observe_call(
+            "job_poll", {"id": "job-1"}, result, tool_call_id=f"call-{index}"
+        )
+        for index in range(4)
+    ]
+
+    assert observations[0].stub is None
+    assert all(item.stub is not None for item in observations[1:])
+    assert all(item.notice is None for item in observations)
+
+
+def test_result_stub_carries_persisted_path_and_parser_round_trips():
+    from tools.tool_result_storage import (
+        _build_persisted_message,
+        extract_persisted_path,
+    )
+
+    path = "/tmp/clio-spill/call-1.txt"
+    persisted = _build_persisted_message("preview", True, 50_000, path)
+    assert extract_persisted_path(persisted) == path
+    assert extract_persisted_path("ordinary result") is None
+
+    controller = ToolCallGuardrailController()
+    controller.record_persisted_result("call-1", path)
+    result = "x" * IDENTICAL_RESULT_STUB_MIN_CHARS
+    controller.observe_call("web_search", {"q": "x"}, result, tool_call_id="call-1")
+    stub = controller.observe_call(
+        "web_search", {"q": "x"}, result, tool_call_id="call-2"
+    ).stub
+    assert stub is not None
+    assert path in stub
 
 
 def test_trailing_continue_intent_is_narrow_and_tail_anchored():

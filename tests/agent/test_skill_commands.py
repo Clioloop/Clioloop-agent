@@ -378,6 +378,73 @@ class TestScanSkillCommands:
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
 
+    def test_scan_publishes_only_the_complete_command_map(self, tmp_path):
+        """Readers keep the previous map until an in-flight scan is complete."""
+        import threading
+
+        import agent.skill_commands as skill_commands_module
+        import tools.skills_tool as skills_tool_module
+
+        for index in range(3):
+            _make_skill(tmp_path, f"atomic-{index}")
+
+        previous = {"/previous": {"name": "previous"}}
+        started = threading.Event()
+        release = threading.Event()
+        real_parse = skills_tool_module._parse_frontmatter
+
+        def _blocking_parse(content):
+            if not started.is_set():
+                started.set()
+                assert release.wait(timeout=10), "scan was not released"
+            return real_parse(content)
+
+        result = {}
+
+        def _scan():
+            result.update(scan_skill_commands())
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._parse_frontmatter", _blocking_parse),
+            patch.object(skill_commands_module, "_skill_commands", previous),
+        ):
+            scanner = threading.Thread(target=_scan, daemon=True)
+            scanner.start()
+            assert started.wait(timeout=10), "scan never started"
+            assert skill_commands_module._skill_commands is previous
+            release.set()
+            scanner.join(timeout=10)
+            assert not scanner.is_alive()
+            assert len(skill_commands_module._skill_commands) == 3
+
+        assert set(result) == {"/atomic-0", "/atomic-1", "/atomic-2"}
+
+    def test_publication_and_lookup_share_one_lock(self, tmp_path):
+        """A lookup cannot observe the map and platform tag separately."""
+        import threading
+
+        import agent.skill_commands as skill_commands_module
+        from agent.skill_commands import get_skill_commands
+
+        _make_skill(tmp_path, "shared")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            done = threading.Event()
+
+            def _read():
+                get_skill_commands()
+                done.set()
+
+            with skill_commands_module._publish_lock:
+                reader = threading.Thread(target=_read, daemon=True)
+                reader.start()
+                assert not done.wait(timeout=0.2)
+
+            assert done.wait(timeout=10), "reader did not finish after publication"
+            reader.join(timeout=10)
+
+
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers
     skills with hyphens swapped for underscores. When Telegram autocomplete

@@ -24,6 +24,7 @@ Defense against context-window overflow operates at three levels:
 
 import logging
 import os
+import re
 import shlex
 import uuid
 
@@ -121,6 +122,17 @@ def _build_persisted_message(
         msg += "\n..."
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
+
+
+_PERSISTED_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
+
+
+def extract_persisted_path(content: str) -> str | None:
+    """Extract the spill path from a ``<persisted-output>`` replacement."""
+    if not isinstance(content, str) or PERSISTED_OUTPUT_TAG not in content:
+        return None
+    match = _PERSISTED_PATH_RE.search(content)
+    return match.group(1).strip() if match else None
 
 
 def maybe_persist_tool_result(

@@ -65,6 +65,12 @@ STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process", "bfl_flux3_get_result"})
 _STALL_GUARD_REPEATABLE_SUFFIXES = ("_get_result", "_poll")
 STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
 
+# A successful fresh result at or above this size is represented by a compact
+# reference stub from the second consecutive byte-identical call onward. Small
+# results cost less to repeat than the reference machinery costs to explain.
+IDENTICAL_RESULT_STUB_MIN_CHARS = 512
+_RESULT_STUB_ARGS_PREVIEW_CHARS = 120
+
 
 def is_stall_guard_repeatable(tool_name: str) -> bool:
     """Whether a tool is exempt from the identical-call loop notice."""
@@ -152,6 +158,14 @@ class ToolCallSignature:
     def to_metadata(self) -> dict[str, str]:
         """Return public metadata without raw argument values."""
         return {"tool_name": self.tool_name, "args_hash": self.args_hash}
+
+
+@dataclass(frozen=True)
+class IdenticalCallObservation:
+    """Notice and optional result replacement for one completed tool call."""
+
+    notice: str | None = None
+    stub: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +265,11 @@ class ToolCallGuardrailController:
         self._identical_streak_sig: ToolCallSignature | None = None
         self._identical_streak_result_hash = ""
         self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._identical_streak_failed = False
+        # The first full result may have been replaced by Clio's existing
+        # <persisted-output> preview. Keep its path available to later stubs.
+        self._persisted_result_paths: dict[str, str] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -403,42 +422,108 @@ class ToolCallGuardrailController:
         args: Mapping[str, Any] | None,
         result: str | None,
     ) -> str | None:
-        """Return notice-only guidance for consecutive identical calls/results.
+        """Back-compatible notice-only wrapper around :meth:`observe_call`."""
+        return self.observe_call(tool_name, args, result).notice
 
-        The observation is intentionally independent of the existing failure
-        and idempotent-tool guards: it covers successful mutating and unknown
-        tools too, but never blocks execution. Poll/get-result tools are exempt.
+    def observe_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        result: Any,
+        *,
+        tool_call_id: str = "",
+        failed: bool = False,
+    ) -> IdenticalCallObservation:
+        """Observe a fresh result and return loop notice/result-stub metadata.
+
+        Calls are never cached or skipped. From the second consecutive call
+        with the same tool, canonical arguments, success state, and
+        byte-identical plain-string result, a result of at least 512 characters
+        is replaced *in model context* by a compact reference to the first
+        result. A changed poll therefore still flows through in full. Errors
+        and multimodal results are never stubbed. Pollers are eligible for
+        stubs, but remain exempt from loop-breaker notices.
         """
-        if is_stall_guard_repeatable(tool_name):
-            self._identical_streak_sig = None
-            self._identical_streak_result_hash = ""
-            self._identical_streak_count = 0
-            return None
-
+        is_plain_string = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        result_hash = _result_hash(result)
+        # Stubbing promises byte identity, unlike the semantic JSON hash used
+        # by the older idempotent no-progress guard in after_call().
+        result_hash = _sha256(result) if is_plain_string else ""
         if (
-            self._identical_streak_sig == signature
+            is_plain_string
+            and self._identical_streak_sig == signature
             and self._identical_streak_result_hash == result_hash
+            and self._identical_streak_failed == failed
         ):
             self._identical_streak_count += 1
         else:
-            self._identical_streak_sig = signature
+            self._identical_streak_sig = signature if is_plain_string else None
             self._identical_streak_result_hash = result_hash
-            self._identical_streak_count = 1
+            self._identical_streak_count = 1 if is_plain_string else 0
+            self._identical_streak_first_call_id = tool_call_id or ""
+            self._identical_streak_failed = bool(failed)
 
         count = self._identical_streak_count
-        if count < STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
-            return None
-        suffix = "th" if 11 <= count % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(
-            count % 10, "th"
+        notice = None
+        if (
+            not is_stall_guard_repeatable(tool_name)
+            and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+        ):
+            suffix = (
+                "th"
+                if 11 <= count % 100 <= 13
+                else {1: "st", 2: "nd", 3: "rd"}.get(count % 10, "th")
+            )
+            notice = (
+                f"[Clio note: this is the {count}{suffix} consecutive identical call to "
+                f"{tool_name} with identical arguments returning the same result. "
+                "Do not repeat it unchanged; change arguments, use a different tool, "
+                "or proceed with what you have.]"
+            )
+
+        stub = None
+        if (
+            is_plain_string
+            and count >= 2
+            and not failed
+            and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS
+        ):
+            stub = self._build_result_reference_stub(tool_name, args)
+
+        return IdenticalCallObservation(notice=notice, stub=stub)
+
+    def record_persisted_result(self, tool_call_id: str, file_path: str) -> None:
+        """Remember where an earlier result's complete spill payload lives."""
+        if tool_call_id and file_path:
+            self._persisted_result_paths[tool_call_id] = file_path
+
+    def _build_result_reference_stub(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+    ) -> str:
+        """Build a compression-safe reference to the streak's first result."""
+        try:
+            args_preview = canonical_tool_args(_coerce_args(args))
+        except TypeError:
+            args_preview = "{}"
+        if len(args_preview) > _RESULT_STUB_ARGS_PREVIEW_CHARS:
+            args_preview = args_preview[:_RESULT_STUB_ARGS_PREVIEW_CHARS] + "…"
+
+        first_id = self._identical_streak_first_call_id
+        id_reference = f" (tool_call_id {first_id})" if first_id else ""
+        stub = (
+            f"[Clio note: this result is byte-identical to the earlier {tool_name} "
+            f"result this turn{id_reference}. Refer to that result; it has not "
+            f"changed. Args: {args_preview}]"
         )
-        return (
-            f"[Clio note: this is the {count}{suffix} consecutive identical call to "
-            f"{tool_name} with identical arguments returning the same result. "
-            "Do not repeat it unchanged; change arguments, use a different tool, "
-            "or proceed with what you have.]"
-        )
+        spill_path = self._persisted_result_paths.get(first_id) if first_id else None
+        if spill_path:
+            stub += (
+                f"\n[The referenced full result is persisted at {spill_path}; "
+                "page through it with read_file if needed.]"
+            )
+        return stub
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
