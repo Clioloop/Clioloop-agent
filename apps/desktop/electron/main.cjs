@@ -30,6 +30,7 @@ const { canImportClioCli, clioCliSupportsUpdateFlag, verifyClioCli } = require('
 const { buildSpawnTag } = require('./process-identity.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { createCrashJournal } = require('./backend-foundations.cjs')
+const { connectionIdForUrl, createRouteSnapshotCache, routeFor } = require('./remote-lifecycle.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -3981,6 +3982,16 @@ function configuredRemoteProfileNames() {
   return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
 }
 
+// Resolve route identity without dialing. This lets a previously healthy
+// remote retain its cached inventory even when recreating its pooled backend
+// fails before a connection descriptor can be returned.
+function configuredRemoteConnectionId(profile) {
+  const config = readDesktopConnectionConfig()
+  const override = profileRemoteOverride(config, profile)
+  const rawUrl = override?.url || process.env.CLIO_DESKTOP_REMOTE_URL || config.remote?.url
+  return connectionIdForUrl(normalizeRemoteBaseUrl(rawUrl))
+}
+
 // True when the app is in app-global remote mode (Settings → "All profiles" →
 // Remote, or the env override): a SINGLE remote backend serves every profile via
 // ?profile=. Distinct from per-profile overrides — here there's one host for all.
@@ -4195,13 +4206,13 @@ async function ensureBackend(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
 
   if (key === primaryProfileKey()) {
-    return startClio()
+    return routeConnection(await startClio(), key)
   }
 
   const existing = backendPool.get(key)
   if (existing) {
     existing.lastActiveAt = Date.now()
-    return existing.connectionPromise
+    return routeConnection(await existing.connectionPromise, key)
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
@@ -4213,7 +4224,14 @@ async function ensureBackend(profile) {
   })
   backendPool.set(key, entry)
   startPoolIdleReaper()
-  return entry.connectionPromise
+  return routeConnection(await entry.connectionPromise, key)
+}
+
+// Canonical, secret-free identity for every live backend. URL remotes shared by
+// profiles intentionally share connectionId while routeKey isolates profiles.
+function routeConnection(connection, profile) {
+  const connectionId = connection.mode === 'remote' ? connectionIdForUrl(connection.baseUrl) : 'local'
+  return { ...connection, ...routeFor(connectionId, profile) }
 }
 
 // Mark a pool profile as recently used so the idle reaper spares it. The
@@ -4899,18 +4917,26 @@ async function interceptSessionRequestForRemote(request) {
 }
 
 const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
+const remoteSessionSnapshots = createRouteSnapshotCache()
 
 // A remote profile's session list, read from its remote host and tagged with the
 // desktop-facing profile name (the remote's /api/sessions doesn't know it).
 async function remoteSessionList(profile, searchParams) {
   const qs = new URLSearchParams(searchParams)
   qs.delete('profile') // remote serves its own db; no cross-profile read there
-  const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
-  for (const s of rowsOf(data)) {
-    s.profile = profile
-    s.is_default_profile = false
+  const route = routeFor(configuredRemoteConnectionId(profile), profile)
+
+  try {
+    const data = await requestJsonForProfile(profile, `/api/sessions?${qs}`, 'GET')
+    const rows = rowsOf(data).map(session => ({ ...session, profile, is_default_profile: false }))
+    const snapshot = remoteSessionSnapshots.success(route, rows)
+    return { ...data, sessions: snapshot.items, route: snapshot }
+  } catch (error) {
+    const snapshot = remoteSessionSnapshots.failure(route, error)
+    // Never-seen remotes stay empty/offline. Previously healthy remotes retain
+    // their last-known roster and explicitly report it as stale.
+    return { sessions: snapshot.items, total: snapshot.items.length, route: snapshot }
   }
-  return { ...data, sessions: rowsOf(data) }
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local

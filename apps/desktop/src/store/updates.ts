@@ -5,6 +5,12 @@
 
 import { atom } from 'nanostores'
 
+import {
+  normalizeUpdateTargetResult,
+  routeFor,
+  updateBatchSucceeded,
+  type UpdateTarget
+} from '@/desktop/remote-lifecycle'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
@@ -224,6 +230,9 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
   try {
     const result = await bridge.apply(opts)
+    const route = routeFor('local', 'desktop')
+    const target: UpdateTarget = { ...route, kind: 'local-app', label: 'Clio Desktop' }
+    const normalized = normalizeUpdateTargetResult(target, result)
 
     // CLI install with no staged updater: not an error — the user just runs
     // `clio update` themselves. Land on a dedicated manual state so the
@@ -236,6 +245,21 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         message: result.command ?? 'clio update',
         command: result.command ?? 'clio update'
       })
+    }
+
+    // IPC responses are not optimistic: only an explicit ok=true closes the
+    // target successfully. Manual results remain a deliberate skipped state.
+    if (!normalized.skipped && !updateBatchSucceeded([normalized])) {
+      const message = normalized.detail || normalized.error || 'The updater did not confirm success.'
+      $updateApply.set({
+        ...$updateApply.get(),
+        applying: false,
+        stage: 'error',
+        error: normalized.error || 'apply-failed',
+        message
+      })
+
+      return { ...result, ok: false, error: normalized.error || result.error || 'apply-failed', message }
     }
 
     return result

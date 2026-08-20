@@ -180,6 +180,8 @@ export interface DesktopUpdateProgress {
 
 export interface ClioConnection {
   baseUrl: string
+  /** Stable, secret-free backend identity. URL remotes use their normalized URL. */
+  connectionId: string
   isFullscreen: boolean
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
@@ -191,6 +193,8 @@ export interface ClioConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  /** Canonical (connection, profile) key used by remote lifecycle stores. */
+  routeKey: string
   windowButtonPosition: { x: number; y: number } | null
 }
 

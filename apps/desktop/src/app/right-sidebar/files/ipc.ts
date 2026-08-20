@@ -1,6 +1,8 @@
 import ignore from 'ignore'
 
+import { scopeProjectRpc } from '@/desktop/remote-lifecycle'
 import type { ClioReadDirEntry, ClioReadDirResult } from '@/global'
+import { $connection } from '@/store/session'
 
 export type ProjectTreeEntry = ClioReadDirEntry
 
@@ -140,6 +142,25 @@ async function filterIgnored(entries: ClioReadDirEntry[], rootPath: string, dirP
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<ClioReadDirResult> {
   if (!window.clioDesktop) {
     return { entries: [], error: 'no-bridge' }
+  }
+
+  const connection = $connection.get()
+
+  if (connection?.mode === 'remote') {
+    // Today's bridge exposes host filesystem reads only. Validate the focused
+    // backend/root scope, then fail closed rather than reinterpret a remote cwd
+    // on the Electron host and potentially expose unrelated local files.
+    scopeProjectRpc(
+      {
+        connectionId: connection.connectionId,
+        profile: connection.profile || 'default',
+        remote: true,
+        routeKey: connection.routeKey
+      },
+      [rootPath]
+    )
+
+    return { entries: [], error: 'remote-project-browser-unavailable' }
   }
 
   const result = await window.clioDesktop.readDir(dirPath)
