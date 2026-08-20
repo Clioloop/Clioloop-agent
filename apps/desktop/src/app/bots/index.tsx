@@ -17,6 +17,7 @@ export interface BotRosterItem {
   display_name: string
   gateway_running: boolean
   handle: string
+  identity_id?: string
   key: string
   model: null | string
   profile: string
@@ -24,6 +25,8 @@ export interface BotRosterItem {
   source: string
   source_label: string
   title: string
+  worker_active?: boolean
+  worker_session?: null | { id: string; last_active: number; source: string; title: string }
 }
 
 interface BotDetail extends BotRosterItem {
@@ -114,7 +117,7 @@ function formatTime(value: number): string {
 export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
   const [bots, setBots] = useState<BotRosterItem[] | null>(null)
   const [rooms, setRooms] = useState<BotRoom[] | null>(null)
-  const [selectedBotProfile, setSelectedBotProfile] = useState<string | null>(null)
+  const [selectedBotIdentity, setSelectedBotIdentity] = useState<string | null>(null)
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null)
   const [room, setRoom] = useState<BotRoom | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -133,8 +136,8 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
   const [lastTurn, setLastTurn] = useState<BotTurnResult | null>(null)
 
   const selectedBot = useMemo(
-    () => bots?.find(bot => bot.profile === selectedBotProfile) ?? null,
-    [bots, selectedBotProfile]
+    () => bots?.find(bot => (bot.identity_id || bot.key) === selectedBotIdentity) ?? null,
+    [bots, selectedBotIdentity]
   )
 
   const refreshRoomList = useCallback(async () => {
@@ -174,7 +177,9 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
         ])
 
         setBots(botResponse.bots)
-        setSelectedBotProfile(current => current ?? botResponse.bots[0]?.profile ?? null)
+        setSelectedBotIdentity(
+          current => current ?? botResponse.bots[0]?.identity_id ?? botResponse.bots[0]?.key ?? null
+        )
         setSelectedRoomId(current => current ?? nextRooms[0]?.id ?? null)
         setError(null)
       } catch (nextError) {
@@ -361,43 +366,47 @@ export function BotsView({ onOpenBotChat, requestGateway }: BotsViewProps) {
             <Badge variant="muted">{bots.length}</Badge>
           </div>
           <div className="grid gap-1.5">
-            {bots.map(bot => (
-              <button
-                aria-pressed={selectedBotProfile === bot.profile}
-                className={cn(
-                  'grid w-full grid-cols-[auto_minmax(0,1fr)] gap-x-2 rounded-md border border-transparent px-2.5 py-2 text-left hover:bg-(--ui-control-hover-background)',
-                  selectedBotProfile === bot.profile &&
-                    'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background)'
-                )}
-                key={bot.key}
-                onClick={() => {
-                  setSelectedBotProfile(bot.profile)
-                  setDmReply(null)
-                }}
-                type="button"
-              >
-                <span className="mt-1 grid size-7 place-items-center rounded bg-primary/10 text-primary">
-                  <Codicon name="hubot" />
-                </span>
-                <span className="min-w-0">
-                  <span className="flex items-center gap-1.5">
-                    <strong className="truncate text-xs font-semibold">{bot.display_name}</strong>
-                    <StatusDot tone={bot.gateway_running ? 'good' : 'muted'} />
+            {bots.map(bot => {
+              const identity = bot.identity_id || bot.key
+
+              return (
+                <button
+                  aria-pressed={selectedBotIdentity === identity}
+                  className={cn(
+                    'grid w-full grid-cols-[auto_minmax(0,1fr)] gap-x-2 rounded-md border border-transparent px-2.5 py-2 text-left hover:bg-(--ui-control-hover-background)',
+                    selectedBotIdentity === identity &&
+                      'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background)'
+                  )}
+                  key={bot.key}
+                  onClick={() => {
+                    setSelectedBotIdentity(identity)
+                    setDmReply(null)
+                  }}
+                  type="button"
+                >
+                  <span className="mt-1 grid size-7 place-items-center rounded bg-primary/10 text-primary">
+                    <Codicon name="hubot" />
                   </span>
-                  <span className="block truncate text-[0.6875rem] text-(--ui-text-tertiary)">
-                    {bot.title || 'Clio Bot'}
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5">
+                      <strong className="truncate text-xs font-semibold">{bot.display_name}</strong>
+                      <StatusDot tone={bot.gateway_running ? 'good' : 'muted'} />
+                    </span>
+                    <span className="block truncate text-[0.6875rem] text-(--ui-text-tertiary)">
+                      {bot.title || 'Clio Bot'}
+                    </span>
+                    <span className="mt-1 flex flex-wrap gap-1">
+                      <Badge variant="outline">{bot.profile}</Badge>
+                      <Badge variant="muted">{bot.model || 'default model'}</Badge>
+                    </span>
+                    <span className="mt-1 block text-[0.65rem] text-(--ui-text-quaternary)">
+                      {bot.gateway_running ? 'Gateway running' : 'Gateway stopped'}
+                      {bot.provider ? ` · ${bot.provider}` : ''}
+                    </span>
                   </span>
-                  <span className="mt-1 flex flex-wrap gap-1">
-                    <Badge variant="outline">{bot.profile}</Badge>
-                    <Badge variant="muted">{bot.model || 'default model'}</Badge>
-                  </span>
-                  <span className="mt-1 block text-[0.65rem] text-(--ui-text-quaternary)">
-                    {bot.gateway_running ? 'Gateway running' : 'Gateway stopped'}
-                    {bot.provider ? ` · ${bot.provider}` : ''}
-                  </span>
-                </span>
-              </button>
-            ))}
+                </button>
+              )
+            })}
           </div>
         </aside>
 

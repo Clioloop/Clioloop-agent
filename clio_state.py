@@ -1235,6 +1235,51 @@ class SessionDB:
             ).fetchone()
         return _prompts.hydrate_row(row) if row else None
 
+    def reconcile_canonical_session_owner(
+        self,
+        *,
+        owner_profile: str,
+        canonical_key: str,
+        identity_kind: str,
+        owner_kind: str,
+        owner_ref: str,
+    ) -> Optional[str]:
+        """Rebind a profile-local canonical row after its profile is renamed.
+
+        Canonical Bot and room sessions move with a named profile's ``state.db``.
+        Their mutable ``owner_profile`` used to keep the old directory name,
+        causing the next Bot wake to create a second pane. Reconciliation is
+        deliberately limited to the requested canonical identity; ordinary
+        sessions (whose ``canonical_key`` is NULL) are never rewritten.
+        """
+        owner_profile = str(owner_profile or "").strip()
+        canonical_key = str(canonical_key or "").strip()
+        if not owner_profile or not canonical_key:
+            return None
+
+        def _do(conn):
+            current = conn.execute(
+                "SELECT id FROM sessions WHERE owner_profile = ? AND canonical_key = ?",
+                (owner_profile, canonical_key),
+            ).fetchone()
+            if current is not None:
+                return str(current["id"] if isinstance(current, sqlite3.Row) else current[0])
+            candidate = conn.execute(
+                "SELECT id FROM sessions WHERE canonical_key = ? AND identity_kind = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (canonical_key, identity_kind),
+            ).fetchone()
+            if candidate is None:
+                return None
+            session_id = str(candidate["id"] if isinstance(candidate, sqlite3.Row) else candidate[0])
+            conn.execute(
+                "UPDATE sessions SET owner_profile = ?, owner_kind = ?, owner_ref = ? WHERE id = ?",
+                (owner_profile, owner_kind, owner_ref, session_id),
+            )
+            return session_id
+
+        return self._execute_write(_do)
+
     def get_or_create_canonical_session(
         self,
         *,

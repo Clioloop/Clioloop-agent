@@ -89,6 +89,54 @@ def test_metadata_roster_and_canonical_session_are_profile_backed(bot_env):
         db.close()
 
 
+def test_profile_rename_reconciles_room_and_canonical_session_by_stable_identity(bot_env):
+    homes, root = bot_env
+    room = bots.create_room("Rename", ["alpha", "beta"], root=root)
+    original = bots.ensure_group_session("alpha", room["id"], room["name"])
+
+    db = SessionDB(db_path=homes["alpha"] / "state.db")
+    try:
+        ordinary_id = db.create_session("ordinary", source="cli")
+    finally:
+        db.close()
+
+    homes["researcher"] = homes.pop("alpha")
+    reconciled = bots.get_room(room["id"], root=root)
+    identity_id = bots.ensure_bot_identity("researcher")
+    member = next(item for item in reconciled["members"] if item["identity_id"] == identity_id)
+    assert member["profile"] == "researcher"
+    assert member["handle"] == "researcher"
+
+    rebound = bots.ensure_group_session("researcher", room["id"], room["name"])
+    assert rebound["id"] == original["id"]
+    db = SessionDB(db_path=homes["researcher"] / "state.db")
+    try:
+        ordinary = db.get_session(ordinary_id)
+        assert ordinary is not None
+        assert ordinary["owner_profile"] is None
+        assert len(db.list_sessions_rich(include_hidden=True)) == 2
+    finally:
+        db.close()
+
+
+def test_roster_reports_fresh_worker_activity_without_promoting_ordinary_sessions(bot_env):
+    homes, _root = bot_env
+    db = SessionDB(db_path=homes["alpha"] / "state.db")
+    try:
+        db.create_session("ordinary", source="cli")
+        worker_id = db.create_session("worker", source="kanban")
+        db.append_message(worker_id, "user", "work")
+    finally:
+        db.close()
+
+    alpha = next(item for item in bots.list_bot_roster() if item["profile"] == "alpha")
+    assert alpha["worker_active"] is True
+    worker_session = alpha["worker_session"]
+    assert worker_session is not None
+    assert worker_session["id"] == worker_id
+    assert worker_session["source"] == "kanban"
+
+
 def test_local_dm_transport_never_shell_interpolates_message(bot_env, monkeypatch):
     homes, _root = bot_env
     captured = {}

@@ -52,6 +52,7 @@ ROOM_MAX_ATTACHMENTS = 12
 ROOM_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 ROOM_SOFT_TIMEOUT_SECONDS = 90.0
 ROOM_HARD_TIMEOUT_SECONDS = 300.0
+WORKER_ACTIVE_SECONDS = 120.0
 
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -187,6 +188,7 @@ def read_bot_metadata(profile: str) -> Dict[str, Any]:
     groups: List[Any] = list(bot["groups"]) if isinstance(bot.get("groups"), list) else []
     return {
         "version": int(bot.get("version") or BOT_METADATA_VERSION),
+        "identity_id": str(bot.get("identity_id") or "").strip(),
         "enabled": bot.get("enabled", True) is not False,
         "display_name": str(raw.get("display_name") or bot.get("display_name") or profile).strip() or profile,
         "title": str(bot.get("title") or "").strip(),
@@ -197,6 +199,55 @@ def read_bot_metadata(profile: str) -> Dict[str, Any]:
         "created_at": bot.get("created_at"),
         "updated_at": bot.get("updated_at"),
     }
+
+
+def ensure_bot_identity(profile: str) -> str:
+    """Return a durable profile-Bot identity that survives profile renames."""
+    profile = _validate_profile(profile)
+    path = profile_home(profile) / "profile.yaml"
+    with _ROOM_LOCK:
+        raw = _read_yaml_mapping(path)
+        bot: Dict[str, Any] = dict(raw["bot"]) if isinstance(raw.get("bot"), dict) else {}
+        identity_id = str(bot.get("identity_id") or "").strip()
+        if not identity_id:
+            identity_id = f"bot-{uuid.uuid4().hex}"
+            bot["identity_id"] = identity_id
+            bot.setdefault("version", BOT_METADATA_VERSION)
+            raw["bot"] = bot
+            _atomic_yaml(path, raw)
+    return identity_id
+
+
+def _latest_worker_session(home: Path) -> Optional[Dict[str, Any]]:
+    """Return the freshest kanban/tool worker heartbeat for one profile."""
+    db_path = Path(home) / "state.db"
+    if not db_path.is_file():
+        return None
+    try:
+        from clio_state import SessionDB
+
+        db = SessionDB(db_path=db_path)
+        try:
+            for session in db.list_sessions_rich(
+                limit=50,
+                order_by_last_active=True,
+                include_hidden=True,
+            ):
+                source = str(session.get("source") or "").strip().lower()
+                if source not in {"kanban", "tool"}:
+                    continue
+                last_active = float(session.get("last_active") or session.get("started_at") or 0)
+                return {
+                    "id": session["id"],
+                    "source": source,
+                    "title": session.get("title") or "",
+                    "last_active": last_active,
+                }
+        finally:
+            db.close()
+    except Exception:
+        return None
+    return None
 
 
 def update_bot_metadata(profile: str, **updates: Any) -> Dict[str, Any]:
@@ -243,12 +294,19 @@ def list_bot_roster(*, include_hidden: bool = False, source: str = "local", sour
         if not meta["enabled"] or (meta["hidden"] and not include_hidden):
             continue
         address = BotAddress(info.name, source, source_label)
+        identity_id = ensure_bot_identity(info.name)
+        worker_session = _latest_worker_session(profile_home(info.name))
+        worker_active = bool(
+            worker_session
+            and float(worker_session.get("last_active") or 0) >= time.time() - WORKER_ACTIVE_SECONDS
+        )
         records.append(
             {
                 "profile": info.name,
                 "source": source,
                 "source_label": source_label,
                 "key": address.key,
+                "identity_id": identity_id,
                 "handle": address.handle(),
                 "display_name": meta["display_name"],
                 "title": meta["title"],
@@ -259,6 +317,8 @@ def list_bot_roster(*, include_hidden: bool = False, source: str = "local", sour
                 "model": getattr(info, "model", None),
                 "provider": getattr(info, "provider", None),
                 "gateway_running": bool(getattr(info, "gateway_running", False)),
+                "worker_session": worker_session,
+                "worker_active": worker_active,
                 "is_default": bool(getattr(info, "is_default", False)),
             }
         )
@@ -302,6 +362,15 @@ def ensure_canonical_session(
     with _ROOM_LOCK:
         db = SessionDB(db_path=home / "state.db")
         try:
+            owner_kind = "profile_bot" if identity_kind == "bot" else "bot_group"
+            owner_ref = ensure_bot_identity(profile)
+            db.reconcile_canonical_session_owner(
+                owner_profile=profile,
+                canonical_key=str(canonical_key),
+                identity_kind=identity_kind,
+                owner_kind=owner_kind,
+                owner_ref=owner_ref,
+            )
             return db.get_or_create_canonical_session(
                 owner_profile=profile,
                 canonical_key=str(canonical_key),
@@ -309,8 +378,8 @@ def ensure_canonical_session(
                 source="bot" if identity_kind == "bot" else "bot_group",
                 identity_kind=identity_kind,
                 hidden=hidden,
-                owner_kind="profile_bot" if identity_kind == "bot" else "bot_group",
-                owner_ref=profile if identity_kind == "bot" else str(canonical_key),
+                owner_kind=owner_kind,
+                owner_ref=owner_ref,
             )
         finally:
             db.close()
@@ -557,6 +626,65 @@ def _load_room_store(root: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": ROOM_STORE_VERSION, "rooms": {}}
 
 
+def _reconcile_room_store(store: Dict[str, Any]) -> bool:
+    """Rebind persisted local room members using their durable Bot identity."""
+    try:
+        roster = list_bot_roster(include_hidden=True)
+    except Exception:
+        return False
+    by_identity = {
+        str(row.get("identity_id")): row
+        for row in roster
+        if row.get("source") == "local" and row.get("identity_id")
+    }
+    by_profile = {
+        str(row.get("profile")): row for row in roster if row.get("source") == "local"
+    }
+    changed = False
+    for room in store.get("rooms", {}).values():
+        if not isinstance(room, dict):
+            continue
+        for member in room.get("members") or []:
+            if not isinstance(member, dict) or member.get("source", "local") != "local":
+                continue
+            identity_id = str(member.get("identity_id") or "")
+            current = by_identity.get(identity_id) if identity_id else by_profile.get(str(member.get("profile") or ""))
+            if current is None:
+                continue
+            old_profile = str(member.get("profile") or "")
+            old_handle = str(member.get("handle") or "")
+            replacements = {
+                "identity_id": current["identity_id"],
+                "profile": current["profile"],
+                "handle": current["handle"],
+                "source_label": current["source_label"],
+            }
+            if any(member.get(key) != value for key, value in replacements.items()):
+                member.update(replacements)
+                changed = True
+            new_profile = str(current["profile"])
+            new_handle = str(current["handle"])
+            if old_profile == new_profile and old_handle == new_handle:
+                continue
+            for record in [*(room.get("messages") or []), *(room.get("activity") or [])]:
+                if not isinstance(record, dict) or record.get("source", "local") != "local":
+                    continue
+                owned = record.get("profile") == old_profile
+                if owned:
+                    record["profile"] = new_profile
+                if owned and record.get("author") == old_handle:
+                    record["author"] = new_handle
+                if owned and record.get("member") == old_handle:
+                    record["member"] = new_handle
+            watermarks = room.get("watermarks")
+            if isinstance(watermarks, dict) and old_handle != new_handle:
+                for key in list(watermarks):
+                    if key.startswith(f"{old_handle}\x1f"):
+                        watermarks[f"{new_handle}{key[len(old_handle):]}"] = watermarks.pop(key)
+            changed = True
+    return changed
+
+
 def _save_room_store(store: Mapping[str, Any], root: Optional[Path] = None) -> None:
     path = _room_store_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -577,14 +705,29 @@ def _save_room_store(store: Mapping[str, Any], root: Optional[Path] = None) -> N
 def _normalize_member(raw: str | Mapping[str, Any]) -> Dict[str, str]:
     if isinstance(raw, str):
         profile = _validate_profile(raw)
-        return {"profile": profile, "source": "local", "source_label": "This device", "handle": "clio" if profile == "default" else profile}
+        return {
+            "profile": profile,
+            "source": "local",
+            "source_label": "This device",
+            "handle": "clio" if profile == "default" else profile,
+            "identity_id": ensure_bot_identity(profile),
+        }
     profile = _validate_profile(str(raw.get("profile") or raw.get("name") or ""))
     source = _validate_source(str(raw.get("source") or "local"))
     source_label = str(raw.get("source_label") or raw.get("device") or source).strip() or source
     handle = _slug(str(raw.get("handle") or ("clio" if profile == "default" else profile)))
     if not _HANDLE_RE.fullmatch(handle):
         raise ValueError(f"Invalid Bot handle: {handle!r}")
-    return {"profile": profile, "source": source, "source_label": source_label, "handle": handle}
+    identity_id = str(raw.get("identity_id") or "").strip()
+    if source == "local":
+        identity_id = ensure_bot_identity(profile)
+    return {
+        "profile": profile,
+        "source": source,
+        "source_label": source_label,
+        "handle": handle,
+        **({"identity_id": identity_id} if identity_id else {}),
+    }
 
 
 def create_room(name: str, members: Sequence[str | Mapping[str, Any]], *, root: Optional[Path] = None) -> Dict[str, Any]:
@@ -634,13 +777,19 @@ def create_room(name: str, members: Sequence[str | Mapping[str, Any]], *, root: 
 
 def list_rooms(*, root: Optional[Path] = None) -> List[Dict[str, Any]]:
     with _ROOM_LOCK:
-        rooms = list(_load_room_store(root)["rooms"].values())
+        store = _load_room_store(root)
+        if _reconcile_room_store(store):
+            _save_room_store(store, root)
+        rooms = list(store["rooms"].values())
     return sorted((dict(room) for room in rooms), key=lambda room: float(room.get("updated_at") or 0), reverse=True)
 
 
 def get_room(room_id: str, *, root: Optional[Path] = None) -> Dict[str, Any]:
     with _ROOM_LOCK:
-        room = _load_room_store(root)["rooms"].get(str(room_id))
+        store = _load_room_store(root)
+        if _reconcile_room_store(store):
+            _save_room_store(store, root)
+        room = store["rooms"].get(str(room_id))
     if not isinstance(room, dict):
         raise KeyError(room_id)
     result = dict(room)
@@ -848,6 +997,8 @@ def send_room_message(
 
     with _ROOM_LOCK:
         store = _load_room_store(root)
+        if _reconcile_room_store(store):
+            _save_room_store(store, root)
         room = store["rooms"].get(room_id)
         if not isinstance(room, dict):
             raise KeyError(room_id)
