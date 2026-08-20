@@ -6,12 +6,12 @@ source:
   audited_at: 2026-08-20
 local:
   repository: https://github.com/Clioloop/Clioloop-agent
-  candidate_revision: 6576485bc85dcf4e72de6768e7a00dced77d10cf
+  candidate_revision: 75e7af327050a62ba68309c9f0b24e8f2d074c91
   previous_baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
   implementation_branch: feat/hermes-current-parity-20260820-0321
 audit:
   kind: source_backed_incremental_delta
-  comparison: "Clio candidate 6576485 against Hermes 6f31cfad; portable behavior is implemented natively and service-specific or visual-only changes are recorded as exclusions"
+  comparison: "Clio candidate 75e7af32 against Hermes 6f31cfad; portable behavior is implemented natively and service-specific or visual-only changes are recorded as exclusions"
   inherited_ledger_note: Broad capability rows below were delivered before this delta; the full frozen-candidate suite remains the release gate.
   exclusions:
     - Nous billing, subscription, top-up, keyless vendor relay, and branding
@@ -19,7 +19,7 @@ audit:
     - Visual-only themes, glass/material styling, accent retinting, and HUD layout without a shipped Clio equivalent
   evidence:
     - "Hermes: first-parent log and focused source diff for de322448..6f31cfad (243 commits)"
-    - "Clio: git log 6e5a6353..6576485 plus focused source/test inspection"
+    - "Clio: git log 6e5a6353..75e7af32 plus focused source/test inspection"
     - "Detailed prior audit: hermes-clio-parity-plan-2026-08-20.md at Hermes 449471c"
 migration_rules:
   - Preserve Agentic Fusion, Gmail, music generation, ACP delegation overrides, cross-profile cron, managed provider, Portal, ComfyUI, Vidu, and Clio branding.
