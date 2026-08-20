@@ -2136,6 +2136,23 @@ def looks_like_codex_intermediate_ack(
     return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
 
 
+_TRAILING_CONTINUE_INTENT_RE = re.compile(
+    r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"[^.!?\n]{0,100}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+_TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
+
+
+def trailing_continue_intent(text: str | None) -> bool:
+    """Whether a short reply ends by announcing an immediate next action."""
+    candidate = (text or "").strip()
+    if not candidate or len(candidate) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
+        return False
+    return bool(_TRAILING_CONTINUE_INTENT_RE.search(candidate[-160:]))
+
+
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -2572,6 +2589,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "trailing_continue_intent",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

@@ -1874,9 +1874,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
+    # blocks above. ``check_fn`` is a passive dependency probe; platforms with
+    # an ``ensure_deps_fn`` remain eligible when dependencies are absent because
+    # create_adapter() performs the active install later. Plugins that
     # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
     # project_id / subscription_name) can supply ``env_enablement_fn`` on
     # their PlatformEntry — called here BEFORE adapter construction.
@@ -1897,11 +1897,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             try:
-                if not entry.check_fn():
+                deps_present = bool(entry.check_fn())
+                if not deps_present and entry.ensure_deps_fn is None:
                     continue
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
-                continue
+                if entry.ensure_deps_fn is None:
+                    continue
             platform = Platform(entry.name)
             existing_cfg = config.platforms.get(platform)
             # Seed candidate extras from ``env_enablement_fn`` so plugins

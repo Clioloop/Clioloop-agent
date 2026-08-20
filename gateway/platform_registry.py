@@ -50,13 +50,19 @@ class PlatformEntry:
     # (e.g. passing extra kwargs, wrapping in try/except).
     adapter_factory: Callable[[Any], Any]
 
-    # Returns True when the platform's dependencies are available.
+    # Passive probe: returns True when dependencies are available now. This is
+    # called by status/config paths and therefore must never install packages.
     check_fn: Callable[[], bool]
 
     # Optional: given a PlatformConfig, is it properly configured?
     # If None, the registry skips config validation and lets the adapter
     # fail at connect() time with a descriptive error.
     validate_config: Optional[Callable[[Any], bool]] = None
+
+    # Active dependency installer. create_adapter() calls this only when the
+    # passive probe failed and the gateway is about to instantiate an enabled
+    # platform. None preserves the legacy hard-block behavior.
+    ensure_deps_fn: Optional[Callable[[], bool]] = None
 
     # Optional: given a PlatformConfig, is the platform connected/enabled?
     # Used by ``GatewayConfig.get_connected_platforms()`` and setup UI status.
@@ -210,7 +216,7 @@ class PlatformRegistry:
 
         Returns None if:
         - No entry registered for *name*
-        - check_fn() returns False (missing deps)
+        - check_fn() returns False and ensure_deps_fn cannot make deps available
         - validate_config() returns False (misconfigured)
         - The factory raises an exception
         """
@@ -218,7 +224,28 @@ class PlatformRegistry:
         if entry is None:
             return None
 
-        if not entry.check_fn():
+        deps_ok = False
+        try:
+            deps_ok = bool(entry.check_fn())
+        except Exception as e:
+            logger.warning("Platform '%s' dependency probe raised: %s", entry.label, e)
+
+        if not deps_ok and entry.ensure_deps_fn is not None:
+            logger.info(
+                "Platform '%s' dependencies missing; attempting lazy install",
+                entry.label,
+            )
+            try:
+                deps_ok = bool(entry.ensure_deps_fn())
+            except Exception as e:
+                logger.warning(
+                    "Platform '%s' dependency install raised: %s",
+                    entry.label,
+                    e,
+                )
+                deps_ok = False
+
+        if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning(
                 "Platform '%s' requirements not met%s",

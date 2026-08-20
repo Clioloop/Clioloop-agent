@@ -152,6 +152,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Microsoft Teams adapter. The SDK has a heavy optional tree, so install
+    # only when an enabled/configured Teams adapter is instantiated.
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.3"),
 
     # Terminal QR rendering — the managed Telegram bot onboarding (clio setup)
     # draws a scannable QR for the pairing deep link.

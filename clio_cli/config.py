@@ -883,6 +883,11 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Conservative runtime anti-stall guards: annotate the third
+        # consecutive identical tool call/result and continue short responses
+        # that end by announcing an immediate next action. Notice/re-prompt
+        # only; neither guard blocks tool execution.
+        "stall_guards": True,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating

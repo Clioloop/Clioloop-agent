@@ -59,6 +59,19 @@ MUTATING_TOOL_NAMES = frozenset(
     }
 )
 
+# Poll/get-result tools can legitimately return the same state repeatedly while
+# external work advances. The observational stall guard must not annotate them.
+STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process", "bfl_flux3_get_result"})
+_STALL_GUARD_REPEATABLE_SUFFIXES = ("_get_result", "_poll")
+STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
+
+
+def is_stall_guard_repeatable(tool_name: str) -> bool:
+    """Whether a tool is exempt from the identical-call loop notice."""
+    return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(
+        _STALL_GUARD_REPEATABLE_SUFFIXES
+    )
+
 
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
@@ -233,6 +246,11 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        # Consecutive identical-call state is per turn. Any intervening tool,
+        # argument change, or raw-result change starts a fresh streak.
+        self._identical_streak_sig: ToolCallSignature | None = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -379,6 +397,49 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
+    def observe_identical_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        result: str | None,
+    ) -> str | None:
+        """Return notice-only guidance for consecutive identical calls/results.
+
+        The observation is intentionally independent of the existing failure
+        and idempotent-tool guards: it covers successful mutating and unknown
+        tools too, but never blocks execution. Poll/get-result tools are exempt.
+        """
+        if is_stall_guard_repeatable(tool_name):
+            self._identical_streak_sig = None
+            self._identical_streak_result_hash = ""
+            self._identical_streak_count = 0
+            return None
+
+        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        result_hash = _result_hash(result)
+        if (
+            self._identical_streak_sig == signature
+            and self._identical_streak_result_hash == result_hash
+        ):
+            self._identical_streak_count += 1
+        else:
+            self._identical_streak_sig = signature
+            self._identical_streak_result_hash = result_hash
+            self._identical_streak_count = 1
+
+        count = self._identical_streak_count
+        if count < STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
+            return None
+        suffix = "th" if 11 <= count % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(
+            count % 10, "th"
+        )
+        return (
+            f"[Clio note: this is the {count}{suffix} consecutive identical call to "
+            f"{tool_name} with identical arguments returning the same result. "
+            "Do not repeat it unchanged; change arguments, use a different tool, "
+            "or proceed with what you have.]"
+        )
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -472,4 +533,6 @@ def _positive_int(value: Any, default: int) -> int:
 
 
 def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    # Web/tool output can contain unpaired UTF-16 surrogates. Hashing must be
+    # deterministic without requiring the content to be valid strict UTF-8.
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()

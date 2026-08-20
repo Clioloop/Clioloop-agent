@@ -353,3 +353,66 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_stall_notice_appends_to_third_raw_result_and_config_can_disable_it():
+    enabled = _make_agent("read_file")
+    disabled = _make_agent("read_file", config={"agent": {"stall_guards": False}})
+    args = {"path": "/tmp/x"}
+
+    enabled_results = [
+        enabled._append_guardrail_observation("read_file", args, "same", failed=False)
+        for _ in range(3)
+    ]
+    disabled_results = [
+        disabled._append_guardrail_observation("read_file", args, "same", failed=False)
+        for _ in range(3)
+    ]
+
+    assert "Clio note" not in enabled_results[0]
+    assert "Clio note" not in enabled_results[1]
+    assert "Clio note" in enabled_results[2]
+    assert all("Clio note" not in result for result in disabled_results)
+
+
+def test_trailing_continue_intent_reuses_bounded_alternation_safe_continuation():
+    agent = _make_agent("web_search")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="I found the target. Let me now inspect it."),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", '{"query":"target"}', "c-stall")],
+        ),
+        _mock_response(content="done"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value="results"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("Find and inspect the target")
+
+    roles = [message["role"] for message in result["messages"]]
+    assert result["final_response"] == "done"
+    assert result["api_calls"] == 3
+    assert roles[:5] == ["user", "assistant", "user", "assistant", "tool"]
+
+
+def test_trailing_continue_intent_config_off_returns_without_reprompt():
+    agent = _make_agent("web_search", config={"agent": {"stall_guards": False}})
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I found the target. Let me now inspect it."
+    )
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("Find and inspect the target")
+
+    assert result["api_calls"] == 1
+    assert result["final_response"].endswith("inspect it.")

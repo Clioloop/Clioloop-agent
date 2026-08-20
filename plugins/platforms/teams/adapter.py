@@ -391,7 +391,7 @@ class _AiohttpBridgeAdapter:
 
 
 def check_requirements() -> bool:
-    """Return True when all Teams dependencies and credentials are present."""
+    """Passively report whether Teams dependencies are importable right now."""
     return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
 
 
@@ -615,8 +615,63 @@ async def _standalone_send(
         return {"error": f"Teams standalone send failed: {e}"}
 
 
-# Keep the old name as an alias so existing test imports don't break.
-check_teams_requirements = check_requirements
+def check_teams_requirements() -> bool:
+    """Actively ensure Teams dependencies, rebinding SDK globals after install."""
+    if App is not None and AIOHTTP_AVAILABLE:
+        return True
+
+    def _import() -> dict[str, Any]:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import (
+            AdaptiveCardInvokeActivity,
+        )
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import (
+            InvokeResponse,
+            AdaptiveCardInvokeResponse,
+        )
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        return {
+            "web": _web,
+            "AIOHTTP_AVAILABLE": True,
+            "App": App,
+            "ActivityContext": ActivityContext,
+            "ClientOptions": ClientOptions,
+            "MessageActivity": MessageActivity,
+            "ConversationReference": ConversationReference,
+            "TypingActivityInput": TypingActivityInput,
+            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+            "InvokeResponse": InvokeResponse,
+            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+            "HttpMethod": HttpMethod,
+            "HttpRequest": HttpRequest,
+            "HttpResponse": HttpResponse,
+            "HttpRouteHandler": HttpRouteHandler,
+            "AdaptiveCard": AdaptiveCard,
+            "ExecuteAction": ExecuteAction,
+            "TextBlock": TextBlock,
+            "TEAMS_SDK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
@@ -1155,6 +1210,15 @@ def interactive_setup() -> None:
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
+
+def _install_hint() -> str:
+    from tools.lazy_deps import feature_install_command
+
+    return feature_install_command("platform.teams") or (
+        "uv pip install microsoft-teams-apps==2.0.13.4 aiohttp==3.13.4"
+    )
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Clio plugin system."""
     ctx.register_platform(
@@ -1162,10 +1226,11 @@ def register(ctx) -> None:
         label="Microsoft Teams",
         adapter_factory=lambda cfg: TeamsAdapter(cfg),
         check_fn=check_requirements,
+        ensure_deps_fn=check_teams_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
-        install_hint="pip install microsoft-teams-apps aiohttp",
+        install_hint=_install_hint(),
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — seeds PlatformConfig.extra with
         # client_id/secret/tenant + port + home_channel so env-only setups

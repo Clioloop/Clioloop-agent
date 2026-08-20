@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -27,11 +28,19 @@ class FakeGraphClient:
         self.downloaded = False
 
 
-async def _transcript_meeting_resolver(client, *, meeting_id=None, join_web_url=None, tenant_id=None):
+async def _transcript_meeting_resolver(
+    client,
+    *,
+    meeting_id=None,
+    join_web_url=None,
+    tenant_id=None,
+    organizer_user_id=None,
+):
     from plugins.teams_pipeline.models import TeamsMeetingRef
 
     return TeamsMeetingRef(
         meeting_id=str(meeting_id),
+        organizer_user_id=organizer_user_id,
         tenant_id=tenant_id,
         metadata={"subject": "Weekly Sync", "participants": [{"displayName": "Ada"}]},
     )
@@ -232,6 +241,76 @@ def test_store_notification_receipts_are_idempotent(tmp_path):
 
     reloaded = TeamsPipelineStore(tmp_path / "teams-store.json")
     assert reloaded.has_notification_receipt(receipt_key) is True
+
+
+@pytest.mark.anyio
+async def test_organizer_scoped_meeting_lookup_and_short_join_url():
+    from plugins.teams_pipeline.meetings import resolve_meeting_reference
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        async def get_json(self, path, params=None):
+            self.calls.append((path, params))
+            meeting = {"id": "meeting/1", "joinWebUrl": "https://teams.microsoft.com/meet/123?p=abc"}
+            return {"value": [meeting]} if params else meeting
+
+    client: Any = Client()
+    meeting = await resolve_meeting_reference(
+        client,
+        meeting_id="meeting/1",
+        organizer_user_id="organizer@example.com",
+    )
+    assert meeting.organizer_user_id == "organizer@example.com"
+    assert client.calls[0][0] == "/users/organizer%40example.com/onlineMeetings/meeting%2F1"
+
+    await resolve_meeting_reference(
+        client,
+        join_web_url="https://teams.microsoft.com/meet/123?p=abc",
+        organizer_user_id="organizer@example.com",
+    )
+    assert client.calls[1][0] == "/users/organizer%40example.com/onlineMeetings"
+    assert "meet/123" in client.calls[1][1]["$filter"]
+
+
+def test_transcript_notification_uses_meeting_from_odata_path(tmp_path):
+    import base64
+
+    from plugins.teams_pipeline.meetings import is_transcript_identifier, parse_graph_resource
+    from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+
+    encoded_transcript = base64.urlsafe_b64encode(b"opaque-TranscriptV2").decode().rstrip("=")
+    assert is_transcript_identifier(encoded_transcript)
+    parsed = parse_graph_resource(
+        "/users/organizer-1/onlineMeetings('meeting%2F1')/transcripts('tx-1')"
+    )
+    assert parsed == {
+        "organizer_user_id": "organizer-1",
+        "meeting_id": "meeting/1",
+        "transcript_id": "tx-1",
+        "recording_id": None,
+    }
+
+    pipeline = TeamsMeetingPipeline(
+        graph_client=FakeGraphClient(),
+        store=TeamsPipelineStore(tmp_path / "teams-store.json"),
+        config={},
+    )
+    notification = {
+        "subscriptionId": "sub-1",
+        "resource": "communications/onlineMeetings/getAllTranscripts",
+        "resourceData": {
+            "id": encoded_transcript,
+            "@odata.type": "#microsoft.graph.callTranscript",
+            "@odata.id": "/users/organizer-1/onlineMeetings('meeting%2F1')/transcripts('tx-1')",
+        },
+    }
+    job = pipeline.create_job_from_notification(notification)
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "meeting/1"
+    assert job.meeting_ref.organizer_user_id == "organizer-1"
+    assert job.meeting_ref.metadata["transcript_id"] == "tx-1"
 
 
 @pytest.mark.anyio

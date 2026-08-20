@@ -4390,7 +4390,17 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
-                if (
+                from agent.agent_runtime_helpers import trailing_continue_intent
+
+                stall_continue_intent = (
+                    bool(getattr(agent, "_stall_guards", True))
+                    and agent.valid_tool_names
+                    and codex_ack_continuations < 2
+                    and trailing_continue_intent(
+                        agent._strip_think_blocks(final_response or "")
+                    )
+                )
+                if stall_continue_intent or (
                     agent.api_mode == "codex_responses"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
@@ -4400,6 +4410,12 @@ def run_conversation(
                         messages=messages,
                     )
                 ):
+                    if stall_continue_intent:
+                        logger.info(
+                            "Stall guard: turn ended on trailing continue intent; "
+                            "re-prompting to act (%d/2)",
+                            codex_ack_continuations + 1,
+                        )
                     codex_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     messages.append(interim_msg)
@@ -4414,6 +4430,7 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
+                    final_response = None
                     continue
 
                 codex_ack_continuations = 0

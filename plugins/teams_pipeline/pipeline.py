@@ -21,7 +21,9 @@ from plugins.teams_pipeline.meetings import (
     download_recording_artifact,
     enrich_meeting_with_call_record,
     fetch_preferred_transcript_text,
+    is_transcript_identifier,
     list_recording_artifacts,
+    parse_graph_resource,
     resolve_meeting_reference,
 )
 from plugins.teams_pipeline.models import (
@@ -297,12 +299,11 @@ class TeamsMeetingPipeline:
         if existing_job is not None:
             return existing_job
         resource_data = notification.get("resourceData") or {}
-        meeting_id = (
-            resource_data.get("id")
-            or notification.get("meetingId")
-            or _extract_meeting_id_from_resource(str(notification.get("resource") or ""))
-            or notification.get("resource")
-            or event_id
+        if not isinstance(resource_data, dict):
+            resource_data = {}
+        meeting_id, organizer_user_id, artifact_metadata = _notification_meeting_identity(
+            notification,
+            event_id=event_id,
         )
         job = TeamsMeetingPipelineJob(
             job_id=f"teams-job-{uuid.uuid4().hex[:12]}",
@@ -312,11 +313,13 @@ class TeamsMeetingPipeline:
             status="received",
             meeting_ref=TeamsMeetingRef(
                 meeting_id=str(meeting_id),
+                organizer_user_id=organizer_user_id,
                 tenant_id=resource_data.get("tenantId") or notification.get("tenantId"),
                 metadata={
                     "notification": dict(notification),
                     "join_web_url": resource_data.get("joinWebUrl"),
                     "call_record_id": resource_data.get("callRecordId") or notification.get("callRecordId"),
+                    **artifact_metadata,
                 },
             ),
         )
@@ -345,6 +348,14 @@ class TeamsMeetingPipeline:
                 meeting_id=meeting_ref.meeting_id,
                 join_web_url=meeting_ref.join_web_url or meeting_ref.metadata.get("join_web_url"),
                 tenant_id=meeting_ref.tenant_id,
+                organizer_user_id=meeting_ref.organizer_user_id,
+            )
+            resolved_meeting.metadata = {
+                **(meeting_ref.metadata or {}),
+                **(resolved_meeting.metadata or {}),
+            }
+            resolved_meeting.organizer_user_id = (
+                resolved_meeting.organizer_user_id or meeting_ref.organizer_user_id
             )
             job.meeting_ref = resolved_meeting
             job = self._persist_job(job, meeting_ref=resolved_meeting.to_dict())
@@ -601,17 +612,84 @@ def _collect_participants(meeting_ref: TeamsMeetingRef) -> list[str]:
     return result
 
 
+def _notification_organizer(payload: dict[str, Any]) -> str | None:
+    for key in ("organizerUserId", "organizer_user_id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    organizer = payload.get("meetingOrganizer") or payload.get("organizer")
+    if isinstance(organizer, dict):
+        user = organizer.get("user")
+        identity = organizer.get("identity")
+        if user is None and isinstance(identity, dict):
+            user = identity.get("user")
+        if isinstance(user, dict):
+            value = str(user.get("id") or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _notification_meeting_identity(
+    notification: dict[str, Any],
+    *,
+    event_id: str,
+) -> tuple[str, str | None, dict[str, str]]:
+    resource_data = notification.get("resourceData")
+    if not isinstance(resource_data, dict):
+        resource_data = {}
+    resource_paths = [
+        str(resource_data.get("@odata.id") or resource_data.get("odata.id") or ""),
+        str(notification.get("resource") or ""),
+        str(resource_data.get("transcriptContentUrl") or ""),
+    ]
+    parsed = [parse_graph_resource(value) for value in resource_paths if value]
+    organizer = next(
+        (str(item["organizer_user_id"]) for item in parsed if item.get("organizer_user_id")),
+        None,
+    ) or _notification_organizer(resource_data) or _notification_organizer(notification)
+    meeting_id = next(
+        (str(item["meeting_id"]) for item in parsed if item.get("meeting_id")),
+        None,
+    ) or str(resource_data.get("meetingId") or notification.get("meetingId") or "").strip()
+    transcript_id = next(
+        (str(item["transcript_id"]) for item in parsed if item.get("transcript_id")),
+        None,
+    )
+    recording_id = next(
+        (str(item["recording_id"]) for item in parsed if item.get("recording_id")),
+        None,
+    )
+
+    resource_data_id = str(resource_data.get("id") or "").strip()
+    odata_type = str(resource_data.get("@odata.type") or resource_data.get("odata.type") or "")
+    resource_text = str(notification.get("resource") or "").lower()
+    artifact_resource = any(
+        marker in resource_text
+        for marker in ("getalltranscripts", "getallrecordings", "/transcripts", "/recordings")
+    )
+    transcript_identifier = is_transcript_identifier(
+        resource_data_id,
+        odata_type=odata_type,
+    )
+    if resource_data_id and not artifact_resource and not transcript_identifier:
+        meeting_id = meeting_id or resource_data_id
+    elif resource_data_id and transcript_identifier:
+        transcript_id = transcript_id or resource_data_id
+
+    metadata = {
+        key: value
+        for key, value in {
+            "transcript_id": transcript_id,
+            "recording_id": recording_id,
+        }.items()
+        if value
+    }
+    return str(meeting_id or transcript_id or recording_id or event_id), organizer, metadata
+
+
 def _extract_meeting_id_from_resource(resource: str) -> str | None:
-    if not resource:
-        return None
-    parts = [part for part in resource.split("/") if part]
-    if not parts:
-        return None
-    if "onlineMeetings" in parts:
-        index = parts.index("onlineMeetings")
-        if index + 1 < len(parts):
-            return parts[index + 1]
-    return parts[-1]
+    return parse_graph_resource(resource).get("meeting_id")
 
 
 def _build_summary_prompt(

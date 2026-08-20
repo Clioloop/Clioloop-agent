@@ -4805,11 +4805,27 @@ class AIAgent:
             function_result,
             failed=failed,
         )
+        # Observe the raw result before appending the existing loop-warning
+        # suffix, whose changing count would otherwise defeat result identity.
+        stall_notice = None
+        if self._stall_guards_enabled():
+            try:
+                stall_notice = self._tool_guardrails.observe_identical_call(
+                    tool_name, function_args, function_result
+                )
+            except Exception as exc:
+                logger.debug("stall-guard identical-call observation failed: %s", exc)
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        if stall_notice:
+            function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
+
+    def _stall_guards_enabled(self) -> bool:
+        """Return the config gate for notice/re-prompt-only stall guards."""
+        return bool(getattr(self, "_stall_guards", True))
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
