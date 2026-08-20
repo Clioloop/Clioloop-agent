@@ -1243,7 +1243,7 @@ class APIServerAdapter(BasePlatformAdapter):
             attachment = await asyncio.to_thread(
                 stage_received_room_attachment,
                 request.match_info["profile"],
-                body.get("room_id"),
+                str(body.get("room_id") or ""),
                 name=body.get("name"),
                 mime_type=body.get("mime_type"),
                 size=body.get("size"),

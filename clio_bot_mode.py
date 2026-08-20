@@ -1473,8 +1473,8 @@ def save_peer(
     from clio_cli.config import load_config, save_config, save_env_value
 
     config = load_config() or {}
-    peers = config.get("bot_peers") if isinstance(config.get("bot_peers"), dict) else {}
-    peers = dict(peers)
+    raw_peers = config.get("bot_peers")
+    peers: Dict[str, Any] = dict(raw_peers) if isinstance(raw_peers, dict) else {}
     peers[name] = {"url": clean_url, **({"note": note.strip()} if note.strip() else {})}
     config["bot_peers"] = peers
     save_config(config)

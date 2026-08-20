@@ -1171,7 +1171,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     # selected) has a valid value to hand to _route_capture_through_aux_vision.
     # The AX path appends the "truncated to N of M" note to summary_lines
     # below and rebuilds; the multimodal path keeps this version untouched.
-    if image_too_small:
+    if image_too_small and image_dimensions is not None:
         summary_lines.append(
             f"  (screenshot omitted: {image_dimensions[0]}x{image_dimensions[1]} "
             f"is below the {_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} "
@@ -1209,7 +1209,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                     f"{total_elements} elements; raise max_elements or pass "
                     "app= to narrow)"
                 )
-            payload = {
+            payload: Dict[str, Any] = {
                 "mode": cap.mode,
                 "width": response_width,
                 "height": response_height,
