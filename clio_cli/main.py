@@ -12518,15 +12518,15 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "archive", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "clean-markers", "computer-use", "egress",
+        "acp", "archive", "auth", "backup", "bot", "bundles", "checkpoints", "claw", "completion",
+        "clean-markers", "computer-use", "egress", "group",
         "journey", "moa", "monitor", "onepassword", "optimize-storage", "pets",
         "recover", "repair", "repair-routing", "retitle-skills", "whatsapp-cloud",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "evolve", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
-        "prompt-size",
+        "model", "pairing", "peer", "plugins", "postinstall", "profile", "proxy",
+        "prompt-size", "routine",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",

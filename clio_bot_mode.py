@@ -389,6 +389,11 @@ def _agent_home(agent: Any) -> Optional[Path]:
 
 
 def _agent_is_canonical(agent: Any) -> bool:
+    # During AIAgent construction no session row has been bound yet. Avoid a
+    # speculative DB read: it breaks cold-start prompt stability and turns a
+    # generic MagicMock/session adapter into a false Bot match.
+    if not bool(getattr(agent, "_session_db_created", False)):
+        return False
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:

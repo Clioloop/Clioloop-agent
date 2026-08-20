@@ -302,6 +302,7 @@ def test_protocol_is_injected_only_for_canonical_bot_chat(bot_env):
     try:
         agent = SimpleNamespace(
             _session_db=db,
+            _session_db_created=True,
             session_id=canonical["id"],
             _bot_mode_protocol=True,
         )
