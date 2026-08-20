@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import type { ClioGateway } from '@/clio'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import { $gateway, ensureActiveGatewayOpen, isActivePrimary, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
@@ -67,11 +67,16 @@ export function useGatewayRequest() {
         const conn = await desktop.getConnection($activeGatewayProfile.get())
         connectionRef.current = conn
         setConnection(conn)
+
+        if (isActivePrimary()) {
+          setPrimaryGatewayConnection(conn)
+        }
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // and short-lived, so the cached conn.wsUrl ticket is dead here;
         // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
         // connecting with a stale ticket. Stash it so requestGateway can show
         // the actionable "sign in again" message.
+
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await existing.connect(wsUrl)
 

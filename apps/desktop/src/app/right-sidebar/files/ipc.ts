@@ -1,18 +1,67 @@
 import ignore from 'ignore'
 
-import { scopeProjectRpc } from '@/desktop/remote-lifecycle'
-import type { ClioReadDirEntry, ClioReadDirResult } from '@/global'
+import { type FocusedProjectRoute, scopeProjectRpc } from '@/desktop/remote-lifecycle'
+import type { ClioConnection, ClioReadDirEntry, ClioReadDirResult } from '@/global'
 import { $connection } from '@/store/session'
+import { requestForBackendRoute } from '@/store/session-request-router'
 
 export type ProjectTreeEntry = ClioReadDirEntry
+export type GatewayRequest = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number
+) => Promise<T>
+
+export interface ProjectReadContext {
+  connection?: ClioConnection | null
+  requestGateway?: GatewayRequest
+}
 
 interface GitignoreRule {
   base: string
   ig: ReturnType<typeof ignore>
 }
 
+interface RemoteProject {
+  browse_token: string
+  id: string
+  name: string
+  path: string
+}
+
+interface RemoteDiscoverResponse {
+  connection_id: string
+  profile: string
+  projects: RemoteProject[]
+  route_key: string
+}
+
+interface RemoteTreeResponse extends ClioReadDirResult {
+  connection_id: string
+  path: string
+  profile: string
+  root: string
+  route_key: string
+  truncated?: boolean
+}
+
+interface RemoteBrowseGrant {
+  browseToken: string
+  root: string
+  route: FocusedProjectRoute
+}
+
 const gitRootCache = new Map<string, Promise<string | null>>()
 const gitignoreCache = new Map<string, Promise<GitignoreRule | null>>()
+const remoteBrowseGrants = new Map<string, RemoteBrowseGrant>()
+
+function errorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error || 'Gateway unavailable')
+
+  return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw)
+    .replace(/^Error:\s*/, '')
+    .trim()
+}
 
 function decodeDataUrl(dataUrl: string) {
   const match = dataUrl.match(/^data:[^,]*,(.*)$/)
@@ -139,39 +188,166 @@ async function filterIgnored(entries: ClioReadDirEntry[], rootPath: string, dirP
   return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
 }
 
-export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<ClioReadDirResult> {
+function remoteRoute(connection: ClioConnection): FocusedProjectRoute {
+  return {
+    connectionId: connection.connectionId,
+    profile: connection.profile?.trim() || 'default',
+    remote: true,
+    routeKey: connection.routeKey
+  }
+}
+
+function assertRouteResponse(route: FocusedProjectRoute, response: Record<string, unknown>): void {
+  if (
+    response.connection_id !== route.connectionId ||
+    response.profile !== route.profile ||
+    response.route_key !== route.routeKey
+  ) {
+    throw new Error('Project response did not match the requested backend route.')
+  }
+}
+
+function grantKey(route: FocusedProjectRoute, rootPath: string): string {
+  return `${route.routeKey}\0${clean(rootPath)}`
+}
+
+async function discoverRemoteGrant(
+  route: FocusedProjectRoute,
+  rootPath: string,
+  requestGateway: GatewayRequest
+): Promise<RemoteBrowseGrant> {
+  const scope = scopeProjectRpc(route, [rootPath])
+
+  const response = await requestForBackendRoute<RemoteDiscoverResponse>(
+    route,
+    requestGateway,
+    'project.discover',
+    { ...scope }
+  )
+
+  assertRouteResponse(route, response as unknown as Record<string, unknown>)
+
+  const requested = clean(rootPath)
+  const project = response.projects.find(candidate => clean(candidate.path) === requested)
+
+  if (!project?.browse_token) {
+    throw new Error(`The remote backend did not expose project root "${rootPath}".`)
+  }
+
+  const grant = { browseToken: project.browse_token, root: project.path, route }
+
+  remoteBrowseGrants.set(grantKey(route, rootPath), grant)
+
+  return grant
+}
+
+function validRemoteEntries(value: unknown): ClioReadDirEntry[] {
+  if (!Array.isArray(value)) {
+    throw new Error('The remote project tree returned an invalid entry list.')
+  }
+
+  return value.map(entry => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('The remote project tree returned an invalid entry.')
+    }
+
+    const candidate = entry as Record<string, unknown>
+
+    if (typeof candidate.name !== 'string' || typeof candidate.path !== 'string') {
+      throw new Error('The remote project tree returned an invalid path.')
+    }
+
+    return { isDirectory: candidate.isDirectory === true, name: candidate.name, path: candidate.path }
+  })
+}
+
+async function readRemoteProjectDir(
+  connection: ClioConnection,
+  dirPath: string,
+  rootPath: string,
+  requestGateway: GatewayRequest
+): Promise<ClioReadDirResult> {
+  const route = remoteRoute(connection)
+  const key = grantKey(route, rootPath)
+
+  const read = async (refreshGrant: boolean): Promise<ClioReadDirResult> => {
+    const grant =
+      !refreshGrant && remoteBrowseGrants.get(key)
+        ? remoteBrowseGrants.get(key)!
+        : await discoverRemoteGrant(route, rootPath, requestGateway)
+
+    const response = await requestForBackendRoute<RemoteTreeResponse>(route, requestGateway, 'project.tree', {
+      ...scopeProjectRpc(route, [grant.root]),
+      browse_token: grant.browseToken,
+      path: dirPath
+    })
+
+    assertRouteResponse(route, response as unknown as Record<string, unknown>)
+
+    return {
+      entries: validRemoteEntries(response.entries),
+      ...(response.error ? { error: response.error } : {}),
+      ...(response.truncated ? { truncated: true } : {})
+    }
+  }
+
+  try {
+    return await read(false)
+  } catch {
+    // A browse grant is intentionally short-lived. Rediscover once so an open
+    // tree survives expiry; the second error is surfaced verbatim to the UI.
+    remoteBrowseGrants.delete(key)
+
+    return read(true)
+  }
+}
+
+export async function readProjectDir(
+  dirPath: string,
+  rootPath = dirPath,
+  context: ProjectReadContext = {}
+): Promise<ClioReadDirResult> {
   if (!window.clioDesktop) {
     return { entries: [], error: 'no-bridge' }
   }
 
-  const connection = $connection.get()
+  const connection = context.connection === undefined ? $connection.get() : context.connection
 
   if (connection?.mode === 'remote') {
-    // Today's bridge exposes host filesystem reads only. Validate the focused
-    // backend/root scope, then fail closed rather than reinterpret a remote cwd
-    // on the Electron host and potentially expose unrelated local files.
-    scopeProjectRpc(
-      {
-        connectionId: connection.connectionId,
-        profile: connection.profile || 'default',
-        remote: true,
-        routeKey: connection.routeKey
-      },
-      [rootPath]
-    )
+    if (!context.requestGateway) {
+      return { entries: [], error: 'Remote project gateway is unavailable.' }
+    }
 
-    return { entries: [], error: 'remote-project-browser-unavailable' }
+    try {
+      return await readRemoteProjectDir(connection, dirPath, rootPath, context.requestGateway)
+    } catch (error) {
+      return { entries: [], error: errorMessage(error) || 'Remote project browser is unavailable.' }
+    }
   }
 
-  const result = await window.clioDesktop.readDir(dirPath)
+  try {
+    const result = await window.clioDesktop.readDir(dirPath)
 
-  return { ...result, entries: await filterIgnored(result.entries, rootPath, dirPath) }
+    return { ...result, entries: await filterIgnored(result.entries, rootPath, dirPath) }
+  } catch (error) {
+    return { entries: [], error: errorMessage(error) || 'Could not read this folder.' }
+  }
 }
 
-export function clearProjectDirCache(rootPath?: string) {
+export function clearProjectDirCache(rootPath?: string, routeKey?: string) {
   if (!rootPath) {
     gitRootCache.clear()
     gitignoreCache.clear()
+
+    if (!routeKey) {
+      remoteBrowseGrants.clear()
+    } else {
+      for (const key of remoteBrowseGrants.keys()) {
+        if (key.startsWith(`${routeKey}\0`)) {
+          remoteBrowseGrants.delete(key)
+        }
+      }
+    }
 
     return
   }
@@ -179,4 +355,8 @@ export function clearProjectDirCache(rootPath?: string) {
   const key = clean(rootPath)
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
+
+  if (routeKey) {
+    remoteBrowseGrants.delete(`${routeKey}\0${key}`)
+  }
 }

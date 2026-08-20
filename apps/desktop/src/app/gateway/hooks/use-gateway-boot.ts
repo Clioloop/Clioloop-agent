@@ -20,6 +20,7 @@ import {
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   setPrimaryGateway,
+  setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -75,6 +76,7 @@ export function useGatewayBoot({
     const publish = (next: ClioConnection | null) => {
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
+      setPrimaryGatewayConnection(next)
     }
 
     if (!desktop) {
@@ -325,10 +327,10 @@ export function useGatewayBoot({
           const pref = await desktop.profile?.get?.()
           const profileKey = (pref?.profile ?? '').trim() || 'default'
 
-          setPrimaryGateway(gateway, profileKey)
+          setPrimaryGateway(gateway, profileKey, conn)
           await ensureGatewayForProfile(profileKey)
         } catch {
-          setPrimaryGateway(gateway, 'default')
+          setPrimaryGateway(gateway, 'default', conn)
           await ensureGatewayForProfile('default')
         }
 

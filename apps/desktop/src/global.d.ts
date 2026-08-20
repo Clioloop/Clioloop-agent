@@ -400,6 +400,7 @@ export interface ClioReadDirEntry {
 export interface ClioReadDirResult {
   entries: ClioReadDirEntry[]
   error?: string
+  truncated?: boolean
 }
 
 export interface ClioPreviewFileChanged {

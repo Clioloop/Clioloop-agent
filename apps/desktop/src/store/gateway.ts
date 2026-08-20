@@ -2,8 +2,9 @@ import type { ConnectionState, GatewayEvent } from '@clio/shared'
 import { atom, batch } from 'nanostores'
 
 import { ClioGateway } from '@/clio'
+import type { ClioConnection } from '@/global'
 import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
-import { setGatewayState } from '@/store/session'
+import { setConnection, setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -32,6 +33,21 @@ export const $gateway = atom<ClioGateway | null>(null)
 export const $activeGatewayRoute = atom<string>('default')
 export const $activeGatewayProfile = $activeGatewayRoute
 
+/** Secret-free inventory of sockets that are currently open. Update and
+ * project UI use this registry rather than guessing routes from the focused
+ * Electron connection. */
+export interface ConnectedGatewayRoute {
+  baseUrl: string
+  connectionId: string
+  label: string
+  mode: 'local' | 'remote'
+  primary: boolean
+  profile: string
+  routeKey: string
+}
+
+export const $connectedGatewayRoutes = atom<ConnectedGatewayRoute[]>([])
+
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
 }
@@ -45,15 +61,28 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
 // ── Primary (window) backend ───────────────────────────────────────────────
 let primaryGateway: ClioGateway | null = null
 let primaryProfile = 'default'
+let primaryConnection: ClioConnection | null = null
 
-export function setPrimaryGateway(gateway: ClioGateway | null, profile = 'default'): void {
+export function setPrimaryGateway(
+  gateway: ClioGateway | null,
+  profile = 'default',
+  connection: ClioConnection | null = primaryConnection
+): void {
   primaryGateway = gateway
   primaryProfile = normKey(profile)
+  primaryConnection = gateway ? connection : null
+  publishConnectedRoutes()
+}
+
+export function setPrimaryGatewayConnection(connection: ClioConnection | null): void {
+  primaryConnection = connection
+  publishConnectedRoutes()
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
 interface Secondary {
   profile: string
+  connection: ClioConnection | null
   connectPromise: Promise<void> | null
   gateway: ClioGateway
   offEvent: () => void
@@ -69,6 +98,51 @@ interface Secondary {
 const secondaries = new Map<string, Secondary>()
 
 let activeKey = 'default'
+
+function connectedRoute(connection: ClioConnection, profile: string, primary: boolean): ConnectedGatewayRoute {
+  const normalizedProfile = normKey(profile)
+
+  return {
+    baseUrl: connection.baseUrl,
+    connectionId: connection.connectionId,
+    label:
+      connection.mode === 'remote'
+        ? `${normalizedProfile} · ${connection.baseUrl}`
+        : primary
+          ? `${normalizedProfile} · This device`
+          : `${normalizedProfile} profile`,
+    mode: connection.mode === 'remote' ? 'remote' : 'local',
+    primary,
+    profile: normalizedProfile,
+    routeKey: connection.routeKey
+  }
+}
+
+function publishConnectedRoutes(): void {
+  const routes: ConnectedGatewayRoute[] = []
+
+  if (primaryConnection && isOpen(primaryGateway)) {
+    routes.push(connectedRoute(primaryConnection, primaryProfile, true))
+  }
+
+  for (const entry of secondaries.values()) {
+    if (entry.connection && isOpen(entry.gateway)) {
+      routes.push(connectedRoute(entry.connection, entry.profile, false))
+    }
+  }
+
+  $connectedGatewayRoutes.set(routes)
+}
+
+export function connectedGatewayRoutes(): ConnectedGatewayRoute[] {
+  return [...$connectedGatewayRoutes.get()]
+}
+
+export function connectedGatewayRouteForProfile(profile: string): ConnectedGatewayRoute | null {
+  const key = normKey(profile)
+
+  return $connectedGatewayRoutes.get().find(route => route.profile === key) ?? null
+}
 
 export function isActivePrimary(): boolean {
   return activeKey === primaryProfile
@@ -98,6 +172,7 @@ function reportGatewayState(profile: string, state: ConnectionState): void {
 
 export function reportPrimaryGatewayState(state: ConnectionState): void {
   reportGatewayState(primaryProfile, state)
+  publishConnectedRoutes()
 }
 
 function setActive(profile: string): void {
@@ -113,6 +188,12 @@ function setActive(profile: string): void {
   batch(() => {
     $activeGatewayRoute.set(key)
     $gateway.set(gateway)
+    const connection = key === primaryProfile ? primaryConnection : (secondaries.get(key)?.connection ?? null)
+
+    if (connection) {
+      setConnection(connection)
+    }
+
     setGatewayState(gateway.connectionState)
   })
 }
@@ -144,6 +225,8 @@ async function openSecondary(entry: Secondary): Promise<void> {
     const wsUrl = await resolveGatewayWsUrl(desktop, conn)
 
     await entry.gateway.connect(wsUrl)
+    entry.connection = conn
+    publishConnectedRoutes()
 
     if (!entry.wantOpen) {
       entry.gateway.close()
@@ -204,6 +287,7 @@ function createSecondary(profile: string): Secondary {
 
   const entry: Secondary = {
     profile,
+    connection: null,
     connectPromise: null,
     gateway,
     offEvent: () => {},
@@ -224,6 +308,8 @@ function createSecondary(profile: string): Secondary {
     } else if ((state === 'closed' || state === 'error') && entry.wantOpen) {
       scheduleReconnect(entry)
     }
+
+    publishConnectedRoutes()
   })
 
   secondaries.set(profile, entry)
@@ -353,6 +439,8 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
     entry.gateway.close()
     secondaries.delete(key)
   }
+
+  publishConnectedRoutes()
 }
 
 export function closeSecondaryGateways(): void {
@@ -367,6 +455,7 @@ export function closeSecondaryGateways(): void {
   }
 
   secondaries.clear()
+  publishConnectedRoutes()
 
   if (activeWasSecondary && isOpen(primaryGateway)) {
     setActive(primaryProfile)

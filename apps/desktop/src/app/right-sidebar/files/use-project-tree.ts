@@ -2,7 +2,10 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { clearProjectDirCache, readProjectDir } from './ipc'
+import type { RouteAvailability } from '@/desktop/remote-lifecycle'
+import type { ClioConnection } from '@/global'
+
+import { clearProjectDirCache, type GatewayRequest, type ProjectReadContext, readProjectDir } from './ipc'
 
 export interface TreeNode {
   /** Absolute filesystem path. Doubles as react-arborist node id. */
@@ -12,9 +15,9 @@ export interface TreeNode {
   isDirectory: boolean
   /** `undefined` = directory, children not yet loaded. `[]` = loaded empty. */
   children?: TreeNode[]
-  /** True while a readDir for this folder is in flight. */
+  /** True while a directory read for this folder is in flight. */
   loading?: boolean
-  /** Last error code from readDir (e.g. EACCES). Cleared on next successful load. */
+  /** Explicit last error from the owning filesystem/gateway. */
   error?: string
 }
 
@@ -46,13 +49,21 @@ function placeholderChild(parentId: string): TreeNode {
   return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…' }
 }
 
+export interface UseProjectTreeOptions {
+  connection?: ClioConnection | null
+  requestGateway?: GatewayRequest
+}
+
 export interface UseProjectTreeResult {
   /** Bumped by collapseAll so callers can remount the tree fully collapsed. */
   collapseNonce: number
   data: TreeNode[]
   openState: Record<string, boolean>
+  rootAvailability: RouteAvailability
   rootError: string | null
   rootLoading: boolean
+  rootStale: boolean
+  rootTruncated: boolean
   collapseAll: () => void
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
@@ -60,25 +71,31 @@ export interface UseProjectTreeResult {
 }
 
 interface ProjectTreeState {
+  availability: RouteAvailability
   collapseNonce: number
-  cwd: string
   data: TreeNode[]
   loaded: boolean
   openState: Record<string, boolean>
   requestId: number
   rootError: string | null
   rootLoading: boolean
+  scopeKey: string
+  stale: boolean
+  truncated: boolean
 }
 
 const initialState: ProjectTreeState = {
+  availability: 'healthy',
   collapseNonce: 0,
-  cwd: '',
   data: [],
   loaded: false,
   openState: {},
   requestId: 0,
   rootError: null,
-  rootLoading: false
+  rootLoading: false,
+  scopeKey: '',
+  stale: false,
+  truncated: false
 }
 
 const inflight = new Set<string>()
@@ -95,16 +112,29 @@ function clearProjectTree() {
   $projectTree.set({ ...initialState, requestId: nextRootRequestId })
 }
 
-async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}) {
+function projectScopeKey(cwd: string, connection?: ClioConnection | null): string {
+  return cwd ? `${connection?.routeKey ?? 'local'}\0${cwd}` : ''
+}
+
+function projectContext(options: UseProjectTreeOptions): ProjectReadContext {
+  return { connection: options.connection, requestGateway: options.requestGateway }
+}
+
+async function loadRoot(
+  cwd: string,
+  options: UseProjectTreeOptions,
+  { force = false }: { force?: boolean } = {}
+) {
   if (!cwd) {
     clearProjectTree()
 
     return
   }
 
+  const scopeKey = projectScopeKey(cwd, options.connection)
   const current = $projectTree.get()
 
-  if (!force && current.cwd === cwd && (current.loaded || current.rootLoading)) {
+  if (!force && current.scopeKey === scopeKey && (current.loaded || current.rootLoading)) {
     return
   }
 
@@ -112,34 +142,53 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   nextRootRequestId = requestId
   inflight.clear()
 
-  if (force || current.cwd !== cwd) {
-    clearProjectDirCache(cwd)
+  if (force || current.scopeKey !== scopeKey) {
+    clearProjectDirCache(cwd, options.connection?.routeKey)
   }
 
+  const preserveSnapshot = force && current.scopeKey === scopeKey && current.loaded
+
   $projectTree.set({
+    availability: preserveSnapshot ? current.availability : 'healthy',
     collapseNonce: current.collapseNonce,
-    cwd,
-    data: [],
-    loaded: false,
-    openState: current.cwd === cwd ? current.openState : {},
+    data: preserveSnapshot ? current.data : [],
+    loaded: preserveSnapshot,
+    openState: current.scopeKey === scopeKey ? current.openState : {},
     requestId,
     rootError: null,
-    rootLoading: true
+    rootLoading: true,
+    scopeKey,
+    stale: preserveSnapshot ? current.stale : false,
+    truncated: preserveSnapshot ? current.truncated : false
   })
 
-  const { entries, error } = await readProjectDir(cwd, cwd)
+  const { entries, error, truncated } = await readProjectDir(cwd, cwd, projectContext(options))
 
   setProjectTree(latest => {
-    if (latest.cwd !== cwd || latest.requestId !== requestId) {
+    if (latest.scopeKey !== scopeKey || latest.requestId !== requestId) {
       return latest
+    }
+
+    if (error) {
+      return {
+        ...latest,
+        availability: latest.loaded ? 'stale' : 'offline',
+        loaded: true,
+        rootError: error,
+        rootLoading: false,
+        stale: latest.loaded
+      }
     }
 
     return {
       ...latest,
-      data: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory)),
+      availability: 'healthy',
+      data: entries.map(e => makeNode(e.path, e.name, e.isDirectory)),
       loaded: true,
-      rootError: error || null,
-      rootLoading: false
+      rootError: null,
+      rootLoading: false,
+      stale: false,
+      truncated: Boolean(truncated)
     }
   })
 }
@@ -150,21 +199,27 @@ export function resetProjectTreeState() {
 }
 
 /**
- * Lazy-loads a directory tree rooted at `cwd`. Children are fetched on first
- * expand and cached in this feature-owned atom so unrelated chat rerenders or
- * remounts cannot reset the browser. A placeholder leaf renders so the
- * disclosure caret shows for unloaded folders. `refreshRoot` invalidates the
- * whole tree (used after cwd change or manual refresh).
+ * Lazy-loads a directory tree rooted at `cwd`. Remote reads are dispatched on
+ * the exact owning connection/profile gateway; local reads retain the Electron
+ * filesystem path. A successful snapshot survives transport errors and is
+ * marked stale rather than disappearing optimistically.
  */
-export function useProjectTree(cwd: string): UseProjectTreeResult {
+export function useProjectTree(cwd: string, options: UseProjectTreeOptions = {}): UseProjectTreeResult {
   const state = useStore($projectTree)
+  const scopeKey = projectScopeKey(cwd, options.connection)
+  const routeKey = options.connection?.routeKey
+  const requestGateway = options.requestGateway
+  const connection = options.connection
 
-  const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
+  const refreshRoot = useCallback(
+    () => loadRoot(cwd, { connection, requestGateway }, { force: true }),
+    [connection, cwd, requestGateway]
+  )
 
   const setNodeOpen = useCallback(
     (id: string, open: boolean) => {
       setProjectTree(current => {
-        if (current.cwd !== cwd || current.openState[id] === open) {
+        if (current.scopeKey !== scopeKey || current.openState[id] === open) {
           return current
         }
 
@@ -177,32 +232,31 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         }
       })
     },
-    [cwd]
+    [scopeKey]
   )
 
-  // Clears the recorded open state and bumps the nonce; the tree is keyed on
-  // the nonce so it remounts with everything collapsed (loaded children stay
-  // cached in `data`, just hidden).
   const collapseAll = useCallback(() => {
     setProjectTree(current => {
-      if (current.cwd !== cwd) {
+      if (current.scopeKey !== scopeKey) {
         return current
       }
 
       return { ...current, collapseNonce: current.collapseNonce + 1, openState: {} }
     })
-  }, [cwd])
+  }, [scopeKey])
 
   const loadChildren = useCallback(
     async (id: string) => {
-      if (!cwd || inflight.has(id)) {
+      const inflightKey = `${scopeKey}\0${id}`
+
+      if (!cwd || inflight.has(inflightKey)) {
         return
       }
 
-      inflight.add(id)
+      inflight.add(inflightKey)
 
       setProjectTree(current => {
-        if (current.cwd !== cwd) {
+        if (current.scopeKey !== scopeKey) {
           return current
         }
 
@@ -212,12 +266,12 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         }
       })
 
-      const { entries, error } = await readProjectDir(id, cwd)
+      const { entries, error } = await readProjectDir(id, cwd, { connection, requestGateway })
 
-      inflight.delete(id)
+      inflight.delete(inflightKey)
 
       setProjectTree(current => {
-        if (current.cwd !== cwd) {
+        if (current.scopeKey !== scopeKey) {
           return current
         }
 
@@ -232,37 +286,45 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
         }
       })
     },
-    [cwd]
+    [connection, cwd, requestGateway, scopeKey]
   )
 
   useEffect(() => {
-    void loadRoot(cwd)
-  }, [cwd])
+    void loadRoot(cwd, { connection, requestGateway })
+  }, [connection, cwd, requestGateway, routeKey])
+
+  const active = state.scopeKey === scopeKey
 
   return useMemo(
     () => ({
       collapseAll,
-      collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
-      data: state.cwd === cwd ? state.data : [],
+      collapseNonce: active ? state.collapseNonce : 0,
+      data: active ? state.data : [],
       loadChildren,
-      openState: state.cwd === cwd ? state.openState : {},
+      openState: active ? state.openState : {},
       refreshRoot,
-      rootError: state.cwd === cwd ? state.rootError : null,
-      rootLoading: state.cwd === cwd ? state.rootLoading : Boolean(cwd),
+      rootAvailability: active ? state.availability : 'healthy',
+      rootError: active ? state.rootError : null,
+      rootLoading: active ? state.rootLoading : Boolean(cwd),
+      rootStale: active ? state.stale : false,
+      rootTruncated: active ? state.truncated : false,
       setNodeOpen
     }),
     [
+      active,
       collapseAll,
       cwd,
       loadChildren,
       refreshRoot,
       setNodeOpen,
+      state.availability,
       state.collapseNonce,
-      state.cwd,
       state.data,
       state.openState,
       state.rootError,
-      state.rootLoading
+      state.rootLoading,
+      state.stale,
+      state.truncated
     ]
   )
 }

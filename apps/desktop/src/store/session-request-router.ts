@@ -1,4 +1,8 @@
-import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import {
+  activeGatewayProfileKey,
+  connectedGatewayRouteForProfile,
+  requestGatewayForProfile
+} from '@/store/gateway'
 
 const normKey = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
@@ -33,4 +37,34 @@ export function requestForSessionProfile<T>(
   }
 
   return requestGatewayForProfile<T>(normKey(ownerProfile), method, params, timeoutMs)
+}
+
+export interface OwnedBackendRoute {
+  connectionId: string
+  profile: string
+  routeKey: string
+}
+
+/** Dispatch on the socket that owns an exact connection/profile route. Profile
+ * lookup alone is not enough for remote lifecycle RPCs: a reconfigured profile
+ * must fail closed instead of sending its old route key to a new connection. */
+export function requestForBackendRoute<T>(
+  route: OwnedBackendRoute,
+  ambientRequest: <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<R>,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
+): Promise<T> {
+  const registered = connectedGatewayRouteForProfile(route.profile)
+
+  if (
+    !registered ||
+    registered.connectionId !== route.connectionId ||
+    registered.profile !== normKey(route.profile) ||
+    registered.routeKey !== route.routeKey
+  ) {
+    throw new Error(`Gateway unavailable for backend route "${route.routeKey}"`)
+  }
+
+  return requestForSessionProfile<T>(route.profile, ambientRequest, method, params, timeoutMs)
 }
