@@ -1,24 +1,25 @@
 schema_version: 2
 source:
   repository: https://github.com/NousResearch/hermes-agent
-  revision: de322448ac435b720177b94496e51ae6c10ad543
-  previous_audited_revision: 449471c33424f529863f982a31ef70fcd97f8e44
+  revision: 6f31cfad7825a78b69c46eedbd31f2ac2abacfb8
+  previous_audited_revision: de322448ac435b720177b94496e51ae6c10ad543
   audited_at: 2026-08-20
 local:
   repository: https://github.com/Clioloop/Clioloop-agent
-  candidate_revision: 2939f78ab2ec7a3f045c94531a000211c6f148e3
+  candidate_revision: 6576485bc85dcf4e72de6768e7a00dced77d10cf
   previous_baseline_revision: 6e5a6353f196e6e4dc8a78ffa8d3785f84669d8e
-  implementation_branch: port/current-parity-audit-20260820
+  implementation_branch: feat/hermes-current-parity-20260820-0321
 audit:
-  kind: fast_source_backed_delta
-  comparison: "Clio candidate 2939f78 against Hermes de322448; this branch adds the recorded peer-roster closure"
-  inherited_ledger_note: Broad capability rows below were delivered before this delta and were not exhaustively re-proven in this fast audit.
+  kind: source_backed_incremental_delta
+  comparison: "Clio candidate 6576485 against Hermes 6f31cfad; portable behavior is implemented natively and service-specific or visual-only changes are recorded as exclusions"
+  inherited_ledger_note: Broad capability rows below were delivered before this delta; the full frozen-candidate suite remains the release gate.
   exclusions:
-    - Nous billing, subscription, top-up, and branding
-    - Visual-only HUD Glass/material/layout styling without a shipped Clio HUD equivalent
+    - Nous billing, subscription, top-up, keyless vendor relay, and branding
+    - Nous relay transport and live-card protocol without a shipped Clio relay equivalent
+    - Visual-only themes, glass/material styling, accent retinting, and HUD layout without a shipped Clio equivalent
   evidence:
-    - "Hermes: git log/stat and source for 4a83b03c3..de322448"
-    - "Clio: git log 6e5a6353..2939f78 plus focused source/test inspection"
+    - "Hermes: first-parent log and focused source diff for de322448..6f31cfad (243 commits)"
+    - "Clio: git log 6e5a6353..6576485 plus focused source/test inspection"
     - "Detailed prior audit: hermes-clio-parity-plan-2026-08-20.md at Hermes 449471c"
 migration_rules:
   - Preserve Agentic Fusion, Gmail, music generation, ACP delegation overrides, cross-profile cron, managed provider, Portal, ComfyUI, Vidu, and Clio branding.
@@ -27,67 +28,80 @@ migration_rules:
   - Require focused tests, migration notes, and a full-suite result before marking a capability ported.
   - Do not restart the running gateway during implementation or verification.
 current_delta:
-  - id: runtime-run-budget-and-stall-guards
+  - id: runtime-budgets-stalls-and-result-dedup
     status: matched
-    upstream_revisions: [803397ecc, 449471c33]
-    local_revisions: [fa927d4, c1538a8]
-    evidence:
-      - agent/run_budget.py
-      - agent/tool_guardrails.py
-      - tests/agent/test_run_budget.py
-      - tests/agent/test_stall_guards.py
-  - id: profile-bot-routing
+    upstream_revisions: [449471c33, 761990b78]
+    local_revisions: [fa927d4, c1538a8, 4bbae7fe]
+    summary: Wall-clock budgets, repeated-call stall protection, and compact references for repeated successful tool payloads are implemented without suppressing execution, errors, pollers, or multimodal results.
+    evidence: [agent/run_budget.py, agent/tool_guardrails.py, agent/tool_executor.py, tests/agent/test_stall_guards.py]
+  - id: compression-overflow-and-output-caps
+    status: matched
+    upstream_revisions: [db5d5dff, 4d1fc6ca, 7bf66ec3, fb96247e, 99c980f4, b7e12dec]
+    local_revisions: [d0d999ac, 2abc4684]
+    summary: Disabled-compression overflow warnings re-arm safely, grown compression candidates are salvaged or refused honestly, and model/relay output-cap failures converge through native retry handling.
+    evidence: [agent/context_compressor.py, agent/conversation_loop.py, agent/model_metadata.py, agent/reasoning_effort.py]
+  - id: memory-skill-publication
+    status: matched
+    upstream_revisions: [d5cddae1, 481bc939, 22f66de6]
+    local_revisions: [4bbae7fe]
+    summary: Disabled built-in memory removes its dead tool/guidance surface while profile-only guidance remains narrow; skill command maps and scope tags publish atomically.
+    evidence: [tools/memory_tool.py, agent/system_prompt.py, agent/skill_commands.py]
+  - id: cli-data-safety-and-operations
+    status: matched
+    upstream_revisions: [138e482e, aca40d1d, 76653a8e, 0a8a4cdb, f309f92d, fa89d87e]
+    local_revisions: [43c92159, c17e9674, 9c5c6abf]
+    summary: Config keys/coercion fail safely, session errors return nonzero, pinned sessions survive bulk prune unless explicitly included, backup path errors are friendly, rollback can list all directories safely, and attended worktree cleanup keeps ambiguous or valuable trees.
+    evidence: [clio_cli/config.py, clio_cli/main.py, clio_state.py, clio_cli/worktree_gc.py, tools/checkpoint_manager.py]
+  - id: cli-identity-oneshot-and-keyboard
     status: matched-clio-equivalent
-    summary: Clio routes authenticated Bot roster and DM requests directly by profile instead of mirroring every API under /p/<profile>.
-    evidence:
-      - gateway/platforms/api_server.py:/api/bots/{profile}/dm
-      - clio_bot_mode.py:local_dm
-      - tests/gateway/test_bot_mode_surfaces.py
-  - id: peer-dm-and-connection-roster
-    status: matched
-    summary: Registered authenticated peers support profile-qualified DMs and live multi-source inventories with collision-safe handles and explicit offline errors.
-    evidence:
-      - clio_bot_mode.py:peer_dm
-      - clio_bot_mode.py:list_connected_bot_roster
-      - clio_cli/bot_mode.py:peer roster
-      - tests/test_bot_mode.py:test_connected_roster_uses_authenticated_peer_and_qualifies_collisions
+    upstream_revisions: [3f67921f, b0350365, 46666528, 4f12cfd9, 1a8fea3c, 118dbe87]
+    local_revisions: [43c92159, c17e9674, 9c5c6abf]
+    summary: Safe undo/yolo reporting, one-shot skill preload, /whoami, Ghostty negotiation, and lock-bit keyboard aliases use Clio's existing CLI and Ink architecture.
+    evidence: [cli.py, clio_cli/oneshot.py, clio_cli/commands.py, ui-tui/packages/clio-ink/src/ink]
+  - id: provider-discovery-reasoning-and-images
+    status: matched-clio-equivalent
+    upstream_revisions: [7072fc4f, c7d0f6c3, f7d90c94, d0573880, 4511ba49]
+    local_revisions: [2abc4684, 7d4bc905]
+    summary: Plugin-only providers and custom discovery URLs resolve through Clio ProviderProfiles, reasoning effort is clamped through one model-aware vocabulary, and Codex image generation refuses partial frames as final output.
+    evidence: [clio_cli/providers.py, providers/base.py, agent/reasoning_effort.py, plugins/image_gen/openai-codex/__init__.py]
+  - id: bot-identity-workers-and-attachments
+    status: matched-clio-equivalent
+    upstream_revisions: [ad7a14a5, d604ba65, b359db72]
+    local_revisions: [5e1bc48c, 7888c323, 6576485b]
+    summary: Durable Bot identities survive profile renames, worker sessions light the roster without hiding ordinary sessions, and bounded attachments are staged independently for local and authenticated remote members with a Desktop picker/drop surface.
+    evidence: [clio_bot_mode.py, clio_state.py, gateway/platforms/api_server.py, apps/desktop/src/app/bots/index.tsx]
+  - id: profile-bot-routing-and-peers
+    status: matched-clio-equivalent
+    summary: Clio routes authenticated Bot roster, DMs, rooms, and attachment transfer directly by profile, with collision-safe multi-peer inventories and explicit offline errors instead of a generic /p/<profile> mirror.
+    evidence: [clio_bot_mode.py, gateway/platforms/api_server.py, clio_cli/bot_mode.py]
+  - id: desktop-session-owner-routing
+    status: matched-clio-equivalent
+    upstream_revisions: [ae6578af, d57f94a3, 3a50a6be]
+    local_revisions: [26f7ee6d]
+    summary: Profile activation fails closed, session RPCs route through their owning profile gateway, and Bot Chat wake waits for the owning backend.
+    evidence: [apps/desktop/src/store/session-request-router.ts, apps/desktop/src/store/gateway.ts, apps/desktop/src/store/profile.ts]
+  - id: desktop-multi-connection-aggregation-and-updates
+    status: partial
+    summary: Stable connection/profile route keys and owner-pinned session calls exist; Hermes's unified all-gateway session aggregation, remote-project scan, and update-every-target UI are not fully exposed in the shipped Clio renderer.
+    evidence: [apps/desktop/src/desktop/backend-foundations.ts, apps/desktop/src/store/session-request-router.ts]
   - id: generic-gateway-profile-multiplex
-    status: partial
-    summary: Bot endpoints and subprocess-isolated profile turns are routed; Clio does not expose Hermes's generic /p/<profile> mirror for sessions, cron, and all platform adapters in one process.
-    evidence:
-      - clio_bot_mode.py:run_profile_turn
-      - gateway/platforms/api_server.py
-  - id: desktop-multi-connection-bot-roster
-    status: partial
-    summary: Stable (connection, profile) route keys and per-profile remote overrides exist, but the shipped renderer has no live aggregated Bots roster/connection picker yet.
-    evidence:
-      - apps/desktop/src/desktop/backend-foundations.ts:backendRouteKey
-      - apps/desktop/electron/connection-config.cjs:profileRemoteOverride
-      - apps/desktop/src/desktop/backend-foundations.test.ts
+    status: partial-intentional
+    summary: Bot and Desktop session routes are profile-aware; Clio intentionally retains isolated profile gateways rather than mirroring every sessions/cron/platform route under one multi-tenant process.
+    evidence: [gateway/profile_routing.py, clio_bot_mode.py]
+  - id: a2a-tool-schema-follow-up
+    status: not-applicable
+    upstream_revisions: [cefeed4c]
+    summary: The Hermes regression is in its A2A client-tool describe layer; Clio currently ships only the minimal A2A platform bridge and has no equivalent wrapper schema to repair.
+  - id: nous-relay-and-keyless-vendor-ring
+    status: excluded-service-specific
+    summary: Nous relay/live-card protocol and the Nous-operated keyless Exa/Parallel/Tavily/Firecrawl/Keenable ring are not portable. Clio keeps its Portal-managed and direct-provider paths.
+  - id: desktop-themes-glass-hud
+    status: excluded-visual-only
+    summary: Hermes-only themes, accent retinting, glass/material tuning, and HUD layouts have no Clio product-equivalent behavior requirement.
   - id: terminal-overlay-unfocused-tab-switch
     status: matched-clio-equivalent
-    upstream_revisions: [2473e5685, 7f3d25593]
-    summary: Hermes needed hidden-pane sampling because inactive keep-alive panes retain the terminal slot. Clio conditionally unmounts TerminalSlot on a right-sidebar tab switch, and its effect clears the overlay rect/pointer events; the upstream patch is not portable as-is.
-    evidence:
-      - apps/desktop/src/app/right-sidebar/index.tsx
-      - apps/desktop/src/app/right-sidebar/terminal/persistent.tsx
-  - id: hud-voice-menu
-    status: excluded-no-equivalent
-    upstream_revisions: [701314c6d, de322448a]
-    summary: The behavior only folds existing voice controls inside Hermes HUD mode. Clio has conversational voice/dictation but no shipped equivalent HUD composer mode to patch.
-    evidence:
-      - apps/desktop/src/app/chat/composer/controls.tsx
-      - apps/desktop/src/app/chat/composer/hooks/use-voice-conversation.ts
-  - id: hud-glass-material-and-band-layout
-    status: excluded-visual-only
-    upstream_revisions: [7f9e79b2e, cba8efce2, de322448a]
-  - id: tool-budget-read-guard
-    status: not-applicable
-    upstream_revisions: [4a83b03c3]
-    summary: The changed Hermes-only mcp_result_size_chars reader has no Clio counterpart; Clio's existing config hot paths already use load_config_readonly.
-    evidence:
-      - clio_cli/config.py:load_config_readonly
-      - tools/budget_config.py
+    summary: Clio conditionally unmounts its TerminalSlot and clears overlay routing when the sidebar tab changes, so Hermes's hidden-pane sampling patch is unnecessary.
+    evidence: [apps/desktop/src/app/right-sidebar/index.tsx, apps/desktop/src/app/right-sidebar/terminal/persistent.tsx]
 
 capabilities:
   - id: runtime-reliability
@@ -139,13 +153,13 @@ capabilities:
     local_paths: [cron, clio_cli, web, apps/desktop]
     tests: [tests/cron]
   - id: outbound-webhooks-a2a
-    title: Signed outbound webhook queue and A2A v1.0 interoperability
+    title: Durable signed outbound lifecycle webhooks plus the Clio A2A platform bridge
     upstream_paths: [gateway, plugins/platforms/a2a]
     phase: 7
     priority: P1
-    status: ported
-    local_paths: [gateway, plugins/platforms/a2a]
-    tests: [tests/gateway, tests/plugins]
+    status: ported-clio-equivalent
+    local_paths: [agent/outbound_webhooks.py, gateway/reliability.py, plugins/platforms/a2a]
+    tests: [tests/agent/test_outbound_webhooks.py, tests/gateway, tests/plugins]
   - id: plugin-platform-v2
     title: Manifest v2, capabilities, grants, consent, lifecycle ownership, unload, event bus, packs, portable plugins, and missing hooks
     upstream_paths: [hermes_cli/plugins.py, hermes_cli/plugin_capabilities.py, hermes_cli/plugin_packs.py, hermes_cli/plugin_dev.py, agent/registration_lifecycle.py, agent/plugin_stream_hooks.py]

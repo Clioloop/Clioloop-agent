@@ -50,9 +50,10 @@ Rooms enforce:
 - each member receives only unseen room deltas through a per-member/thread watermark;
 - new input increments a cancellation epoch, preventing stale replies from landing;
 - attempts and failures remain truthful in a private activity feed;
-- attachments are copied into each receiving profile rather than sharing another profile's filesystem path.
+- local attachments are copied into each receiving profile instead of sharing filesystem paths;
+- remote attachments are transferred one at a time over the authenticated peer API, decoded strictly, and staged under the receiving profile with private permissions. Remote files are capped at 7 MiB so the Base64 envelope remains below the API server's 10 MB request limit; local files retain the 25 MiB limit.
 
-Room state is stored in profile-root-aware `bot_rooms.json`. Each local member uses its own persistent `Group: <name>` canonical session.
+Room state is stored in profile-root-aware `bot_rooms.json`. Each local member uses its own persistent `Group: <name>` canonical session. Bot identities are durable across profile renames, and active Kanban/tool-worker sessions appear in the roster without turning ordinary sessions into Bot Chats.
 
 ## Messaging gateways
 
@@ -85,6 +86,7 @@ When the API Server platform is enabled:
 - `GET /api/bots`
 - `GET /api/bots/{profile}`
 - `POST /api/bots/{profile}/dm`
+- `POST /api/bots/{profile}/attachments` (peer-only staged attachment transfer)
 - `GET|POST /api/bot-rooms`
 - `GET|DELETE /api/bot-rooms/{room_id}`
 - `POST /api/bot-rooms/{room_id}/messages`
