@@ -827,3 +827,30 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
         ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
     assert ".clio-bootstrap-complete" not in status
+
+
+@pytest.mark.parametrize(
+    ("stderr", "category"),
+    [
+        ("fatal: unable to access 'https://x': Could not resolve host: github.com", "network"),
+        ("ssh: connect to host github.com port 22: Network is unreachable", "network"),
+        ("fatal: Authentication failed for 'https://x'", "auth"),
+        ("git@github.com: Permission denied (publickey).", "auth"),
+        ("remote: Repository not found.", "remote"),
+        ("fatal: bad object refs/remotes/origin/main", "other"),
+    ],
+)
+def test_git_fetch_error_classifier(stderr, category):
+    assert clio_main._classify_git_fetch_error(stderr) == category
+
+
+def test_keep_stash_overrides_non_interactive_discard(monkeypatch, tmp_path, capsys):
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
+
+    clio_main.cmd_update(SimpleNamespace(gateway=True, keep_stash=True))
+
+    assert restore_calls == []
+    assert discard_calls == []
+    out = capsys.readouterr().out
+    assert "Local changes kept in stash" in out
+    assert "git stash apply abc123deadbeef" in out

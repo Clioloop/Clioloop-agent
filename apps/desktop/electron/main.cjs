@@ -26,7 +26,7 @@ const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
-const { canImportClioCli, verifyClioCli } = require('./backend-probes.cjs')
+const { canImportClioCli, clioCliSupportsUpdateFlag, verifyClioCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { createCrashJournal } = require('./backend-foundations.cjs')
 const {
@@ -1658,8 +1658,16 @@ async function applyUpdatesPosixInApp() {
     // best effort
   }
 
+  // Preserve local source edits rather than reapplying them underneath a
+  // running Desktop. Probe first so a newer GUI can still drive an older CLI
+  // that would reject the new flag at argparse time.
+  const updateArgs = ['update', '--yes', ...branchArgs]
+  if (clioCliSupportsUpdateFlag(clio, '--keep-stash')) {
+    updateArgs.push('--keep-stash')
+  }
+
   emitUpdateProgress({ stage: 'update', message: 'Updating Clio (git + dependencies)…', percent: 10 })
-  const updated = await runStreamedUpdate(clio, ['update', '--yes', ...branchArgs], {
+  const updated = await runStreamedUpdate(clio, updateArgs, {
     cwd: updateRoot,
     env,
     stage: 'update'

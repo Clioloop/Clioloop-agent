@@ -9750,6 +9750,64 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _classify_git_fetch_error(stderr: object) -> str:
+    """Classify fetch failure text without relying on one exact git message."""
+    text = str(stderr or "").casefold()
+    # Check auth first: HTTP auth failures often include a generic
+    # ``unable to access`` prefix that must not be labeled as connectivity.
+    auth_markers = (
+        "authentication failed",
+        "could not read username",
+        "permission denied (publickey)",
+        "access denied",
+        "http 401",
+        "http 403",
+        "error: 401",
+        "error: 403",
+    )
+    network_markers = (
+        "could not resolve host",
+        "failed to connect",
+        "connection timed out",
+        "connection timeout",
+        "connection reset",
+        "network is unreachable",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "tls handshake timeout",
+        "operation timed out",
+    )
+    remote_markers = (
+        "repository not found",
+        "couldn't find remote ref",
+        "remote ref does not exist",
+        "does not appear to be a git repository",
+    )
+    if any(marker in text for marker in auth_markers):
+        return "auth"
+    if any(marker in text for marker in network_markers):
+        return "network"
+    if any(marker in text for marker in remote_markers):
+        return "remote"
+    return "other"
+
+
+def _print_git_fetch_error(stderr: object, *, source: str = "origin") -> None:
+    """Print one consistent, user-facing fetch diagnosis."""
+    text = str(stderr or "").strip()
+    category = _classify_git_fetch_error(text)
+    if category == "network":
+        print("✗ Network error — cannot reach the remote repository.")
+    elif category == "auth":
+        print("✗ Authentication failed — check your git credentials or SSH key.")
+    elif category == "remote":
+        print(f"✗ Remote repository or branch not found on {source}.")
+    else:
+        print(f"✗ Failed to fetch updates from {source}.")
+    if text:
+        print(f"  {text.splitlines()[0]}")
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``clio update --check``: fetch and report without installing.
 
@@ -9836,15 +9894,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
-        if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error — cannot reach the remote repository.")
-        elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed — check your git credentials or SSH key.")
-        else:
-            print("✗ Failed to fetch.")
-            if stderr:
-                print(f"  {stderr.splitlines()[0]}")
+        _print_git_fetch_error(fetch_result.stderr, source=compare_branch.split("/", 1)[0])
         sys.exit(1)
 
     # Verify the compare ref actually exists before asking rev-list about it.
@@ -10285,6 +10335,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    keep_stash = bool(getattr(args, "keep_stash", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -10406,20 +10457,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
-            ):
-                print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
-                )
-            else:
-                print(f"✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
+            _print_git_fetch_error(fetch_result.stderr)
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
@@ -10472,13 +10510,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # Restore the user's prior branch + stash before bailing
                     # so we don't leave them stranded in a weird state.
                     if auto_stash_ref is not None:
-                        _restore_stashed_changes(
-                            git_cmd,
-                            PROJECT_ROOT,
-                            auto_stash_ref,
-                            prompt_user=False,
-                            input_fn=gw_input_fn,
-                        )
+                        if keep_stash:
+                            print(
+                                f"  ℹ Local changes kept in stash (ref: {auto_stash_ref})"
+                            )
+                            print(
+                                f"  Restore manually with: git stash apply {auto_stash_ref}"
+                            )
+                        else:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
@@ -10489,6 +10535,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         prompt_for_restore = (
             auto_stash_ref is not None
             and not assume_yes
+            and not keep_stash
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
@@ -10513,13 +10560,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
+                if keep_stash:
+                    print(f"  ℹ Local changes kept in stash (ref: {auto_stash_ref})")
+                    print(f"  Restore manually with: git stash apply {auto_stash_ref}")
+                else:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
             if current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
@@ -10640,6 +10691,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
                     print(f"  Restore manually with: git stash apply")
+                elif keep_stash:
+                    # Explicit safety override (used by Desktop): leave the
+                    # exact autostash untouched instead of applying/dropping it.
+                    print(f"  ℹ Local changes kept in stash (ref: {auto_stash_ref})")
+                    print(f"  Restore manually with: git stash apply {auto_stash_ref}")
                 elif discard_local_changes:
                     # Non-interactive update + user opted into discarding local
                     # source edits (updates.non_interactive_local_changes:
@@ -15740,6 +15796,12 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'clio config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--keep-stash",
+        action="store_true",
+        default=False,
+        help="Leave any update autostash preserved instead of applying or dropping it",
     )
     update_parser.add_argument(
         "--branch",

@@ -11,7 +11,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { canImportClioCli, verifyClioCli } = require('./backend-probes.cjs')
+const { canImportClioCli, clioCliSupportsUpdateFlag, verifyClioCli } = require('./backend-probes.cjs')
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -79,4 +79,23 @@ test('verifyClioCli swallows timeouts (does not throw)', () => {
   // (because the binary is missing) returns false rather than
   // propagating. Same code path the timeout case takes.
   assert.equal(verifyClioCli('/definitely/not/a/real/binary/anywhere'), false)
+})
+
+test('clioCliSupportsUpdateFlag probes update --help output', () => {
+  const scriptPath = path.join(os.tmpdir(), `clio-probes-help-${Date.now()}-${process.pid}.cjs`)
+  fs.writeFileSync(
+    scriptPath,
+    "if (process.argv.slice(2).join(' ') === 'update --help') console.log('  --yes  --keep-stash\\n'); else process.exit(2)\n"
+  )
+  try {
+    assert.equal(clioCliSupportsUpdateFlag(NODE_BIN, '--keep-stash', { prefixArgs: [scriptPath] }), true)
+    assert.equal(clioCliSupportsUpdateFlag(NODE_BIN, '--force', { prefixArgs: [scriptPath] }), false)
+  } finally {
+    fs.unlinkSync(scriptPath)
+  }
+})
+
+test('clioCliSupportsUpdateFlag fails closed for invalid flags and commands', () => {
+  assert.equal(clioCliSupportsUpdateFlag(NODE_BIN, 'keep-stash'), false)
+  assert.equal(clioCliSupportsUpdateFlag('/definitely/missing/clio', '--keep-stash'), false)
 })

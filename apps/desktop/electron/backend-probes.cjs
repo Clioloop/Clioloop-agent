@@ -99,8 +99,27 @@ function verifyClioCli(clioCommand, opts = {}) {
   }
 }
 
+/** Return true iff the installed CLI advertises an update subcommand flag. */
+function clioCliSupportsUpdateFlag(clioCommand, flag, opts = {}) {
+  if (!clioCommand || !/^--[a-z0-9][a-z0-9-]*$/.test(flag || '')) return false
+  try {
+    const output = execFileSync(clioCommand, [...(opts.prefixArgs || []), 'update', '--help'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT_MS,
+      shell: Boolean(opts.shell),
+      windowsHide: true
+    })
+    const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(^|[\\s,])${escaped}(?=[\\s,=]|$)`, 'm').test(output)
+  } catch {
+    return false
+  }
+}
+
 module.exports = {
   canImportClioCli,
+  clioCliSupportsUpdateFlag,
   verifyClioCli,
   PROBE_TIMEOUT_MS
 }
