@@ -1989,11 +1989,13 @@ DEFAULT_CONFIG = {
 
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
-    # subagent_stop, etc.).  Each entry maps an event name to a list of
-    # {matcher, command, timeout} dicts.  First registration of a new
-    # command prompts the user for consent; subsequent runs reuse the
-    # stored approval from ~/.clio/shell-hooks-allowlist.json.
-    # See `website/docs/user-guide/features/hooks.md` for schema + examples.
+    # subagent_stop, etc.).  Each event entry maps to a list of
+    # {matcher, command, timeout} dicts. The reserved ``hooks.outbound``
+    # mapping configures durable signed lifecycle webhook notifications.
+    # First registration of a new shell command prompts the user for consent;
+    # subsequent runs reuse the stored approval from
+    # ~/.clio/shell-hooks-allowlist.json.
+    # See the bundled clio-agent webhook reference for both schemas.
     "hooks": {},
 
     # Auto-accept shell-hook registrations without a TTY prompt.  Also

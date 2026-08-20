@@ -168,6 +168,54 @@ The POST returns `200 OK` on successful delivery, `502` on target failure — so
 
 Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
 
+## Outbound lifecycle notifications
+
+Clio can also POST selected lifecycle hook events to external systems. This
+is separate from the inbound subscription routes above: outbound hooks report
+what Clio did; they do not start a new agent run.
+
+Keep the signing secret in the profile's `.env` file:
+
+```bash
+CLIO_OUTBOUND_WEBHOOK_SECRET=replace-with-a-long-random-value
+```
+
+Then add an opt-in `hooks.outbound` block to `config.yaml`:
+
+```yaml
+hooks:
+  outbound:
+    enabled: true
+    secret_env: CLIO_OUTBOUND_WEBHOOK_SECRET
+    endpoints:
+      - url: https://events.example.com/clio
+        events: [on_session_start, on_session_end, post_tool_call]
+      - url: https://audit.example.com/clio
+        events: ["*"]
+    poll_interval: 0.5
+    batch_size: 16
+    max_attempts: 8
+```
+
+Restart the CLI or gateway after changing this block. When enabled, Clio:
+
+- redacts credential-keyed fields and token-like text before persistence;
+- stores deliveries durably in the profile-scoped reliability database;
+- retries failures with bounded exponential backoff and idempotency keys;
+- refuses credential-bearing/invalid endpoint URLs and does not follow redirects;
+- signs the exact JSON body in `X-Clio-Signature-256` as
+  `sha256=HMAC_SHA256(secret, body)`;
+- retains the timestamp-bound compatibility signature in `X-Clio-Signature`;
+- includes `X-Clio-Event`, `X-Clio-Delivery`, `X-Clio-Timestamp`, and
+  `Idempotency-Key` headers.
+
+The receiver should verify the signature against the raw request bytes using
+a constant-time comparison, then deduplicate on `Idempotency-Key`. Payloads
+can contain session or tool content after secret redaction, so subscribe only
+to events the receiver needs and use HTTPS outside trusted local networks.
+If the feature is disabled, has no valid endpoints, or has no signing secret,
+Clio creates no dispatcher and performs no outbound network activity.
+
 ## Security
 
 - Each subscription gets an auto-generated HMAC-SHA256 secret (or provide your own with `--secret`)

@@ -2144,7 +2144,14 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    results = get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    try:
+        from agent.outbound_webhooks import emit_hook_event
+
+        emit_hook_event(hook_name, **kwargs)
+    except Exception:
+        pass
+    return results
 
 
 def has_hook(hook_name: str) -> bool:

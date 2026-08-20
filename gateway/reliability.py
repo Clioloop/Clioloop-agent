@@ -17,6 +17,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -434,6 +435,23 @@ def redact_payload(value: Any) -> Any:
     return value
 
 
+def valid_webhook_url(url: str) -> bool:
+    """Accept absolute HTTP(S) URLs without embedded credentials or controls."""
+    if not isinstance(url, str) or any(ord(char) < 0x20 or ord(char) == 0x7F for char in url):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        parsed.scheme.lower() in {"http", "https"}
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
 class SignedWebhookQueue:
     """Durable HMAC-SHA256 webhook outbox with leases and bounded backoff."""
 
@@ -444,7 +462,7 @@ class SignedWebhookQueue:
         self.store, self.secret, self.clock = store, raw, clock or store.clock
 
     def enqueue(self, url: str, payload: Any, *, idempotency_key: str, available_at: Optional[float] = None) -> str:
-        if not url.startswith(("https://", "http://")) or not idempotency_key:
+        if not valid_webhook_url(url) or not idempotency_key:
             raise ValueError("valid http(s) URL and idempotency key required")
         body = json.dumps(redact_payload(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         now = self.clock()
@@ -496,10 +514,20 @@ class SignedWebhookQueue:
         body = bytes(row["body"])
         timestamp = str(int(now))
         signature = hmac.new(self.secret, timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+        body_signature = hmac.new(self.secret, body, hashlib.sha256).hexdigest()
+        try:
+            event_name = str((json.loads(body) or {}).get("event") or "clio.lifecycle")
+        except Exception:
+            event_name = "clio.lifecycle"
         headers = {
             "Content-Type": "application/json",
             "Idempotency-Key": str(row["idempotency_key"]),
+            "X-Clio-Event": event_name,
+            "X-Clio-Delivery": str(row["id"]),
             "X-Clio-Timestamp": timestamp,
+            # Current lifecycle contract signs the exact raw body. Keep the
+            # timestamp-bound legacy signature during the compatibility window.
+            "X-Clio-Signature-256": "sha256=" + body_signature,
             "X-Clio-Signature": "sha256=" + signature,
         }
         try:
@@ -527,6 +555,16 @@ class SignedWebhookQueue:
                 (now, row["id"], claim_owner),
             ).rowcount
         return bool(changed)
+
+
+class _NoWebhookRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward a signed webhook request to an unconfigured URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_WEBHOOK_OPENER = urllib.request.build_opener(_NoWebhookRedirectHandler)
 
 
 class OutboundWebhookDispatcher:
@@ -558,7 +596,7 @@ class OutboundWebhookDispatcher:
     @staticmethod
     def _http_sender(url: str, body: bytes, headers: Mapping[str, str]) -> int:
         request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
-        with urllib.request.urlopen(request, timeout=15.0) as response:
+        with _WEBHOOK_OPENER.open(request, timeout=15.0) as response:
             response.read(4096)
             return int(response.status)
 
