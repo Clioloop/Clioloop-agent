@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import sys
 import time
 from types import SimpleNamespace
 import pytest
@@ -274,6 +275,26 @@ class TestPersistence:
             manager.create_session(cwd="/work")
 
         assert captured["enabled_toolsets"] == ["clio-acp", "mcp-olympus", "mcp-exa"]
+
+    def test_create_session_passes_configured_turn_limit(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr("clio_cli.config.load_config", lambda: {
+            "model": {"default": "test-model"},
+            "agent": {"max_turns": "unlimited"},
+        })
+        monkeypatch.setattr(
+            "clio_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {"provider": "openrouter", "api_key": "test"},
+        )
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model="test-model")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            SessionManager(db=SessionDB(tmp_path / "state.db")).create_session()
+
+        assert captured["max_iterations"] == sys.maxsize
 
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")

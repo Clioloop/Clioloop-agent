@@ -1005,7 +1005,8 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
-        max_iterations = int(os.getenv("CLIO_MAX_ITERATIONS", "90"))
+        from clio_cli.config import resolve_config_turn_limit
+        max_iterations = resolve_config_turn_limit(user_config)
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).

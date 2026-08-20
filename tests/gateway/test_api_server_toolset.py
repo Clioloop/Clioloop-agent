@@ -1,4 +1,5 @@
 """Tests for clio-api-server toolset and API server tool availability."""
+import sys
 from unittest.mock import patch, MagicMock
 
 
@@ -65,6 +66,21 @@ class TestApiServerPlatformConfig:
 
 
 class TestApiServerAdapterToolset:
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_uses_config_turn_limit_not_stale_env(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        with patch.dict("os.environ", {"CLIO_MAX_ITERATIONS": "5"}), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("gateway.run._resolve_gateway_model", return_value="test/model"), \
+             patch("gateway.run._load_gateway_config", return_value={"agent": {"max_turns": None}}), \
+             patch("run_agent.AIAgent") as agent_cls:
+            adapter._create_agent()
+
+        assert agent_cls.call_args.kwargs["max_iterations"] == sys.maxsize
+
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_reads_config_toolsets(self):
         """API server resolves toolsets from config like all other platforms."""

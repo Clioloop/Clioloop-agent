@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import sys
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1020,6 +1021,21 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_uses_unlimited_for_null_max_turns(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n  max_turns: null\n", encoding="utf-8"
+        )
+        job = {"id": "turn-limit-job", "name": "test", "prompt": "hello"}
+        _fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "ok"
+            }
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["max_iterations"] == sys.maxsize
 
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.

@@ -416,7 +416,7 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
         "agent": {
-            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "max_turns": None,  # Unlimited unless explicitly capped
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -547,7 +547,7 @@ def load_cli_config() -> Dict[str, Any]:
             agent_file_config = file_config.get("agent")
             if "max_turns" in file_config and not (
                 isinstance(agent_file_config, dict)
-                and agent_file_config.get("max_turns") is not None
+                and "max_turns" in agent_file_config
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
@@ -3251,20 +3251,21 @@ class ClioCLI:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-        # Max turns priority: CLI arg > config file > env var > default
-        if max_turns is not None:  # CLI arg was explicitly set
-            self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
-            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
-            self.max_turns = CLI_CONFIG["max_turns"]
-        elif os.getenv("CLIO_MAX_ITERATIONS"):
-            try:
-                self.max_turns = int(os.getenv("CLIO_MAX_ITERATIONS", ""))
-            except (TypeError, ValueError):
-                self.max_turns = 90
+        # Max turns priority: explicit CLI arg > nested config > legacy root
+        # config > unlimited default. Config is read directly: the historical
+        # CLIO_MAX_ITERATIONS .env bridge is deliberately not consulted because
+        # stale values there used to override the user's current config.
+        from clio_cli.config import resolve_turn_limit
+        _agent_config = CLI_CONFIG.get("agent")
+        if max_turns is not None:
+            _raw_max_turns = max_turns
+        elif isinstance(_agent_config, dict) and "max_turns" in _agent_config:
+            _raw_max_turns = _agent_config.get("max_turns")
+        elif "max_turns" in CLI_CONFIG:
+            _raw_max_turns = CLI_CONFIG.get("max_turns")
         else:
-            self.max_turns = 90
+            _raw_max_turns = None
+        self.max_turns = resolve_turn_limit(_raw_max_turns)
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -6570,7 +6571,8 @@ class ClioCLI:
         print(f"  Timeout:      {terminal_timeout}s")
         print()
         print("  -- Agent --")
-        print(f"  Max Turns:  {self.max_turns}")
+        from clio_cli.config import format_turn_limit
+        print(f"  Max Turns:  {format_turn_limit(self.max_turns)}")
         print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
         print(f"  Verbose:    {self.verbose}")
         print()
@@ -16218,7 +16220,7 @@ def main(
         provider: Inference provider ("auto", "openrouter", "managed", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
+        max_turns: Maximum tool-calling iterations (default: unlimited)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

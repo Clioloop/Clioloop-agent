@@ -1,10 +1,7 @@
-"""Regression tests for the config.yaml → env var bridge in gateway/run.py.
+"""Regression tests for config-authoritative settings in gateway/run.py.
 
-Guards against the 60-vs-500 bug where a stale `.env CLIO_MAX_ITERATIONS=60`
-entry silently shadowed `agent.max_turns: 500` in config.yaml because the
-bridge used `if X not in os.environ` guards. After PR#18413 the bridge
-treats config.yaml as authoritative and unconditionally overwrites .env
-values for `agent.*`, `display.*`, `timezone`, and `security.*` keys.
+Main-agent turn limits no longer round-trip through ``CLIO_MAX_ITERATIONS``;
+other legacy bridge keys continue to be refreshed from config.
 """
 
 from __future__ import annotations
@@ -105,17 +102,21 @@ def clio_home(tmp_path: Path) -> Path:
     return home
 
 
-def test_config_max_turns_wins_over_stale_env(clio_home: Path) -> None:
-    """Regression: config.yaml:agent.max_turns=500 must beat .env=60."""
+def test_stale_max_turns_env_is_not_rewritten(clio_home: Path) -> None:
+    """The obsolete env value may remain present, but consumers ignore it."""
     _write_config(clio_home, agent_cfg={"max_turns": 500})
     _write_env(clio_home, {"CLIO_MAX_ITERATIONS": "60"})
 
     env = _run_gateway_import(clio_home, initial_env={})
 
-    assert env.get("CLIO_MAX_ITERATIONS") == "500", (
-        f"expected config.yaml max_turns=500 to win; got {env.get('CLIO_MAX_ITERATIONS')!r}. "
-        "Stale .env value is shadowing config — the bridge lost its override."
-    )
+    assert env.get("CLIO_MAX_ITERATIONS") == "60"
+
+
+def test_gateway_resolver_ignores_stale_max_turns_env(monkeypatch) -> None:
+    from gateway.run import _configured_max_iterations
+
+    monkeypatch.setenv("CLIO_MAX_ITERATIONS", "60")
+    assert _configured_max_iterations({"agent": {"max_turns": 500}}) == 500
 
 
 def test_config_gateway_timeout_wins_over_stale_env(clio_home: Path) -> None:

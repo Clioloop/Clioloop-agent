@@ -2459,15 +2459,14 @@ def _apply_personality_to_session(
     return False, None
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
-    try:
-        env_max = int(os.environ.get("CLIO_TUI_MAX_TURNS", "") or 0)
-        if env_max > 0:
-            return env_max
-    except (TypeError, ValueError):
-        pass
-    agent_cfg = cfg.get("agent") or {}
-    return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+def _cfg_max_turns(cfg: dict, default: int | None = None) -> int:
+    from clio_cli.config import TURN_LIMIT_UNLIMITED, resolve_config_turn_limit
+
+    return resolve_config_turn_limit(
+        cfg,
+        env_value=os.environ.get("CLIO_TUI_MAX_TURNS", ""),
+        default=TURN_LIMIT_UNLIMITED if default is None else default,
+    )
 
 
 def _parse_tui_skills_env() -> list[str]:
@@ -2493,7 +2492,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
-        "max_iterations": _cfg_max_turns(cfg, 25),
+        "max_iterations": _cfg_max_turns(cfg),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
         "quiet_mode": True,
@@ -2715,7 +2714,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
     )
     return AIAgent(
         model=model,
-        max_iterations=_cfg_max_turns(cfg, 90),
+        max_iterations=_cfg_max_turns(cfg),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -8511,6 +8510,8 @@ def _(rid, params: dict) -> dict:
 @method("config.show")
 def _(rid, params: dict) -> dict:
     try:
+        from clio_cli.config import format_turn_limit
+
         cfg = _load_cfg()
         model = _resolve_model()
         api_key = os.environ.get("CLIO_API_KEY", "") or cfg.get("api_key", "")
@@ -8529,7 +8530,10 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Agent",
                 "rows": [
-                    ["Max Turns", str(_cfg_max_turns(cfg, 90))],
+                    [
+                        "Max Turns",
+                        format_turn_limit(_cfg_max_turns(cfg)),
+                    ],
                     ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
                     ["Verbose", str(cfg.get("verbose", False))],
                 ],

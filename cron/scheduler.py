@@ -1666,8 +1666,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Use the same config-native main-agent budget as every other surface.
+        from clio_cli.config import resolve_config_turn_limit
+        max_iterations = resolve_config_turn_limit(_cfg)
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})

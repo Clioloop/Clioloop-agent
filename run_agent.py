@@ -350,7 +350,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int | str | None = None,  # None resolves to unlimited in agent_init
         run_budget_seconds: float | None = None,
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -5000,7 +5000,7 @@ def main(
     model: str = "",
     api_key: str = None,
     base_url: str = "",
-    max_turns: int = 10,
+    max_turns: int | str | None = None,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
@@ -5017,7 +5017,7 @@ def main(
         model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
+        max_turns: Maximum API-call iterations. Defaults to unlimited.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"

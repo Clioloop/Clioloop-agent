@@ -32,6 +32,117 @@ from clio_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
+# ``sys.maxsize`` is the unlimited turn-budget sentinel used throughout Clio.
+# It stays an ordinary positive integer, so existing loop comparisons,
+# iteration-budget arithmetic, JSON payloads, and subprocess argument passing
+# do not need a second nullable/special-value code path. A real conversation
+# can never approach this value.
+TURN_LIMIT_UNLIMITED = sys.maxsize
+
+_TURN_LIMIT_MISSING = object()
+_UNLIMITED_TURN_LIMITS = frozenset({
+    "none",
+    "null",
+    "unlimited",
+    "infinite",
+    "infinity",
+    "inf",
+    "∞",
+    "0",
+    "-1",
+})
+
+
+def parse_turn_limit(raw: Any) -> int | None:
+    """Return the canonical config value for a user-supplied turn limit.
+
+    Positive integers remain finite. ``None``, zero/negative integers, and the
+    supported unlimited spellings become ``None`` so config files persist the
+    unlimited state as YAML ``null`` rather than the internal integer sentinel.
+    Invalid values raise :class:`ValueError`.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("boolean turn limits are invalid")
+
+    if isinstance(raw, int):
+        return None if raw <= 0 else raw
+
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if not value:
+            raise ValueError("empty turn limit")
+        if value in _UNLIMITED_TURN_LIMITS:
+            return None
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise ValueError(f"invalid turn limit: {raw!r}") from exc
+        return None if parsed <= 0 else parsed
+
+    raise ValueError(f"unsupported turn limit type: {type(raw).__name__}")
+
+
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Return a safe positive integer for a raw ``agent.max_turns`` value.
+
+    Positive integers and integer-like numeric strings remain finite. ``None``
+    (including YAML ``null``), zero/negative values, and the case-insensitive
+    spellings ``none``, ``null``, ``unlimited``, ``inf``/``infinity`` map to
+    :data:`TURN_LIMIT_UNLIMITED`. Invalid values use ``default``. Booleans are
+    rejected explicitly because Python otherwise treats them as integers.
+
+    This is the only value normalizer for main-agent turn limits. Callers must
+    read config directly and pass the raw value here instead of round-tripping
+    it through ``CLIO_MAX_ITERATIONS``; old values in ``.env`` are intentionally
+    not authoritative.
+    """
+    try:
+        parsed = parse_turn_limit(raw)
+    except ValueError:
+        logger.debug(
+            "Ignoring invalid agent.max_turns value %r; using %d",
+            raw,
+            default,
+        )
+        return default
+    return TURN_LIMIT_UNLIMITED if parsed is None else parsed
+
+
+def resolve_config_turn_limit(
+    config: Any,
+    *,
+    env_value: Any = _TURN_LIMIT_MISSING,
+    default: int = TURN_LIMIT_UNLIMITED,
+) -> int:
+    """Resolve a main-agent turn limit with stable surface precedence.
+
+    A non-empty ``env_value`` is an explicit surface-specific override (used by
+    ``CLIO_TUI_MAX_TURNS``), followed by nested ``agent.max_turns`` and the
+    legacy root key. Nested null remains authoritative and means unlimited.
+    The legacy global ``CLIO_MAX_ITERATIONS`` is deliberately not consulted.
+    """
+    fallback = resolve_turn_limit(default)
+    if env_value is not _TURN_LIMIT_MISSING:
+        if not isinstance(env_value, str) or env_value.strip():
+            return resolve_turn_limit(env_value, default=fallback)
+
+    cfg = config if isinstance(config, dict) else {}
+    agent_cfg = cfg.get("agent")
+    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
+        return resolve_turn_limit(agent_cfg.get("max_turns"), default=fallback)
+    if "max_turns" in cfg:
+        return resolve_turn_limit(cfg.get("max_turns"), default=fallback)
+    return fallback
+
+
+def format_turn_limit(value: Any) -> str:
+    """Return a user-facing label without exposing the unlimited sentinel."""
+    resolved = resolve_turn_limit(value)
+    return "unlimited" if resolved == TURN_LIMIT_UNLIMITED else str(resolved)
+
+
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
@@ -851,7 +962,8 @@ DEFAULT_CONFIG = {
         "work_max_iterations": 0,
     },
     "agent": {
-        "max_turns": 90,
+        # Unlimited unless the user explicitly configures a positive cap.
+        "max_turns": None,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -5282,7 +5394,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
-                    if agent_user_config.get("max_turns") is None:
+                    if "max_turns" not in agent_user_config:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
@@ -5915,15 +6027,17 @@ def show_config():
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
-    print(f"  Max turns:    {_cfg_max_turns}")
+    _cfg_max_turns_label = format_turn_limit(_cfg_max_turns)
+    print(f"  Max turns:    {_cfg_max_turns_label}")
     # Warn on stale CLIO_MAX_ITERATIONS ghost in .env that disagrees with
     # config.yaml (issue #17534). Read the .env FILE directly so we catch the
     # ghost even when the gateway bridge already overrode os.environ.
     try:
         _env_ghost = load_env().get("CLIO_MAX_ITERATIONS")
-        if _env_ghost is not None and str(_env_ghost).strip() != str(_cfg_max_turns).strip():
+        _env_ghost_label = format_turn_limit(_env_ghost)
+        if _env_ghost is not None and _env_ghost_label != _cfg_max_turns_label:
             print(color(
-                f"                ⚠ .env has stale CLIO_MAX_ITERATIONS={_env_ghost} "
+                f"                ⚠ .env has stale CLIO_MAX_ITERATIONS={_env_ghost_label} "
                 f"(run 'clio doctor --fix' to remove)",
                 Colors.YELLOW,
             ))

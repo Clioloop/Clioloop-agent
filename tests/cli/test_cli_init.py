@@ -60,26 +60,30 @@ class TestMaxTurnsResolution:
     def test_default_max_turns_is_integer(self):
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 90
+        assert cli.max_turns == sys.maxsize
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
         assert cli.max_turns == 25
 
+    def test_explicit_unlimited_spelling_is_honored(self):
+        cli = _make_cli(max_turns="unlimited")
+        assert cli.max_turns == sys.maxsize
+
     def test_none_max_turns_gets_default(self):
         cli = _make_cli(max_turns=None)
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 90
+        assert cli.max_turns == sys.maxsize
 
-    def test_env_var_max_turns(self):
-        """Env var is used when config file doesn't set max_turns."""
+    def test_stale_env_var_max_turns_is_ignored(self):
+        """The removed global env bridge cannot silently reinstate a cap."""
         cli_obj = _make_cli(env_overrides={"CLIO_MAX_ITERATIONS": "42"})
-        assert cli_obj.max_turns == 42
+        assert cli_obj.max_turns == sys.maxsize
 
     def test_invalid_env_var_max_turns_falls_back_to_default(self):
         """Invalid env values should not crash CLI init."""
         cli_obj = _make_cli(env_overrides={"CLIO_MAX_ITERATIONS": "not-a-number"})
-        assert cli_obj.max_turns == 90
+        assert cli_obj.max_turns == sys.maxsize
 
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
@@ -88,7 +92,7 @@ class TestMaxTurnsResolution:
     def test_max_turns_never_none_for_agent(self):
         """The value passed to AIAgent must never be None (causes TypeError in run_conversation)."""
         cli = _make_cli()
-        assert isinstance(cli.max_turns, int) and cli.max_turns == 90
+        assert isinstance(cli.max_turns, int) and cli.max_turns == sys.maxsize
 
 
 class TestVerboseAndToolProgress:

@@ -132,10 +132,12 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 from clio_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
+    format_turn_limit,
     get_clio_home,
     get_config_path,
     get_env_path,
     load_config,
+    parse_turn_limit,
     save_config,
     save_env_value,
     remove_env_value,
@@ -1485,7 +1487,9 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 150
+    # Keep the canonical unlimited default. In particular, both first-time
+    # setup paths must not silently turn it into a finite 150-turn cap.
+    config.setdefault("agent", {}).setdefault("max_turns", None)
     # config.yaml is the authoritative source for max_turns; the gateway
     # bridges it into CLIO_MAX_ITERATIONS at startup. We no longer write
     # to .env to avoid the dual-source inconsistency that caused the
@@ -1504,7 +1508,9 @@ def _apply_default_agent_settings(config: dict):
 
     save_config(config)
     print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 150")
+    print_info(
+        f"  Max iterations: {format_turn_limit(config['agent']['max_turns'])}"
+    )
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
     print_info("  Session reset: never (use /reset or compression)")
@@ -1522,27 +1528,29 @@ def setup_agent_settings(config: dict):
     # config.yaml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
-    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
+    current_max = format_turn_limit(
+        cfg_get(config, "agent", "max_turns", default=None)
+    )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
+    print_info("Enter a positive number, or 'unlimited' for no turn cap.")
     print_info(
         f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
     )
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
-        max_iter = int(max_iter_str)
-        if max_iter > 0:
-            # Write to config.yaml (authoritative) only. Also clean up any
-            # stale .env entry from earlier setup runs — the gateway's
-            # bridge in gateway/run.py now unconditionally derives
-            # CLIO_MAX_ITERATIONS from agent.max_turns at startup.
-            config.setdefault("agent", {})["max_turns"] = max_iter
-            config.pop("max_turns", None)
-            remove_env_value("CLIO_MAX_ITERATIONS")
-            print_success(f"Max iterations set to {max_iter}")
+        max_iter = parse_turn_limit(max_iter_str)
+        # Write to config.yaml (authoritative) only. Also clean up any
+        # stale .env entry from earlier setup runs — the gateway's
+        # bridge in gateway/run.py now unconditionally derives
+        # CLIO_MAX_ITERATIONS from agent.max_turns at startup.
+        config.setdefault("agent", {})["max_turns"] = max_iter
+        config.pop("max_turns", None)
+        remove_env_value("CLIO_MAX_ITERATIONS")
+        print_success(f"Max iterations set to {format_turn_limit(max_iter)}")
     except ValueError:
-        print_warning("Invalid number, keeping current value")
+        print_warning("Invalid turn limit, keeping current value")
 
     # ── Tool Progress Display ──
     print_info("")
@@ -2550,8 +2558,8 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = cfg_get(config, "agent", "max_turns", default=90)
-        return f"max turns: {max_turns}"
+        max_turns = cfg_get(config, "agent", "max_turns", default=None)
+        return f"max turns: {format_turn_limit(max_turns)}"
 
     elif section_key == "gateway":
         from clio_cli.gateway import _all_platforms, _platform_status

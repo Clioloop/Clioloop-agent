@@ -47,7 +47,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
-from clio_cli.config import cfg_get
+from clio_cli.config import TURN_LIMIT_UNLIMITED, cfg_get, resolve_turn_limit
 from clio_cli.timeouts import get_provider_request_timeout
 from clio_constants import get_clio_home
 from utils import base_url_host_matches
@@ -144,7 +144,7 @@ def init_agent(
     command: str = None,
     args: list[str] | None = None,
     model: str = "",
-    max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+    max_iterations: int | str | None = TURN_LIMIT_UNLIMITED,
     run_budget_seconds: float | None = None,
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
@@ -211,7 +211,8 @@ def init_agent(
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-        max_iterations (int): Maximum number of tool calling iterations (default: 90)
+        max_iterations: Maximum tool-calling iterations. Defaults to unlimited;
+            positive integers preserve an explicit finite cap.
         tool_delay (float): Delay between tool calls in seconds (default: 1.0)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -253,6 +254,7 @@ def init_agent(
     _install_safe_stdio()
 
     agent.model = model
+    max_iterations = resolve_turn_limit(max_iterations)
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.

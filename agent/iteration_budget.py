@@ -18,7 +18,8 @@ class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
     Each agent (parent or subagent) gets its own ``IterationBudget``.
-    The parent's budget is capped at ``max_iterations`` (default 90).
+    The parent's budget is capped at ``max_iterations`` when the user sets an
+    explicit finite value; the default uses Clio's safe unlimited sentinel.
     Each subagent gets an independent budget capped at
     ``delegation.max_iterations`` (default 50) — this means total
     iterations across parent + subagents can exceed the parent's cap.

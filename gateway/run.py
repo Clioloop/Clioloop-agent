@@ -879,33 +879,30 @@ load_clio_dotenv(clio_home=_clio_home, project_env=Path(__file__).resolve().pare
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
-    """Reload .env for fresh credentials without letting stale .env override config.
+    """Reload .env for fresh credentials.
 
     Gateway processes are long-lived, so per-turn code reloads ~/.clio/.env to
-    pick up rotated API keys. config.yaml remains authoritative for agent budget
-    settings such as agent.max_turns; otherwise a stale CLIO_MAX_ITERATIONS in
-    .env can replace the startup bridge on later turns.
+    pick up rotated API keys. Agent turn limits are no longer read through the
+    environment at all; consumers resolve the current config value directly.
     """
     load_clio_dotenv(
         clio_home=_clio_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
     )
 
-    config_path = _clio_home / 'config.yaml'
-    if not config_path.exists():
-        return
-    try:
-        import yaml as _yaml
-        with open(config_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        from clio_cli.config import _expand_env_vars
-        cfg = _expand_env_vars(cfg)
-    except Exception:
-        return
 
-    agent_cfg = cfg.get("agent", {})
-    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
-        os.environ["CLIO_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+def _configured_max_iterations(config: dict | None = None) -> int:
+    """Resolve the current config-native main-agent turn limit.
+
+    Nested ``agent.max_turns`` wins even when explicitly null (unlimited), then
+    the legacy root-level key is considered. ``CLIO_MAX_ITERATIONS`` is not a
+    fallback: old setup versions wrote it to ``.env`` and those stale values
+    must not silently reinstate a finite cap.
+    """
+    from clio_cli.config import load_config, resolve_config_turn_limit
+
+    cfg = config if isinstance(config, dict) else load_config()
+    return resolve_config_turn_limit(cfg)
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -1023,8 +1020,6 @@ if _config_path.exists():
         # See PR #18413 / the 60-vs-500 max_turns incident.
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["CLIO_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
             if "gateway_timeout" in _agent_cfg:
                 os.environ["CLIO_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg:
@@ -3581,7 +3576,11 @@ class GatewayRunner:
                     if elapsed_min > 0:
                         status_parts.append(f"{elapsed_min} min elapsed")
                 if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                    from clio_cli.config import TURN_LIMIT_UNLIMITED
+                    if max_iter == TURN_LIMIT_UNLIMITED:
+                        status_parts.append(f"iteration {iteration}")
+                    else:
+                        status_parts.append(f"iteration {iteration}/{max_iter}")
                 if current_tool:
                     status_parts.append(f"running: {current_tool}")
             except Exception:
@@ -4345,15 +4344,14 @@ class GatewayRunner:
                 )
         except Exception as _e:
             logger.debug("check_systemd_timing_alignment failed: %s", _e)
-        # Log the resolved max_iterations budget so operators can verify the
-        # config.yaml → env bridge did the right thing at a glance (instead
-        # of silently running at a stale .env value for weeks).
+        # Log the config-native budget so operators can verify stale
+        # CLIO_MAX_ITERATIONS values are not affecting the gateway.
         try:
-            _effective_max_iter = int(os.getenv("CLIO_MAX_ITERATIONS", "90"))
+            from clio_cli.config import format_turn_limit
+            _effective_max_iter = _configured_max_iterations()
             logger.info(
-                "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or CLIO_MAX_ITERATIONS from .env, or default 90)",
-                _effective_max_iter,
+                "Agent budget: max_iterations=%s (agent.max_turns from config.yaml)",
+                format_turn_limit(_effective_max_iter),
             )
         except Exception:
             pass
@@ -13017,7 +13015,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("CLIO_MAX_ITERATIONS", "90"))
+            max_iterations = _configured_max_iterations(user_config)
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -18096,9 +18094,6 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["CLIO_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("CLIO_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
@@ -18116,6 +18111,7 @@ class GatewayRunner:
             # keys may change without restart). Keep config.yaml authoritative for
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
+            max_iterations = _configured_max_iterations()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(

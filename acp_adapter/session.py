@@ -119,7 +119,7 @@ class SessionManager:
             return agent
         from run_agent import AIAgent
         from clio_cli.runtime_provider import resolve_runtime_provider
-        from clio_cli.config import load_config
+        from clio_cli.config import load_config, resolve_config_turn_limit
 
         runtime = dict(runtime or resolve_runtime_provider(requested=requested_provider))
         cfg = load_config()
@@ -135,6 +135,7 @@ class SessionManager:
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             api_mode=runtime.get("api_mode"),
+            max_iterations=resolve_config_turn_limit(cfg),
             enabled_toolsets=self._enabled_toolsets(cfg),
         )
         if getattr(agent, "_print_fn", None) is None:
