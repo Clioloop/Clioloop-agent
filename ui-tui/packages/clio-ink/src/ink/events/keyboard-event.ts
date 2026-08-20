@@ -16,6 +16,8 @@ export class KeyboardEvent extends TerminalEvent {
   readonly shift: boolean
   readonly meta: boolean
   readonly superKey: boolean
+  readonly capsLock: boolean
+  readonly numLock: boolean
   readonly fn: boolean
 
   constructor(parsedKey: ParsedKey) {
@@ -26,6 +28,8 @@ export class KeyboardEvent extends TerminalEvent {
     this.shift = parsedKey.shift
     this.meta = parsedKey.meta || parsedKey.option
     this.superKey = parsedKey.super
+    this.capsLock = parsedKey.capsLock
+    this.numLock = parsedKey.numLock
     this.fn = parsedKey.fn
   }
 }

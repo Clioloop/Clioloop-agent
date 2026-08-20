@@ -12527,7 +12527,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "peer", "plugins", "postinstall", "profile", "proxy",
         "prompt-size", "routine",
-        "send", "sessions", "setup",
+        "send", "sessions", "setup", "worktree",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -14092,6 +14092,12 @@ Examples:
     )
     from clio_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
+
+    # =========================================================================
+    # worktree command
+    # =========================================================================
+    from clio_cli.worktree_cmd import register_cli as _register_worktree_cli
+    _register_worktree_cli(subparsers)
 
     # =========================================================================
     # import command

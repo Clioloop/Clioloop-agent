@@ -78,6 +78,7 @@ import {
 import {
   needsAltScreenResizeScrollbackClear,
   supportsExtendedKeys,
+  supportsKittyKeyboard,
   SYNC_OUTPUT_SUPPORTED,
   type Terminal,
   writeDiffToTerminal
@@ -676,7 +677,8 @@ export default class Ink {
     // without the pop we'd accumulate depth on each editor round-trip).
     this.options.stdout.write(
       '\x1b[?1004h' +
-        (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : '')
+        (supportsKittyKeyboard() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD : '') +
+        (supportsExtendedKeys() ? ENABLE_MODIFY_OTHER_KEYS : '')
     )
   }
   onRender() {
@@ -1344,8 +1346,12 @@ export default class Ink {
     // allowlisted terminals at raw-mode entry; a terminal reset clears them).
     // Pop-before-push keeps Kitty stack depth at 1 instead of accumulating
     // on each call.
+    if (supportsKittyKeyboard()) {
+      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD)
+    }
+
     if (supportsExtendedKeys()) {
-      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS)
+      this.options.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
     }
 
     if (!this.altScreenActive) {

@@ -19,8 +19,8 @@ import {
 import reconciler from '../reconciler.js'
 import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { kittyKeyboard, TerminalQuerier, xtversion } from '../terminal-querier.js'
+import { isXtermJs, setKittyKeyboardSupported, setXtversionName, supportsExtendedKeys } from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -147,6 +147,7 @@ export default class App extends PureComponent<Props, State> {
   // Count how many components enabled raw mode to avoid disabling
   // raw mode until all components don't need it anymore
   rawModeEnabledCount = 0
+  kittyKeyboardModeEnabled = false
   inputEmitter = new EventEmitter()
   keyParseState = INITIAL_STATE
   // Timer for flushing incomplete escape sequences
@@ -281,13 +282,9 @@ export default class App extends PureComponent<Props, State> {
         // Enable terminal focus reporting (DECSET 1004)
         this.props.stdout.write(EFE)
 
-        // Enable extended key reporting so ctrl+shift+<letter> is
-        // distinguishable from ctrl+<letter>. We write both the kitty stack
-        // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
-        // terminals honor whichever they implement (tmux only accepts the
-        // latter).
+        // Enable xterm modifyOtherKeys on known-good terminals. Kitty mode is
+        // stack-based, so it is negotiated below before Clio pushes a frame.
         if (supportsExtendedKeys()) {
-          this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 
@@ -300,7 +297,24 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
-          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
+          void Promise.all([
+            this.querier.send(kittyKeyboard()),
+            this.querier.send(xtversion()),
+            this.querier.flush()
+          ]).then(([keyboard, r]) => {
+            if (keyboard) {
+              setKittyKeyboardSupported(true)
+
+              if (this.rawModeEnabledCount > 0 && !this.kittyKeyboardModeEnabled) {
+                this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+                this.kittyKeyboardModeEnabled = true
+              }
+
+              logForDebugging(`Kitty keyboard protocol available (flags=${keyboard.flags})`)
+            } else {
+              logForDebugging('Kitty keyboard protocol unavailable')
+            }
+
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
@@ -319,7 +333,10 @@ export default class App extends PureComponent<Props, State> {
     // Disable raw mode only when no components left that are using it
     if (--this.rawModeEnabledCount === 0) {
       this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS)
-      this.props.stdout.write(DISABLE_KITTY_KEYBOARD)
+      if (this.kittyKeyboardModeEnabled) {
+        this.props.stdout.write(DISABLE_KITTY_KEYBOARD)
+        this.kittyKeyboardModeEnabled = false
+      }
       // Disable terminal focus reporting (DECSET 1004)
       this.props.stdout.write(DFE)
       // Disable bracketed paste mode

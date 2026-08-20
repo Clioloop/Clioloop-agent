@@ -26,6 +26,8 @@ export type Key = {
   delete: boolean
   meta: boolean
   super: boolean
+  capsLock: boolean
+  numLock: boolean
 }
 
 function parseKey(keypress: ParsedKey): [Key, string] {
@@ -56,7 +58,9 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     // Super (Cmd on macOS / Win key) — only arrives via kitty keyboard
     // protocol CSI u sequences. Distinct from meta (Alt/Option) so
     // bindings like cmd+c can be expressed separately from opt+c.
-    super: keypress.super
+    super: keypress.super,
+    capsLock: keypress.capsLock,
+    numLock: keypress.numLock
   }
 
   let input = keypress.ctrl ? keypress.name : keypress.sequence

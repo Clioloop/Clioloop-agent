@@ -9373,6 +9373,12 @@ class ClioCLI:
             self._console_print(f"  Status bar {state}")
         elif canonical == "diff":
             self._handle_diff_command(cmd_original)
+        elif canonical == "worktree":
+            from clio_cli.worktree_cmd import execute_worktree_slash
+
+            _code, _lines = execute_worktree_slash(cmd_original)
+            for _line in _lines:
+                self._console_print(_line)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "focus":

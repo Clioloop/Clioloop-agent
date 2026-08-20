@@ -188,6 +188,19 @@ export function supportsExtendedKeys(): boolean {
   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
 }
 
+// Unlike modifyOtherKeys, Kitty keyboard mode is stack-based. Record support
+// only after CSI ? u receives a valid reply, so Ghostty/Kitty reached through
+// SSH can opt in without guessing from local environment variables.
+let kittyKeyboardSupported = false
+
+export function setKittyKeyboardSupported(supported: boolean): void {
+  kittyKeyboardSupported = supported
+}
+
+export function supportsKittyKeyboard(): boolean {
+  return kittyKeyboardSupported
+}
+
 /** True if the terminal scrolls the viewport when it receives cursor-up
  *  sequences that reach above the visible area. On Windows, conhost's
  *  SetConsoleCursorPosition follows the cursor into scrollback

@@ -62,6 +62,8 @@ Examples:
     clio gateway                Run messaging gateway
     clio -s clio-agent-dev,github-auth
     clio -w                     Start in isolated git worktree
+    clio worktree              Audit managed worktrees and local branches
+    clio worktree prune --dry-run  Preview safe reclamation
     clio gateway install        Install gateway background service
     clio sessions list          List past sessions
     clio sessions browse        Interactive session picker

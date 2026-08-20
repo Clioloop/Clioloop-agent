@@ -74,6 +74,8 @@ function createPasteKey(content: string): ParsedKey {
     shift: false,
     option: false,
     super: false,
+    capsLock: false,
+    numLock: false,
     sequence: content,
     raw: content,
     isPasted: true
@@ -553,6 +555,8 @@ export type ParsedKey = {
   shift: boolean
   option: boolean
   super: boolean
+  capsLock: boolean
+  numLock: boolean
   sequence: string | undefined
   raw: string | undefined
   code?: string
@@ -632,6 +636,8 @@ function parseKeypress(s: string = ''): ParsedKey {
     shift: false,
     option: false,
     super: false,
+    capsLock: false,
+    numLock: false,
     sequence: s,
     raw: s,
     isPasted: false
@@ -659,6 +665,8 @@ function parseKeypress(s: string = ''): ParsedKey {
       shift: mods.shift,
       option: false,
       super: mods.super,
+      capsLock: false,
+      numLock: false,
       sequence: s,
       raw: s,
       isPasted: false
@@ -681,6 +689,8 @@ function parseKeypress(s: string = ''): ParsedKey {
       shift: mods.shift,
       option: false,
       super: mods.super,
+      capsLock: false,
+      numLock: false,
       sequence: s,
       raw: s,
       isPasted: false
@@ -824,6 +834,8 @@ function createNavKey(s: string, name: string, ctrl: boolean): ParsedKey {
     shift: false,
     option: false,
     super: false,
+    capsLock: false,
+    numLock: false,
     fn: false,
     sequence: s,
     raw: s,
@@ -840,6 +852,8 @@ function createWheelKey(s: string, name: 'wheelup' | 'wheeldown', button: number
     shift: !!(button & 0x04),
     option: false,
     super: false,
+    capsLock: false,
+    numLock: false,
     fn: false,
     sequence: s,
     raw: s,
