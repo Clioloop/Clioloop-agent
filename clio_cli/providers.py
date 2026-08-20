@@ -469,6 +469,36 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             source="clio",
         )
 
+    # Plugin-registered provider profiles (plugins/model-providers/<name>/).
+    # Plugin-only providers are absent from models.dev and CLIO_OVERLAYS, but
+    # CANONICAL_PROVIDERS is extended from this same registry. Resolve them
+    # here too so a provider shown in the picker also works with --provider
+    # and the shared /model switch path.
+    try:
+        from providers import get_provider_profile as _profile
+
+        profile = _profile(canonical)
+        # Endpoint-less profiles such as ``custom`` are placeholders completed
+        # by config.yaml. Resolving one here would preempt
+        # resolve_provider_full()'s custom-provider step and collapse a named
+        # ``custom:<slug>`` route back to bare ``custom``.
+        if profile is not None and (profile.base_url or "").strip():
+            api_mode_to_transport = {
+                api_mode: transport
+                for transport, api_mode in TRANSPORT_TO_API_MODE.items()
+            }
+            return ProviderDef(
+                id=canonical,
+                name=profile.display_name or profile.name or canonical,
+                transport=api_mode_to_transport.get(profile.api_mode, "openai_chat"),
+                api_key_env_vars=tuple(profile.env_vars or ()),
+                base_url=profile.base_url or "",
+                auth_type=profile.auth_type or "api_key",
+                source="plugin-profile",
+            )
+    except Exception:
+        pass
+
     return None
 
 

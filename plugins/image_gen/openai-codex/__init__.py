@@ -95,6 +95,8 @@ _SUPPORTED_INPUT_FORMATS = {
     "WEBP": "image/webp",
     "GIF": "image/gif",
 }
+_PARTIAL_IMAGES_REQUESTED = 0
+_NONFINAL_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +263,7 @@ def _build_responses_payload(
         "quality": quality,
         "output_format": "png",
         "background": "opaque",
-        "partial_images": 1,
+        "partial_images": _PARTIAL_IMAGES_REQUESTED,
         "action": action,
     }
     return {
@@ -283,27 +285,45 @@ def _build_responses_payload(
     }
 
 
+def _extract_image_candidates(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Return final and latest partial b64 separately from a payload tree."""
+    result_b64: Optional[str] = None
+    partial_b64: Optional[str] = None
+
+    def walk(node: Any) -> None:
+        nonlocal result_b64, partial_b64
+        if isinstance(node, dict):
+            if node.get("type") == "image_generation_call":
+                result = node.get("result")
+                if isinstance(result, str) and result:
+                    result_b64 = result
+            partial = node.get("partial_image_b64")
+            if isinstance(partial, str) and partial:
+                partial_b64 = partial
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return result_b64, partial_b64
+
+
 def _extract_image_b64(value: Any) -> Optional[str]:
-    """Return the newest image b64 embedded in a Responses event payload."""
-    found: Optional[str] = None
-    if isinstance(value, dict):
-        if value.get("type") == "image_generation_call":
-            result = value.get("result")
-            if isinstance(result, str) and result:
-                found = result
-        partial = value.get("partial_image_b64")
-        if isinstance(partial, str) and partial:
-            found = partial
-        for child in value.values():
-            nested = _extract_image_b64(child)
-            if nested:
-                found = nested
-    elif isinstance(value, list):
-        for child in value:
-            nested = _extract_image_b64(child)
-            if nested:
-                found = nested
-    return found
+    """Return image b64 from a payload, always preferring a final result."""
+    result_b64, partial_b64 = _extract_image_candidates(value)
+    return result_b64 or partial_b64
+
+
+def _png_pixel_size(raw: bytes) -> Optional[str]:
+    """Return ``widthxheight`` for PNG IHDR bytes, otherwise None."""
+    import struct
+
+    if len(raw) < 24 or raw[:8] != b"\x89PNG\r\n\x1a\n" or raw[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", raw[16:24])
+    return f"{width}x{height}"
 
 
 def _iter_sse_json(response: Any):
@@ -361,8 +381,8 @@ def _collect_image_b64(
     quality: str,
     input_image_urls: Optional[List[str]] = None,
     action: str = DEFAULT_IMAGE_ACTION,
-) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+) -> Optional[Dict[str, str]]:
+    """Stream a call and label the best candidate final or partial."""
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
@@ -381,7 +401,8 @@ def _collect_image_b64(
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
-    image_b64: Optional[str] = None
+    final_b64: Optional[str] = None
+    partial_b64: Optional[str] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
             try:
@@ -393,11 +414,17 @@ def _collect_image_b64(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
             for event in _iter_sse_json(response):
-                found = _extract_image_b64(event)
-                if found:
-                    image_b64 = found
+                result_b64, event_partial = _extract_image_candidates(event)
+                if result_b64:
+                    final_b64 = result_b64
+                if event_partial:
+                    partial_b64 = event_partial
 
-    return image_b64
+    if final_b64:
+        return {"b64": final_b64, "source": "final"}
+    if partial_b64:
+        return {"b64": partial_b64, "source": "partial"}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -575,14 +602,25 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            b64 = _collect_image_b64(
-                token,
-                prompt=prompt,
-                size=size,
-                quality=meta["quality"],
-                input_image_urls=input_image_urls,
-                action=action,
-            )
+            collected: Optional[Dict[str, str]] = None
+            for attempt in range(_NONFINAL_RETRIES + 1):
+                collected = _collect_image_b64(
+                    token,
+                    prompt=prompt,
+                    size=size,
+                    quality=meta["quality"],
+                    input_image_urls=input_image_urls,
+                    action=action,
+                )
+                if collected and collected.get("source") == "final" and collected.get("b64"):
+                    break
+                if attempt < _NONFINAL_RETRIES:
+                    logger.warning(
+                        "Codex image stream ended without a final result "
+                        "(attempt %s/%s); retrying once",
+                        attempt + 1,
+                        _NONFINAL_RETRIES + 1,
+                    )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return error_response(
@@ -594,9 +632,12 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not b64:
+        if not collected or not collected.get("b64"):
             return error_response(
-                error="Codex response contained no image_generation_call result",
+                error=(
+                    "Codex response contained no image_generation_call result "
+                    f"after {_NONFINAL_RETRIES + 1} attempt(s)"
+                ),
                 error_type="empty_response",
                 provider="openai-codex",
                 model=tier_id,
@@ -604,7 +645,35 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        image_source = collected.get("source") or "unknown"
+        b64 = collected["b64"]
+        if image_source != "final":
+            pixel_hint = None
+            try:
+                pixel_hint = _png_pixel_size(base64.b64decode(b64, validate=False))
+            except Exception:
+                pass
+            result = error_response(
+                error=(
+                    "Codex returned only a progressive partial image frame after "
+                    f"{_NONFINAL_RETRIES + 1} attempt(s); refusing to save it as final."
+                ),
+                error_type="incomplete_image",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+            result.update({
+                "image_source": image_source,
+                "requested_size": size,
+                "partial_pixel_size": pixel_hint,
+                "nonfinal_retries": _NONFINAL_RETRIES,
+            })
+            return result
+
         try:
+            pixel_size = _png_pixel_size(base64.b64decode(b64))
             saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
         except Exception as exc:
             return error_response(
@@ -627,6 +696,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 "quality": meta["quality"],
                 "action": action,
                 "input_image_count": len(input_image_urls),
+                "image_source": image_source,
+                "requested_size": size,
+                "pixel_size": pixel_size,
             },
         )
 

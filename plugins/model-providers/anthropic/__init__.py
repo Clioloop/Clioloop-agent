@@ -17,13 +17,15 @@ class AnthropicProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Anthropic uses x-api-key header and anthropic-version."""
         if not api_key:
             return None
         try:
-            req = urllib.request.Request("https://api.anthropic.com/v1/models")
+            endpoint = (base_url or self.base_url).rstrip("/") + "/models"
+            req = urllib.request.Request(endpoint)
             req.add_header("x-api-key", api_key)
             req.add_header("anthropic-version", "2023-06-01")
             req.add_header("Accept", "application/json")

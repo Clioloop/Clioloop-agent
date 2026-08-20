@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -104,6 +105,9 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+_POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
+    "telegram_polling_generation", default=None
+)
 
 
 MAX_COMMANDS_PER_SCOPE = 30
@@ -465,6 +469,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
+        self._polling_generation: int = 0
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting: bool = False
         self._polling_error_callback_ref = None
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
@@ -926,6 +933,78 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
+        """Start accepting successful getUpdates progress for a new generation."""
+        self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting = True
+        return self._polling_generation, self._polling_progress_event
+
+    def _record_polling_progress(self, generation: int) -> None:
+        """Record and log the first successful getUpdates poll per generation."""
+        if not getattr(self, "_polling_progress_accepting", False):
+            return
+        if generation != getattr(self, "_polling_generation", 0):
+            return
+        if not self._polling_progress_event.is_set():
+            logger.info(
+                "[%s] Telegram polling confirmed healthy: getUpdates progressing "
+                "(generation %d)",
+                self.name,
+                generation,
+            )
+        self._polling_progress_event.set()
+        self._polling_network_error_count = 0
+        self._send_path_degraded = False
+
+    def _observe_polling_request_result(
+        self, request: Any, generation: Any, result: Any
+    ) -> None:
+        """Observe a successful Bot API getUpdates response without changing it."""
+        try:
+            status_code, payload = result
+        except (TypeError, ValueError):
+            return
+        if generation is None or not (200 <= status_code < 300):
+            return
+        try:
+            envelope = request.parse_json_payload(payload)
+        except Exception:
+            return
+        if isinstance(envelope, dict) and envelope.get("ok") is True and "result" in envelope:
+            self._record_polling_progress(generation)
+
+    def _instrument_polling_request(self, request: Any) -> Any:
+        """Instrument PTB's dedicated getUpdates request with progress tracking."""
+        adapter = self
+        base_cls = type(request)
+
+        class _InstrumentedPollingRequest(base_cls):
+            __slots__ = ()
+
+            async def do_request(self, *args: Any, **kwargs: Any) -> Any:
+                generation = _POLLING_GENERATION_CONTEXT.get()
+                result = await super().do_request(*args, **kwargs)
+                adapter._observe_polling_request_result(self, generation, result)
+                return result
+
+        request.__class__ = _InstrumentedPollingRequest
+        return request
+
+    async def _start_polling_generation(self, *, drop_pending_updates: bool) -> int:
+        """Start PTB polling in a context tagged with a fresh generation."""
+        generation, _ = self._begin_polling_generation()
+        token = _POLLING_GENERATION_CONTEXT.set(generation)
+        try:
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=drop_pending_updates,
+                error_callback=self._polling_error_callback_ref,
+            )
+        finally:
+            _POLLING_GENERATION_CONTEXT.reset(token)
+        return generation
+
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
 
@@ -1018,14 +1097,11 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._drain_polling_connections()
 
         try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
-            )
+            generation = await self._start_polling_generation(drop_pending_updates=False)
             logger.info(
-                "[%s] Telegram polling resumed after network error (attempt %d)",
-                self.name, attempt,
+                "[%s] Telegram polling resumed after network error (attempt %d, "
+                "generation %d); health pending getUpdates progress",
+                self.name, attempt, generation,
             )
             self._polling_network_error_count = 0
             # start_polling() returning is necessary but not sufficient:
@@ -1151,14 +1227,14 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._drain_polling_connections()
 
             try:
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
+                generation = await self._start_polling_generation(
+                    drop_pending_updates=False
                 )
                 logger.info(
-                    "[%s] Telegram polling resumed after conflict retry %d/%d",
+                    "[%s] Telegram polling resumed after conflict retry %d/%d "
+                    "(generation %d); health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                    generation,
                 )
                 self._polling_conflict_count = 0  # reset counter on success
                 return
@@ -1630,6 +1706,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 request = HTTPXRequest(**request_kwargs)
                 get_updates_request = HTTPXRequest(**request_kwargs)
 
+            get_updates_request = self._instrument_polling_request(get_updates_request)
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
@@ -1747,10 +1824,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
-                    error_callback=_polling_error_callback,
+                generation = await self._start_polling_generation(
+                    drop_pending_updates=True
+                )
+                logger.info(
+                    "[%s] Telegram polling started (generation %d); "
+                    "health pending getUpdates progress",
+                    self.name,
+                    generation,
                 )
             
             # Register bot commands so Telegram shows a hint menu when users type /

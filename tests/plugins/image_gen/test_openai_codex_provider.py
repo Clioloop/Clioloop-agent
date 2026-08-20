@@ -115,7 +115,11 @@ class TestGenerate:
 
     def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
+        monkeypatch.setattr(
+            codex_plugin,
+            "_collect_image_b64",
+            lambda *a, **kw: {"b64": _b64_png(), "source": "final"},
+        )
 
         result = provider.generate("a cat", aspect_ratio="landscape")
 
@@ -144,7 +148,7 @@ class TestGenerate:
                 input_image_urls=input_image_urls,
                 action=action,
             ))
-            return _b64_png()
+            return {"b64": _b64_png(), "source": "final"}
 
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
 
@@ -169,7 +173,7 @@ class TestGenerate:
         assert tool["size"] == "1024x1536"
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
+        assert tool["partial_images"] == 0
         assert tool["action"] == "auto"
 
     def test_edit_payload_contains_ordered_input_images(self, provider, monkeypatch, tmp_path):
@@ -181,7 +185,7 @@ class TestGenerate:
 
         def _collect(token, **kwargs):
             captured.update(kwargs)
-            return _b64_png()
+            return {"b64": _b64_png(), "source": "final"}
 
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
         result = provider.generate(
