@@ -60,6 +60,10 @@ WORKER_ACTIVE_SECONDS = 120.0
 BOT_HANDOFF_VERSION = 1
 BOT_HANDOFF_POLL_SECONDS = 0.1
 BOT_HANDOFF_MAX_TEXT = 100_000
+BOT_CHILD_RESULT_VERSION = 1
+BOT_CHILD_EVENT_VERSION = 1
+BOT_CHILD_RESULT_MAX_TEXT = 200_000
+BOT_CHILD_EVENT_MAX_LINE = 4096
 BOT_PEER_HANDOFF_VERSION = 1
 BOT_PEER_TURN_MAX_ACTIVE = 32
 BOT_PEER_TURN_MAX_RECORDS = 128
@@ -618,6 +622,7 @@ def _safe_message_text(message: str, *, max_chars: int = 200_000) -> str:
 
 
 RoomHandoffCallback = Callable[[Mapping[str, Any]], None]
+RoomProgressCallback = Callable[[Mapping[str, str], Mapping[str, Any]], None]
 
 
 def _atomic_handoff_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -642,6 +647,135 @@ def _read_handoff_json(path: Path) -> Dict[str, Any]:
     except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return dict(value) if isinstance(value, dict) else {}
+
+
+def bot_child_write_result(response: Any) -> bool:
+    """Write a token-bound final response for the owning Bot coordinator."""
+    if os.environ.get("CLIO_BOT_CHILD") != "1":
+        return False
+    raw_path = os.environ.get("CLIO_BOT_RESULT_PATH", "").strip()
+    token = os.environ.get("CLIO_BOT_RESULT_TOKEN", "").strip()
+    if not raw_path or not token:
+        return False
+    text = str(response or "")
+    if len(text) > BOT_CHILD_RESULT_MAX_TEXT or "\x00" in text:
+        return False
+    try:
+        _atomic_handoff_json(
+            Path(raw_path),
+            {
+                "version": BOT_CHILD_RESULT_VERSION,
+                "token": token,
+                "response": text,
+            },
+        )
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def bot_child_emit_tool_event(
+    event_type: str,
+    tool_name: Any,
+    *,
+    duration: Any = None,
+    is_error: Any = False,
+) -> bool:
+    """Append one bounded tool-only event; reasoning and results are excluded."""
+    if os.environ.get("CLIO_BOT_CHILD") != "1":
+        return False
+    raw_path = os.environ.get("CLIO_BOT_EVENT_PATH", "").strip()
+    token = os.environ.get("CLIO_BOT_EVENT_TOKEN", "").strip()
+    normalized_type = str(event_type or "").strip().lower()
+    if not raw_path or not token or normalized_type not in {"tool.started", "tool.completed"}:
+        return False
+    name = str(tool_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", name):
+        return False
+    event: Dict[str, Any] = {
+        "version": BOT_CHILD_EVENT_VERSION,
+        "token": token,
+        "event": normalized_type,
+        "name": name,
+    }
+    if normalized_type == "tool.completed":
+        try:
+            elapsed = max(0.0, min(float(duration or 0.0), 86400.0))
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        event.update(duration=elapsed, is_error=bool(is_error))
+    payload = (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(payload) > BOT_CHILD_EVENT_MAX_LINE:
+        return False
+    try:
+        fd = os.open(raw_path, os.O_WRONLY | os.O_APPEND)
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
+def _read_bot_child_result(path: Path, token: str, fallback_stdout: str) -> str:
+    frame = _read_handoff_json(path)
+    response = frame.get("response")
+    if (
+        frame.get("version") == BOT_CHILD_RESULT_VERSION
+        and frame.get("token") == token
+        and isinstance(response, str)
+        and len(response) <= BOT_CHILD_RESULT_MAX_TEXT
+        and "\x00" not in response
+    ):
+        return response.strip()
+    return _bot_turn_output(fallback_stdout)
+
+
+def _drain_bot_child_events(
+    path: Path,
+    token: str,
+    offset: int,
+) -> tuple[List[Dict[str, Any]], int]:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, int(offset)))
+            data = handle.read(256 * 1024)
+    except (FileNotFoundError, OSError, ValueError):
+        return [], offset
+    final_newline = data.rfind(b"\n")
+    if final_newline < 0:
+        return [], offset
+    complete = data[: final_newline + 1]
+    new_offset = offset + final_newline + 1
+    events: List[Dict[str, Any]] = []
+    for raw_line in complete.splitlines():
+        if not raw_line or len(raw_line) > BOT_CHILD_EVENT_MAX_LINE:
+            continue
+        try:
+            frame = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(frame, dict):
+            continue
+        event_type = str(frame.get("event") or "")
+        name = str(frame.get("name") or "")
+        if (
+            frame.get("version") != BOT_CHILD_EVENT_VERSION
+            or frame.get("token") != token
+            or event_type not in {"tool.started", "tool.completed"}
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", name)
+        ):
+            continue
+        event: Dict[str, Any] = {"event": event_type, "name": name}
+        if event_type == "tool.completed":
+            try:
+                elapsed = max(0.0, min(float(frame.get("duration") or 0.0), 86400.0))
+            except (TypeError, ValueError):
+                elapsed = 0.0
+            event.update(duration=elapsed, is_error=bool(frame.get("is_error")))
+        events.append(event)
+    return events, new_offset
 
 
 def bot_child_handoff(kind: str, payload: Mapping[str, Any]) -> str:
@@ -736,6 +870,7 @@ def run_profile_turn(
     *,
     timeout: float = 600.0,
     handoff_callback: Optional[RoomHandoffCallback] = None,
+    progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
     cancelled: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Run one finalized CLI turn using argv + 0600 files (never a shell).
@@ -752,6 +887,11 @@ def run_profile_turn(
     fd, raw_path = tempfile.mkstemp(prefix="bot-dm-", suffix=".txt", dir=str(temp_dir))
     path = Path(raw_path)
     handoff_path: Optional[Path] = None
+    result_path: Optional[Path] = None
+    event_path: Optional[Path] = None
+    result_token = ""
+    event_token = ""
+    event_offset = 0
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -776,6 +916,34 @@ def run_profile_turn(
         env = os.environ.copy()
         env["CLIO_BOT_CHILD"] = "1"
 
+        result_fd, raw_result_path = tempfile.mkstemp(
+            prefix="bot-result-", suffix=".json", dir=str(temp_dir)
+        )
+        os.close(result_fd)
+        result_path = Path(raw_result_path)
+        os.chmod(result_path, 0o600)
+        result_token = uuid.uuid4().hex + uuid.uuid4().hex
+        env.update(
+            {
+                "CLIO_BOT_RESULT_PATH": str(result_path),
+                "CLIO_BOT_RESULT_TOKEN": result_token,
+            }
+        )
+        if progress_callback is not None:
+            event_fd, raw_event_path = tempfile.mkstemp(
+                prefix="bot-events-", suffix=".jsonl", dir=str(temp_dir)
+            )
+            os.close(event_fd)
+            event_path = Path(raw_event_path)
+            os.chmod(event_path, 0o600)
+            event_token = uuid.uuid4().hex + uuid.uuid4().hex
+            env.update(
+                {
+                    "CLIO_BOT_EVENT_PATH": str(event_path),
+                    "CLIO_BOT_EVENT_TOKEN": event_token,
+                }
+            )
+
         if handoff_callback is None:
             result = subprocess.run(
                 command,
@@ -789,7 +957,8 @@ def run_profile_turn(
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "Bot turn failed").strip()
                 raise BotModeError(detail[-2000:])
-            return _bot_turn_output(result.stdout)
+            assert result_path is not None
+            return _read_bot_child_result(result_path, result_token, result.stdout)
 
         handoff_fd, raw_handoff_path = tempfile.mkstemp(
             prefix="bot-room-handoff-", suffix=".json", dir=str(temp_dir)
@@ -810,6 +979,22 @@ def run_profile_turn(
         )
         started = time.monotonic()
         seen_requests: set[str] = set()
+
+        def drain_progress_events() -> None:
+            nonlocal event_offset
+            if event_path is None or progress_callback is None:
+                return
+            events, event_offset = _drain_bot_child_events(
+                event_path,
+                event_token,
+                event_offset,
+            )
+            for event in events:
+                try:
+                    progress_callback(event)
+                except Exception:
+                    pass
+
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file, tempfile.TemporaryFile(
             mode="w+t", encoding="utf-8"
         ) as stderr_file:
@@ -823,6 +1008,7 @@ def run_profile_turn(
                 start_new_session=(os.name == "posix"),
             )
             while process.poll() is None:
+                drain_progress_events()
                 if cancelled is not None and cancelled():
                     frame = _read_handoff_json(handoff_path)
                     _atomic_handoff_json(
@@ -861,6 +1047,7 @@ def run_profile_turn(
                         )
                 time.sleep(BOT_HANDOFF_POLL_SECONDS)
 
+            drain_progress_events()
             stdout_file.seek(0)
             stderr_file.seek(0)
             stdout = stdout_file.read()
@@ -868,13 +1055,18 @@ def run_profile_turn(
             if process.returncode != 0:
                 detail = (stderr or stdout or "Bot turn failed").strip()
                 raise BotModeError(detail[-2000:])
-            return _bot_turn_output(stdout)
+            assert result_path is not None
+            return _read_bot_child_result(result_path, result_token, stdout)
     except subprocess.TimeoutExpired as exc:
         raise BotModeError(f"Bot turn timed out after {timeout:g}s") from exc
     finally:
         path.unlink(missing_ok=True)
         if handoff_path is not None:
             handoff_path.unlink(missing_ok=True)
+        if result_path is not None:
+            result_path.unlink(missing_ok=True)
+        if event_path is not None:
+            event_path.unlink(missing_ok=True)
 
 
 def _sanitize_peer_handoff(request: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1743,6 +1935,7 @@ def _default_room_responder(
     hard_timeout: float,
     *,
     handoff_callback: Optional[RoomHandoffCallback] = None,
+    progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
     cancelled: Optional[Callable[[], bool]] = None,
     room_id: Optional[str] = None,
     room_name: Optional[str] = None,
@@ -1755,6 +1948,7 @@ def _default_room_responder(
             prompt,
             timeout=hard_timeout,
             handoff_callback=handoff_callback,
+            progress_callback=progress_callback,
             cancelled=cancelled,
         )
     if room_id is None or room_name is None or epoch is None:
@@ -1996,6 +2190,7 @@ def send_room_message(
     attachments: Optional[Sequence[Mapping[str, Any]]] = None,
     thread_id: Optional[str] = None,
     responder: Optional[RoomResponder] = None,
+    progress_callback: Optional[RoomProgressCallback] = None,
     root: Optional[Path] = None,
     soft_timeout: float = ROOM_SOFT_TIMEOUT_SECONDS,
     hard_timeout: float = ROOM_HARD_TIMEOUT_SECONDS,
@@ -2145,6 +2340,45 @@ def send_room_message(
                             active = _load_room_store(root)["rooms"].get(room_id) or {}
                         return int(active.get("active_epoch") or 0) != epoch
 
+                    def publish_progress_event(event: Mapping[str, Any]) -> None:
+                        event_type = str(event.get("event") or "")
+                        tool_name = str(event.get("name") or "")
+                        if event_type not in {"tool.started", "tool.completed"} or not tool_name:
+                            return
+                        progress_record: Dict[str, Any] = {
+                            "id": f"act-{uuid.uuid4().hex[:12]}",
+                            "epoch": epoch,
+                            "round": round_number,
+                            "member": member["handle"],
+                            "profile": member["profile"],
+                            "source": member["source"],
+                            "state": "tool_started" if event_type == "tool.started" else "tool_completed",
+                            "tool": tool_name,
+                            "created_at": time.time(),
+                        }
+                        if event_type == "tool.completed":
+                            progress_record.update(
+                                duration=float(event.get("duration") or 0.0),
+                                is_error=bool(event.get("is_error")),
+                            )
+                        with _ROOM_LOCK:
+                            progress_store = _load_room_store(root)
+                            progress_room = progress_store["rooms"].get(room_id)
+                            if (
+                                not isinstance(progress_room, dict)
+                                or int(progress_room.get("active_epoch") or 0) != epoch
+                            ):
+                                return
+                            progress_room.setdefault("activity", []).append(progress_record)
+                            progress_room["activity"] = progress_room["activity"][-500:]
+                            progress_room["updated_at"] = progress_record["created_at"]
+                            _save_room_store(progress_store, root)
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(member, dict(event))
+                            except Exception:
+                                pass
+
                     def managed_responder(*_args: Any) -> str:
                         return _default_room_responder(
                             member,
@@ -2152,6 +2386,7 @@ def send_room_message(
                             session_id,
                             hard_timeout,
                             handoff_callback=publish,
+                            progress_callback=publish_progress_event,
                             cancelled=superseded,
                             room_id=room_id,
                             room_name=str(room["name"]),

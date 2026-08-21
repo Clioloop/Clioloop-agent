@@ -189,6 +189,11 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _CLIO_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_CLIO_INTERNAL_IPC_PREFIXES = (
+    "CLIO_BOT_RESULT_",
+    "CLIO_BOT_EVENT_",
+    "CLIO_BOT_HANDOFF_",
+)
 
 
 def _inject_context_clio_home(env: dict) -> None:
@@ -213,12 +218,16 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
+        if key.startswith(_CLIO_INTERNAL_IPC_PREFIXES):
+            continue
         if key.startswith(_CLIO_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if key not in _CLIO_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
+        if key.startswith(_CLIO_INTERNAL_IPC_PREFIXES):
+            continue
         if key.startswith(_CLIO_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_CLIO_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
@@ -310,6 +319,8 @@ def _make_run_env(env: dict) -> dict:
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
+        if k.startswith(_CLIO_INTERNAL_IPC_PREFIXES):
+            continue
         if k.startswith(_CLIO_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_CLIO_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v

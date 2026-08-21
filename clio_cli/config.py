@@ -2047,7 +2047,8 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         # Optional chat ID -> Bot Room route. A scalar value is a room ID; an
-        # object may also set controller_handle and opt into per-profile
+        # object may also set controller_handle, profile_bot_usernames,
+        # show_tool_progress, turn_timeout_seconds, and opt into per-profile
         # Telegram delivery with delivery: profile_bots.
         "bot_room_bindings": {},
     },

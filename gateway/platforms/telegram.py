@@ -5166,17 +5166,34 @@ class TelegramAdapter(BasePlatformAdapter):
             render_profile_bot_mentions = _strict_config_bool(
                 value.get("render_profile_bot_mentions")
             )
+            show_tool_progress = _strict_config_bool(
+                value.get("show_tool_progress")
+            )
+            raw_turn_timeout = value.get("turn_timeout_seconds")
+            turn_timeout_seconds: Optional[float] = None
+            if raw_turn_timeout is not None:
+                if isinstance(raw_turn_timeout, bool):
+                    return None
+                try:
+                    turn_timeout_seconds = float(raw_turn_timeout)
+                except (TypeError, ValueError):
+                    return None
+                if not 30.0 <= turn_timeout_seconds <= 3600.0:
+                    return None
         else:
             room_id = str(value or "").strip()
             controller_handle = ""
             delivery = ""
             profile_bot_usernames = {}
             render_profile_bot_mentions = False
+            show_tool_progress = False
+            turn_timeout_seconds = None
         if not room_id:
             return None
         if (
             profile_bot_usernames is None
             or render_profile_bot_mentions is None
+            or show_tool_progress is None
             or (controller_handle and not _BOT_ROOM_HANDLE_RE.fullmatch(controller_handle))
         ):
             return None
@@ -5204,6 +5221,12 @@ class TelegramAdapter(BasePlatformAdapter):
             **(
                 {"render_profile_bot_mentions": True}
                 if render_profile_bot_mentions
+                else {}
+            ),
+            **({"show_tool_progress": True} if show_tool_progress else {}),
+            **(
+                {"turn_timeout_seconds": turn_timeout_seconds}
+                if turn_timeout_seconds is not None
                 else {}
             ),
         }

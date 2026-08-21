@@ -188,6 +188,97 @@ def test_local_dm_transport_never_shell_interpolates_message(bot_env, monkeypatc
     assert homes["alpha"] in query_path.parents
 
 
+def test_profile_turn_prefers_token_bound_result_over_stdout(bot_env, monkeypatch):
+    _homes, _root = bot_env
+
+    def fake_run(command, **kwargs):
+        env = kwargs["env"]
+        monkeypatch.setenv("CLIO_BOT_CHILD", "1")
+        monkeypatch.setenv("CLIO_BOT_RESULT_PATH", env["CLIO_BOT_RESULT_PATH"])
+        monkeypatch.setenv("CLIO_BOT_RESULT_TOKEN", env["CLIO_BOT_RESULT_TOKEN"])
+        assert bots.bot_child_write_result("@clio A piano.") is True
+        return subprocess.CompletedProcess(command, 0, stdout="PASS\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert bots.run_profile_turn("alpha", "session-1", "answer") == "@clio A piano."
+
+
+def test_bot_child_tool_events_exclude_reasoning_and_results(monkeypatch, tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b"")
+    token = "event-token"
+    monkeypatch.setenv("CLIO_BOT_CHILD", "1")
+    monkeypatch.setenv("CLIO_BOT_EVENT_PATH", str(path))
+    monkeypatch.setenv("CLIO_BOT_EVENT_TOKEN", token)
+
+    assert bots.bot_child_emit_tool_event("reasoning.available", "_thinking") is False
+    assert bots.bot_child_emit_tool_event("tool.started", "search_files") is True
+    assert bots.bot_child_emit_tool_event(
+        "tool.completed",
+        "search_files",
+        duration=1.25,
+        is_error=False,
+    ) is True
+
+    events, offset = bots._drain_bot_child_events(path, token, 0)
+    assert events == [
+        {"event": "tool.started", "name": "search_files"},
+        {
+            "event": "tool.completed",
+            "name": "search_files",
+            "duration": 1.25,
+            "is_error": False,
+        },
+    ]
+    assert offset == path.stat().st_size
+    assert "result" not in path.read_text(encoding="utf-8")
+
+
+def test_monitored_profile_turn_relays_tool_events_and_exact_result(bot_env, monkeypatch):
+    _homes, _root = bot_env
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            self.returncode = 0
+            env = kwargs["env"]
+            bots._atomic_handoff_json(
+                Path(env["CLIO_BOT_RESULT_PATH"]),
+                {
+                    "version": bots.BOT_CHILD_RESULT_VERSION,
+                    "token": env["CLIO_BOT_RESULT_TOKEN"],
+                    "response": "A clock.",
+                },
+            )
+            event = {
+                "version": bots.BOT_CHILD_EVENT_VERSION,
+                "token": env["CLIO_BOT_EVENT_TOKEN"],
+                "event": "tool.started",
+                "name": "read_file",
+            }
+            with Path(env["CLIO_BOT_EVENT_PATH"]).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event) + "\n")
+            kwargs["stdout"].write("PASS\n")
+            kwargs["stdout"].flush()
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    events = []
+
+    reply = bots.run_profile_turn(
+        "alpha",
+        "session-2",
+        "answer",
+        handoff_callback=lambda _request: None,
+        progress_callback=events.append,
+    )
+
+    assert reply == "A clock."
+    assert events == [{"event": "tool.started", "name": "read_file"}]
+
+
 def test_room_mentions_passes_and_watermarks(bot_env):
     _homes, root = bot_env
     room = bots.create_room("Review", ["alpha", "beta"], root=root)
@@ -337,6 +428,51 @@ def test_single_direct_handle_without_peer_mention_stays_one_bot_one_turn(bot_en
     assert calls == {"alpha": 1, "beta": 0}
     assert [message["author"] for message in result.messages] == ["user", "alpha"]
     assert result.rounds == 1
+
+
+def test_managed_room_turn_records_and_relays_tool_progress(bot_env, monkeypatch):
+    _homes, root = bot_env
+    room = bots.create_room("Tools", ["alpha", "beta"], root=root)
+    exposed = []
+
+    def fake_turn(_profile, _session_id, _prompt, **kwargs):
+        kwargs["progress_callback"]({"event": "tool.started", "name": "search_files"})
+        kwargs["progress_callback"](
+            {
+                "event": "tool.completed",
+                "name": "search_files",
+                "duration": 2.5,
+                "is_error": False,
+            }
+        )
+        return "Alpha result"
+
+    monkeypatch.setattr(bots, "run_profile_turn", fake_turn)
+    result = bots.send_room_message(
+        room["id"],
+        "@alpha inspect",
+        progress_callback=lambda member, event: exposed.append((member["handle"], event)),
+        root=root,
+    )
+
+    assert [message["author"] for message in result.messages] == ["user", "alpha"]
+    assert exposed == [
+        ("alpha", {"event": "tool.started", "name": "search_files"}),
+        (
+            "alpha",
+            {
+                "event": "tool.completed",
+                "name": "search_files",
+                "duration": 2.5,
+                "is_error": False,
+            },
+        ),
+    ]
+    activity = bots.get_room(room["id"], root=root)["activity"]
+    assert [item["state"] for item in activity if item.get("tool") == "search_files"] == [
+        "tool_started",
+        "tool_completed",
+    ]
 
 
 def test_plain_room_message_still_selects_all_members(bot_env):

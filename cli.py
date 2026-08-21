@@ -3032,6 +3032,39 @@ def _reasoning_display_enabled(configured: Any) -> bool:
     return bool(configured) and os.environ.get("CLIO_BOT_CHILD") != "1"
 
 
+def _install_bot_child_tool_progress(agent: Any) -> bool:
+    """Route Bot-child tool lifecycle events to the private IPC stream."""
+    if (
+        os.environ.get("CLIO_BOT_CHILD") != "1"
+        or not os.environ.get("CLIO_BOT_EVENT_PATH")
+    ):
+        return False
+    try:
+        from clio_bot_mode import bot_child_emit_tool_event
+
+        def callback(
+            event_type,
+            name=None,
+            _preview=None,
+            _args=None,
+            **event_meta,
+        ):
+            bot_child_emit_tool_event(
+                event_type,
+                name,
+                duration=event_meta.get("duration"),
+                is_error=event_meta.get("is_error", False),
+            )
+
+        agent.tool_progress_callback = callback
+        agent.tool_start_callback = None
+        agent.tool_complete_callback = None
+        return True
+    except Exception:
+        agent.tool_progress_callback = None
+        return False
+
+
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
@@ -16835,15 +16868,19 @@ def main(
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
-                    cli.agent.quiet_mode = True
-                    cli.agent.suppress_status_output = True
+                    agent = cli.agent
+                    if agent is None:
+                        sys.exit(1)
+                    agent.quiet_mode = True
+                    agent.suppress_status_output = True
+                    _install_bot_child_tool_progress(agent)
                     # Suppress streaming display callbacks so stdout stays
                     # machine-readable (no styled "Clio" box, no tool-gen
                     # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
+                    agent.stream_delta_callback = None
+                    agent.tool_gen_callback = None
                     try:
-                        result = cli.agent.run_conversation(
+                        result = agent.run_conversation(
                             user_message=effective_query,
                             conversation_history=cli.conversation_history,
                         )
@@ -16856,11 +16893,18 @@ def main(
                     # session_id to stderr for automation wrappers; without
                     # this sync it would point at the ended parent.
                     if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
+                        getattr(agent, "session_id", None)
+                        and agent.session_id != cli.session_id
                     ):
-                        cli.session_id = cli.agent.session_id
+                        cli.session_id = agent.session_id
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                    if os.environ.get("CLIO_BOT_CHILD") == "1":
+                        try:
+                            from clio_bot_mode import bot_child_write_result
+
+                            bot_child_write_result(response)
+                        except Exception:
+                            pass
                     # Surface backend errors that produced no visible output
                     # (e.g. invalid model slug → provider 4xx). Mirrors the
                     # interactive CLI path. Write to stderr so piped stdout

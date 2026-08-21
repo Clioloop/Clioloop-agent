@@ -511,6 +511,76 @@ async def test_bound_room_profile_delivery_posts_each_reply_as_its_own_bot(monke
 
 
 @pytest.mark.anyio
+async def test_bound_room_streams_tool_names_from_profile_bot_without_reasoning(monkeypatch):
+    room = {
+        "id": "room-1",
+        "active_epoch": 8,
+        "members": [
+            {"handle": "reviewer", "profile": "reviewer", "source": "local"},
+        ],
+    }
+    captured = {}
+
+    def send_room(room_id, _message, **kwargs):
+        captured["hard_timeout"] = kwargs["hard_timeout"]
+        callback = kwargs["progress_callback"]
+        member = room["members"][0]
+        callback(member, {"event": "tool.started", "name": "search_files"})
+        callback(
+            member,
+            {
+                "event": "tool.completed",
+                "name": "search_files",
+                "duration": 4.2,
+                "is_error": False,
+            },
+        )
+        callback(member, {"event": "reasoning.available", "name": "_thinking"})
+        callback(member, {"event": "tool.started", "name": "terminal"})
+        callback(
+            member,
+            {
+                "event": "tool.completed",
+                "name": "terminal",
+                "duration": 1.0,
+                "is_error": True,
+            },
+        )
+        return RoomTurnResult(room_id, 8, 1, "settled", False, [], 0, [])
+
+    monkeypatch.setattr(clio_bot_mode, "get_room", lambda _room_id: room)
+    monkeypatch.setattr(clio_bot_mode, "send_room_message", send_room)
+    delivered = []
+
+    async def fake_send(**kwargs):
+        delivered.append(kwargs)
+        return True
+
+    runner: Any = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: SimpleNamespace(_message_mentions_bot=lambda _raw: False)}
+    runner._send_telegram_room_reply_as_profile = fake_send
+
+    result = await runner._handle_bound_telegram_bot_room_message(
+        _telegram_group_event("@reviewer inspect"),
+        {
+            "room_id": "room-1",
+            "show_tool_progress": True,
+            "turn_timeout_seconds": 1800.0,
+        },
+    )
+
+    assert result == ""
+    assert captured["hard_timeout"] == 1800.0
+    assert [item["profile"] for item in delivered] == ["reviewer", "reviewer", "reviewer"]
+    assert [item["content"] for item in delivered] == [
+        "🛠 Using tool: `search_files`",
+        "🛠 Using tool: `terminal`",
+        "⚠ Tool failed: `terminal`",
+    ]
+    assert all("reason" not in item["content"].lower() for item in delivered)
+
+
+@pytest.mark.anyio
 async def test_bound_room_profile_delivery_failure_notice_never_impersonates_reply(monkeypatch):
     room = {
         "id": "room-1",

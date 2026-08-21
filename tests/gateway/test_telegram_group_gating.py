@@ -576,6 +576,8 @@ def test_bot_room_binding_normalizes_profile_bot_usernames_and_render_flag():
                     "@Reviewer": "@Review_Profile_Bot",
                 },
                 "render_profile_bot_mentions": "true",
+                "show_tool_progress": "true",
+                "turn_timeout_seconds": "1800",
             }
         },
     )
@@ -586,6 +588,8 @@ def test_bot_room_binding_normalizes_profile_bot_usernames_and_render_flag():
         "delivery": "profile_bots",
         "profile_bot_usernames": {"reviewer": "Review_Profile_Bot"},
         "render_profile_bot_mentions": True,
+        "show_tool_progress": True,
+        "turn_timeout_seconds": 1800.0,
     }
 
 
@@ -604,6 +608,21 @@ def test_bot_room_binding_rejects_malformed_or_ambiguous_profile_username_maps()
                     "profile_bot_usernames": invalid,
                 }
             },
+        )
+        assert adapter.bot_room_binding_for_chat(-200) is None
+
+
+def test_bot_room_binding_rejects_invalid_tool_progress_and_timeout_values():
+    invalid = [
+        ("show_tool_progress", "maybe"),
+        ("turn_timeout_seconds", True),
+        ("turn_timeout_seconds", 29),
+        ("turn_timeout_seconds", 3601),
+        ("turn_timeout_seconds", "not-a-number"),
+    ]
+    for field, value in invalid:
+        adapter = _make_adapter(
+            bot_room_bindings={"-200": {"room_id": "room-1", field: value}},
         )
         assert adapter.bot_room_binding_for_chat(-200) is None
 

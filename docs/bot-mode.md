@@ -98,6 +98,8 @@ telegram:
         clio: ClioloopControllerBot
         viktorian: ClioloopViktorianBot
       render_profile_bot_mentions: true  # optional: make outbound @handles clickable
+      show_tool_progress: true           # optional: post compact tool-name updates
+      turn_timeout_seconds: 1800         # optional: 30–3600; default 300
 ```
 
 The binding is routing only and never bypasses user authorization, chat/topic
@@ -145,6 +147,20 @@ Model reasoning remains enabled for inference and stored for valid provider
 replay, but reasoning presentation is always hidden in shared
 `group`/`forum`/`channel` chats. A profile may still display reasoning in its DMs
 when configured to do so.
+
+When `show_tool_progress: true`, each local profile Bot posts compact live
+updates from its own Telegram account, for example `🛠 Using tool: search_files`.
+Only validated tool names and failure state cross the child boundary—arguments,
+results, filesystem contents, credentials, and reasoning never enter these
+progress messages. Tool activity is also retained in the room's private
+activity feed. `turn_timeout_seconds` raises the per-Bot wall-clock ceiling for
+long maintenance or delegated work; it is binding-local, accepts 30–3600
+seconds, and does not weaken epoch supersession or cancellation.
+
+Local Bot children return their final reply over a private token-bound result
+file rather than captured terminal stdout. This keeps tool/status presentation
+separate from the authoritative response and prevents valid answers from being
+misclassified as `PASS`.
 
 With `delivery: profile_bots`, internal cross-review still completes through the
 controller's profile-backed room, but each finalized visible reply is sent in

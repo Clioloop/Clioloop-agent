@@ -376,6 +376,28 @@ class TestBlocklistCoverage:
         assert extras.issubset(_CLIO_PROVIDER_ENV_BLOCKLIST)
 
 
+def test_bot_child_ipc_secrets_never_reach_tool_subprocesses():
+    from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+    ipc = {
+        "CLIO_BOT_RESULT_PATH": "/private/result",
+        "CLIO_BOT_RESULT_TOKEN": "result-secret",
+        "CLIO_BOT_EVENT_PATH": "/private/events",
+        "CLIO_BOT_EVENT_TOKEN": "event-secret",
+        "CLIO_BOT_HANDOFF_PATH": "/private/handoff",
+        "CLIO_BOT_HANDOFF_TOKEN": "handoff-secret",
+        "PATH": "/usr/bin:/bin",
+    }
+    sanitized = _sanitize_subprocess_env(ipc, ipc)
+    assert sanitized.get("PATH") == "/usr/bin:/bin"
+    assert not any(key.startswith("CLIO_BOT_") for key in sanitized)
+
+    with patch.dict(os.environ, ipc, clear=True):
+        run_env = _make_run_env({})
+    assert run_env.get("PATH") == "/usr/bin:/bin"
+    assert not any(key.startswith("CLIO_BOT_") for key in run_env)
+
+
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 

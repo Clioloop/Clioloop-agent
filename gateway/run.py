@@ -10781,6 +10781,47 @@ class GatewayRunner:
             else:
                 return ""
 
+        show_tool_progress = bool(binding.get("show_tool_progress"))
+        turn_timeout_seconds = float(binding.get("turn_timeout_seconds") or 300.0)
+        progress_tasks: List[asyncio.Task] = []
+        progress_lock = threading.Lock()
+        progress_count = 0
+        loop = asyncio.get_running_loop()
+
+        def room_progress(member: Mapping[str, str], progress_event: Mapping[str, Any]) -> None:
+            nonlocal progress_count
+            if not show_tool_progress or str(member.get("source") or "") != "local":
+                return
+            event_type = str(progress_event.get("event") or "")
+            tool_name = str(progress_event.get("name") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", tool_name):
+                return
+            if event_type == "tool.started":
+                text = f"🛠 Using tool: `{tool_name}`"
+            elif event_type == "tool.completed" and progress_event.get("is_error"):
+                text = f"⚠ Tool failed: `{tool_name}`"
+            else:
+                return
+            with progress_lock:
+                if progress_count >= 40:
+                    return
+                progress_count += 1
+
+            profile = str(member.get("profile") or "")
+
+            def schedule_progress() -> None:
+                task = loop.create_task(
+                    self._send_telegram_room_reply_as_profile(
+                        profile=profile,
+                        chat_id=source.chat_id,
+                        thread_id=source.thread_id,
+                        content=text,
+                    )
+                )
+                progress_tasks.append(task)
+
+            loop.call_soon_threadsafe(schedule_progress)
+
         try:
             result = await asyncio.to_thread(
                 send_room_message,
@@ -10788,7 +10829,12 @@ class GatewayRunner:
                 message,
                 attachments=attachments or None,
                 thread_id=source.thread_id,
+                progress_callback=room_progress,
+                hard_timeout=turn_timeout_seconds,
             )
+            await asyncio.sleep(0)
+            if progress_tasks:
+                await asyncio.gather(*progress_tasks, return_exceptions=True)
         except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
             logger.warning(
                 "Telegram Bot Room turn failed: chat=%s room=%s",
