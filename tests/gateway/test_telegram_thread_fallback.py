@@ -405,6 +405,29 @@ async def test_send_retries_without_thread_on_thread_not_found():
 
 
 @pytest.mark.asyncio
+async def test_send_strict_thread_never_falls_back_to_root_chat():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(
+        chat_id="-100123",
+        content="topic-confined reply",
+        metadata={"thread_id": "99999", "telegram_strict_thread": True},
+    )
+
+    assert result.success is False
+    assert result.error == "telegram_thread_unavailable"
+    assert result.retryable is False
+    assert len(call_log) == 2
+    assert all(call["message_thread_id"] == 99999 for call in call_log)
+
+
+@pytest.mark.asyncio
 async def test_send_retries_transient_thread_not_found_before_fallback():
     """A one-off Telegram thread-not-found response should still land in the topic."""
     adapter = _make_adapter()

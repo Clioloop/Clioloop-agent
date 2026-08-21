@@ -3021,6 +3021,17 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
+def _reasoning_display_enabled(configured: Any) -> bool:
+    """Return whether this CLI process may render reasoning to stdout.
+
+    Bot Mode child processes are captured as machine-to-machine replies and
+    later forwarded to rooms or direct-message callers. Terminal reasoning
+    panels are presentation chrome, not reply content; allowing them here both
+    leaks internal reasoning and prevents ``PASS`` from being recognized.
+    """
+    return bool(configured) and os.environ.get("CLIO_BOT_CHILD") != "1"
+
+
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
@@ -3118,8 +3129,12 @@ class ClioCLI:
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
-        # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # show_reasoning: display model thinking/reasoning before the response.
+        # Captured Bot child stdout is a transport payload, so never add
+        # terminal-only reasoning panels to it.
+        self.show_reasoning = _reasoning_display_enabled(
+            CLI_CONFIG["display"].get("show_reasoning", False)
+        )
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
@@ -4240,6 +4255,8 @@ class ClioCLI:
 
     def _current_reasoning_callback(self):
         """Return the active reasoning display callback for the current mode."""
+        if os.environ.get("CLIO_BOT_CHILD") == "1":
+            return None
         if self.show_reasoning and self.streaming_enabled:
             return self._stream_reasoning_delta
         if self.verbose and not self.show_reasoning:

@@ -542,7 +542,13 @@ def test_exclusive_bot_mentions_can_be_disabled_for_legacy_groups():
 def test_bound_bot_room_plain_message_bypasses_require_mention():
     adapter = _make_adapter(
         require_mention=True,
-        bot_room_bindings={"-200": {"room_id": "room-1", "controller_handle": "clio"}},
+        bot_room_bindings={
+            "-200": {
+                "room_id": "room-1",
+                "controller_handle": "clio",
+                "delivery": "profile_bots",
+            }
+        },
     )
 
     assert adapter._should_process_message(_group_message("hello council", chat_id=-200)) is True
@@ -550,7 +556,16 @@ def test_bound_bot_room_plain_message_bypasses_require_mention():
     assert adapter.bot_room_binding_for_chat(-200) == {
         "room_id": "room-1",
         "controller_handle": "clio",
+        "delivery": "profile_bots",
     }
+
+
+def test_bound_bot_room_ignores_unknown_delivery_modes():
+    adapter = _make_adapter(
+        bot_room_bindings={"-200": {"room_id": "room-1", "delivery": "impersonate"}},
+    )
+
+    assert adapter.bot_room_binding_for_chat(-200) == {"room_id": "room-1"}
 
 
 def test_bot_room_binding_does_not_bypass_command_trigger_rules():

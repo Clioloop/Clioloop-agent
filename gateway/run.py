@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
@@ -66,6 +67,52 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_BOT_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_BOT_PROFILE_DELIVERY_TIMEOUT_SECONDS = 60.0
+_PROFILE_BOT_ENV_KEYS = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "CURL_CA_BUNDLE",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "NO_COLOR",
+        "PATH",
+        "PATHEXT",
+        "PROGRAMDATA",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "REQUESTS_CA_BUNDLE",
+        "SHELL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
+
+
+def _profile_bot_delivery_env(target_home: Path) -> Dict[str, str]:
+    """Build an allowlisted environment pinned to the target profile home."""
+    child: Dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper in _PROFILE_BOT_ENV_KEYS or upper.startswith("LC_"):
+            child[key] = value
+    child["CLIO_HOME"] = str(Path(target_home).resolve())
+    child.setdefault("PYTHONUTF8", "1")
+    return child
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -10438,6 +10485,158 @@ class GatewayRunner:
                 return True
         return False
 
+    async def _send_telegram_room_reply_as_profile(
+        self,
+        *,
+        profile: str,
+        chat_id: Any,
+        thread_id: Any,
+        content: str,
+    ) -> bool:
+        """Send one room reply through the author's profile-scoped Bot token."""
+        profile = str(profile or "").strip().lower()
+        content = str(content or "").strip()
+        if not _BOT_PROFILE_RE.fullmatch(profile) or not content:
+            return False
+        try:
+            normalized_chat_id = str(int(str(chat_id).strip()))
+            normalized_thread_id = (
+                str(int(str(thread_id).strip())) if thread_id not in {None, ""} else ""
+            )
+        except (TypeError, ValueError):
+            return False
+
+        try:
+            from clio_bot_mode import profile_home
+
+            target_home = Path(profile_home(profile)).resolve()
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return False
+
+        command = [
+            sys.executable,
+            "-m",
+            "gateway.profile_telegram_delivery",
+            "--clio-home",
+            str(target_home),
+            "--chat-id",
+            normalized_chat_id,
+        ]
+        if normalized_thread_id:
+            command.extend(["--thread-id", normalized_thread_id])
+        kwargs: Dict[str, Any] = {}
+        if os.name == "nt":  # pragma: no cover - exercised by Windows CI
+            from clio_cli._subprocess_compat import windows_hide_flags
+
+            kwargs["creationflags"] = windows_hide_flags()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env=_profile_bot_delivery_env(target_home),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **kwargs,
+            )
+        except (OSError, RuntimeError):
+            logger.warning(
+                "Could not start profile Bot Telegram delivery: profile=%s chat=%s",
+                profile,
+                normalized_chat_id,
+            )
+            return False
+
+        try:
+            await asyncio.wait_for(
+                process.communicate(content.encode("utf-8")),
+                timeout=_BOT_PROFILE_DELIVERY_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
+            logger.warning(
+                "Profile Bot Telegram delivery timed out: profile=%s chat=%s",
+                profile,
+                normalized_chat_id,
+            )
+            return False
+        except asyncio.CancelledError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
+            raise
+        if process.returncode != 0:
+            logger.warning(
+                "Profile Bot Telegram delivery failed: profile=%s chat=%s exit=%s",
+                profile,
+                normalized_chat_id,
+                process.returncode,
+            )
+            return False
+        return True
+
+    async def _deliver_telegram_room_replies_as_profiles(
+        self,
+        *,
+        room: Mapping[str, Any],
+        result: Any,
+        messages: Sequence[Mapping[str, Any]],
+        chat_id: Any,
+        thread_id: Any,
+    ) -> tuple[List[str], bool]:
+        """Deliver visible replies in order; return failures and superseded state."""
+        from clio_bot_mode import get_room
+
+        identities = {
+            (
+                str(member.get("source") or ""),
+                str(member.get("profile") or ""),
+                str(member.get("handle") or "").lower(),
+            )
+            for member in (room.get("members") or [])
+            if isinstance(member, dict)
+        }
+        failures: List[str] = []
+        for item in messages:
+            try:
+                latest = get_room(str(result.room_id))
+                if int(latest.get("active_epoch") or 0) != int(result.epoch):
+                    return failures, True
+            except (FileNotFoundError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+                return failures, True
+
+            source_name = str(item.get("source") or "")
+            profile = str(item.get("profile") or "")
+            author = str(item.get("author") or "").strip().lower()
+            identity = (source_name, profile, author)
+            valid_identity = (
+                source_name == "local"
+                and identity in identities
+                and _BOT_PROFILE_RE.fullmatch(profile) is not None
+                and bool(author)
+            )
+            delivered = False
+            if valid_identity:
+                delivered = await self._send_telegram_room_reply_as_profile(
+                    profile=profile,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    content=str(item.get("content") or ""),
+                )
+            try:
+                latest = get_room(str(result.room_id))
+                if int(latest.get("active_epoch") or 0) != int(result.epoch):
+                    return failures, True
+            except (FileNotFoundError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+                return failures, True
+            if not delivered and author not in failures:
+                failures.append(author or "unknown")
+        return failures, False
+
     async def _handle_bound_telegram_bot_room_message(
         self,
         event: MessageEvent,
@@ -10538,6 +10737,26 @@ class GatewayRunner:
             if item.get("author") != "user" and str(item.get("content") or "").strip()
         ]
         if visible:
+            if str(binding.get("delivery") or "").lower() == "profile_bots":
+                failures, superseded = await self._deliver_telegram_room_replies_as_profiles(
+                    room=room,
+                    result=result,
+                    messages=visible,
+                    chat_id=source.chat_id,
+                    thread_id=source.thread_id,
+                )
+                if superseded:
+                    return ""
+                if failures:
+                    labels = [
+                        f"@{name}" if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", name) else "unknown Bot"
+                        for name in failures
+                    ]
+                    return (
+                        "Some Bot Council replies could not be delivered from their own "
+                        "Telegram accounts: " + ", ".join(labels) + "."
+                    )
+                return ""
             return "\n\n".join(
                 f"[{item.get('author', 'unknown')}] {str(item.get('content') or '').strip()}"
                 for item in visible

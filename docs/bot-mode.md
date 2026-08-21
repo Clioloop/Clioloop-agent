@@ -86,13 +86,17 @@ telegram:
     "-1001234567890":
       room_id: room-0123456789ab
       controller_handle: clio
+      delivery: profile_bots  # optional: post each reply from its profile Bot account
 ```
 
 The binding is routing only and never bypasses user authorization, chat/topic
 allowlists, ignored threads, or exclusive mentions of a different Telegram
 bot. Telegram must still deliver plain group messages to the controller: make
 that controller a group administrator or disable its BotFather Privacy Mode.
-Other Telegram bot accounts should remain mention-gated.
+Other Telegram bot accounts should remain mention-gated. When
+`delivery: profile_bots` is enabled, every local room member Bot must also be a
+member of the Telegram group; it does not need administrator access or disabled
+Privacy Mode merely to send its own replies.
 
 For a bound group:
 
@@ -106,10 +110,17 @@ For a bound group:
 - supported cached images, PDF, plain-text, and Markdown attachments are copied
   into recipient profiles through the existing room attachment safeguards.
 
+With `delivery: profile_bots`, internal cross-review still completes through the
+controller's profile-backed room, but each finalized visible reply is sent in
+room order using the author's profile-scoped Telegram token. The controller
+posts no duplicate aggregate message. If a profile account cannot deliver, the
+controller emits only a generic failure notice and never impersonates that Bot.
+
 Use one room ID per Telegram group unless sharing a transcript is intentional.
 Telegram never delivers messages authored by one bot account to another, so
 cross-review always happens through the controller's profile-backed room rather
-than through Telegram bot-to-bot traffic.
+than through Telegram bot-to-bot traffic. Without `delivery: profile_bots`, the
+legacy controller-attributed aggregate reply remains the default.
 
 ## Desktop/TUI RPC
 

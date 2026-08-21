@@ -2109,8 +2109,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                     )
                                     continue
                                 # Second failure: the thread is genuinely gone.
-                                # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat.
+                                # Profile-Bot room delivery is topic-confined and
+                                # must never leak into the root/General lane.
+                                if metadata and metadata.get("telegram_strict_thread"):
+                                    return SendResult(
+                                        success=False,
+                                        error="telegram_thread_unavailable",
+                                        retryable=False,
+                                    )
+                                # Other sends preserve the compatibility fallback
+                                # and retry without ``message_thread_id``.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -5094,14 +5102,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(value, dict):
             room_id = str(value.get("room_id") or value.get("room") or "").strip()
             controller_handle = str(value.get("controller_handle") or "").strip().lstrip("@").lower()
+            delivery = str(value.get("delivery") or "").strip().lower()
         else:
             room_id = str(value or "").strip()
             controller_handle = ""
+            delivery = ""
         if not room_id:
             return None
         return {
             "room_id": room_id,
             **({"controller_handle": controller_handle} if controller_handle else {}),
+            **({"delivery": delivery} if delivery == "profile_bots" else {}),
         }
 
     def _telegram_observe_allowed_chats(self) -> set[str]:
