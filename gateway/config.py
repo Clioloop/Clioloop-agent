@@ -888,6 +888,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
+                if plat == Platform.TELEGRAM and "bot_room_bindings" in platform_cfg:
+                    bridged["bot_room_bindings"] = platform_cfg["bot_room_bindings"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:

@@ -5065,6 +5065,45 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def bot_room_binding_for_chat(self, chat_id: Any) -> Optional[Dict[str, str]]:
+        """Return the normalized automatic Bot Room route for a Telegram chat.
+
+        Bindings are routing metadata only. Authorization, chat/topic
+        allowlists, ignored threads, and exclusive Telegram-bot mentions remain
+        independent hard gates.
+        """
+        raw = self.config.extra.get("bot_room_bindings")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+        if not isinstance(raw, dict):
+            return None
+
+        key = str(chat_id or "").strip()
+        if not key:
+            return None
+        value = raw.get(key)
+        if value is None:
+            try:
+                value = raw.get(int(key))
+            except (TypeError, ValueError):
+                value = None
+
+        if isinstance(value, dict):
+            room_id = str(value.get("room_id") or value.get("room") or "").strip()
+            controller_handle = str(value.get("controller_handle") or "").strip().lstrip("@").lower()
+        else:
+            room_id = str(value or "").strip()
+            controller_handle = ""
+        if not room_id:
+            return None
+        return {
+            "room_id": room_id,
+            **({"controller_handle": controller_handle} if controller_handle else {}),
+        }
+
     def _telegram_observe_allowed_chats(self) -> set[str]:
         """Chats where observed group context may use a shared source.
 
@@ -5614,6 +5653,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return guest_mention
 
         if guest_mention:
+            return True
+        # A configured room binding is an explicit operator decision that plain
+        # user text in this authorized chat should enter the bounded Bot Room.
+        # Commands retain their existing mention/menu routing semantics.
+        if not is_command and self.bot_room_binding_for_chat(chat_id_str):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True

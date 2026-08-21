@@ -232,6 +232,44 @@ def test_room_mentions_passes_duplicates_and_watermarks(bot_env):
     assert third.suppressed == 2
 
 
+def test_single_direct_handle_is_one_bot_one_turn_even_when_reply_mentions_peer(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room("Direct", ["alpha", "beta"], root=root)
+    calls = {"alpha": 0, "beta": 0}
+
+    def responder(member, _prompt, _session_id, _timeout):
+        calls[member["handle"]] += 1
+        if member["handle"] == "alpha":
+            return "I can answer this. @beta could also review."
+        return "Beta should not run."
+
+    result = bots.send_room_message(
+        room["id"],
+        "@alpha answer only from your profile",
+        responder=responder,
+        root=root,
+    )
+
+    assert calls == {"alpha": 1, "beta": 0}
+    assert [message["author"] for message in result.messages] == ["user", "alpha"]
+    assert result.rounds == 1
+
+
+def test_plain_room_message_still_selects_all_members(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room("All", ["alpha", "beta"], root=root)
+    calls = {"alpha": 0, "beta": 0}
+
+    def responder(member, _prompt, _session_id, _timeout):
+        calls[member["handle"]] += 1
+        return f"{member['handle']} independent answer"
+
+    result = bots.send_room_message(room["id"], "answer together", responder=responder, root=root)
+
+    assert calls == {"alpha": 1, "beta": 1}
+    assert [message["author"] for message in result.messages] == ["user", "alpha", "beta"]
+
+
 def test_room_caps_rounds_and_needs_user(bot_env):
     _homes, root = bot_env
     members = ["default", "alpha", "beta", "gamma", "delta", "epsilon"]

@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, Mapping, Sequence
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -7584,6 +7584,18 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # Optional normal-chat Bot Room routing. This runs only after the
+        # platform/user authorization gates and only for non-command Telegram
+        # group messages. It deliberately bypasses the controller agent's
+        # session so profile Bots keep their own canonical room histories.
+        if not is_internal:
+            _room_binding = self._telegram_bot_room_binding_for_event(event)
+            if _room_binding is not None:
+                return await self._handle_bound_telegram_bot_room_message(
+                    event,
+                    _room_binding,
+                )
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -10396,6 +10408,146 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    def _telegram_bot_room_binding_for_event(
+        self,
+        event: MessageEvent,
+    ) -> Optional[Dict[str, str]]:
+        """Resolve a configured normal-chat Telegram group to a Bot Room."""
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.TELEGRAM:
+            return None
+        if str(source.chat_type or "").lower() not in {"group", "forum"}:
+            return None
+        if event.message_type == MessageType.COMMAND or event.is_command():
+            return None
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        resolver = getattr(adapter, "bot_room_binding_for_chat", None)
+        if not callable(resolver):
+            return None
+        binding = resolver(source.chat_id)
+        if not isinstance(binding, dict) or not str(binding.get("room_id") or "").strip():
+            return None
+        return binding
+
+    @staticmethod
+    def _text_mentions_room_handle(text: str, handles: Sequence[str]) -> bool:
+        for handle in handles:
+            pattern = rf"(?<![\\w@])@{re.escape(str(handle))}(?![A-Za-z0-9_-])"
+            if re.search(pattern, text or "", flags=re.IGNORECASE):
+                return True
+        return False
+
+    async def _handle_bound_telegram_bot_room_message(
+        self,
+        event: MessageEvent,
+        binding: Mapping[str, str],
+    ) -> str:
+        """Run one bound room turn and format it like an ordinary group reply."""
+        from clio_bot_mode import get_room, send_room_message
+
+        room_id = str(binding.get("room_id") or "").strip()
+        source = event.source
+        try:
+            room = get_room(room_id)
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Invalid Telegram Bot Room binding: chat=%s room=%s",
+                source.chat_id,
+                room_id,
+                exc_info=True,
+            )
+            return "This Telegram group's Bot Council binding is invalid. Ask the operator to recreate or rebind the room."
+
+        message = str(event.text or "").strip()
+        handles = [
+            str(member.get("handle") or "").strip()
+            for member in room.get("members") or []
+            if str(member.get("handle") or "").strip()
+        ]
+        controller_handle = str(binding.get("controller_handle") or "").strip().lstrip("@").lower()
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        mention_probe = getattr(adapter, "_message_mentions_bot", None)
+        try:
+            controller_was_mentioned = bool(
+                controller_handle
+                and callable(mention_probe)
+                and event.raw_message is not None
+                and mention_probe(event.raw_message)
+            )
+        except Exception:
+            controller_was_mentioned = False
+        if (
+            controller_was_mentioned
+            and controller_handle in {handle.lower() for handle in handles}
+            and not self._text_mentions_room_handle(message, handles)
+        ):
+            message = f"@{controller_handle} {message}".strip()
+
+        supported_mimes = {
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "text/plain",
+            "text/markdown",
+        }
+        attachments: List[Dict[str, str]] = []
+        for index, path in enumerate(event.media_urls or []):
+            mime = str(event.media_types[index] if index < len(event.media_types) else "").lower()
+            if mime not in supported_mimes:
+                continue
+            attachments.append(
+                {
+                    "path": str(path),
+                    "name": Path(str(path)).name,
+                    "mime_type": mime,
+                }
+            )
+
+        if not message:
+            if event.media_urls:
+                if not attachments:
+                    return "This Bot Council can review text, images, PDF, plain-text, and Markdown files here. Add a caption or transcription for audio/video."
+                message = "[The user shared Telegram media for the Bot Council to review.]"
+            else:
+                return ""
+
+        try:
+            result = await asyncio.to_thread(
+                send_room_message,
+                room_id,
+                message,
+                attachments=attachments or None,
+                thread_id=source.thread_id,
+            )
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Telegram Bot Room turn failed: chat=%s room=%s",
+                source.chat_id,
+                room_id,
+                exc_info=True,
+            )
+            return "The Bot Council could not process this message. Please try again."
+
+        if result.state == "superseded":
+            return ""
+        visible = [
+            item
+            for item in result.messages
+            if item.get("author") != "user" and str(item.get("content") or "").strip()
+        ]
+        if visible:
+            return "\n\n".join(
+                f"[{item.get('author', 'unknown')}] {str(item.get('content') or '').strip()}"
+                for item in visible
+            )
+        if any(
+            str(item.get("state") or "") in {"failed", "timeout"}
+            for item in (result.activity or [])
+        ):
+            return "The Bot Council could not produce a response. Please try again."
+        return ""
 
     async def _handle_bots_command(self, event: MessageEvent) -> str:
         """Handle /bots from the same profile registry as CLI/API clients."""

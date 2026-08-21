@@ -2044,6 +2044,10 @@ def send_room_message(
     members = list(room["members"])
     handles = [member["handle"] for member in members]
     direct = _mentions(message, handles)
+    # A user who names exactly one room handle asked for a private lane inside
+    # the room: only that Bot gets one turn. Plain messages and multi-handle
+    # messages keep the normal cross-review/handoff behavior.
+    single_target_only = len(direct) == 1 and "@everyone" not in message.lower()
     eligible = set(handles if "@everyone" in message.lower() or not direct else direct)
     produced: List[Dict[str, Any]] = [user_record]
     seen_values = {
@@ -2252,6 +2256,9 @@ def send_room_message(
         if state in {"superseded", "message_cap"}:
             break
         if round_added == 0:
+            state = "settled"
+            break
+        if single_target_only:
             state = "settled"
             break
         if not next_mentions:

@@ -21,6 +21,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    bot_room_bindings=None,
     bot_username="clio_bot",
 ):
     from gateway.platforms.telegram import TelegramAdapter
@@ -62,6 +63,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if bot_room_bindings is not None:
+        extra["bot_room_bindings"] = bot_room_bindings
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -536,6 +539,61 @@ def test_exclusive_bot_mentions_can_be_disabled_for_legacy_groups():
     ) is True
 
 
+def test_bound_bot_room_plain_message_bypasses_require_mention():
+    adapter = _make_adapter(
+        require_mention=True,
+        bot_room_bindings={"-200": {"room_id": "room-1", "controller_handle": "clio"}},
+    )
+
+    assert adapter._should_process_message(_group_message("hello council", chat_id=-200)) is True
+    assert adapter._should_process_message(_group_message("hello council", chat_id=-201)) is False
+    assert adapter.bot_room_binding_for_chat(-200) == {
+        "room_id": "room-1",
+        "controller_handle": "clio",
+    }
+
+
+def test_bot_room_binding_does_not_bypass_command_trigger_rules():
+    adapter = _make_adapter(
+        require_mention=True,
+        bot_room_bindings={-200: "room-1"},
+    )
+
+    bare = _group_message("/status", chat_id=-200, entities=[_bot_command_entity("/status", "/status")])
+    addressed_text = "/status@clio_bot"
+    addressed = _group_message(
+        addressed_text,
+        chat_id=-200,
+        entities=[_bot_command_entity(addressed_text, addressed_text)],
+    )
+    assert adapter._should_process_message(bare, is_command=True) is False
+    assert adapter._should_process_message(addressed, is_command=True) is True
+
+
+def test_bound_room_preserves_chat_topic_and_exclusive_mention_gates():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        allowed_topics=["9"],
+        ignored_threads=[11],
+        exclusive_bot_mentions=True,
+        bot_room_bindings={"-200": "room-1", "-201": "room-2"},
+        bot_username="clio_bot",
+    )
+
+    assert adapter._should_process_message(_group_message("plain", chat_id=-201, thread_id=9)) is False
+    assert adapter._should_process_message(_group_message("plain", chat_id=-200, thread_id=8)) is False
+    assert adapter._should_process_message(_group_message("plain", chat_id=-200, thread_id=11)) is False
+    other = "@research_bot handle this"
+    assert adapter._should_process_message(
+        _group_message(other, chat_id=-200, thread_id=9, entities=[_mention_entity(other, "@research_bot")])
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("@viktorian review", chat_id=-200, thread_id=9)
+    ) is True
+    assert adapter._clean_bot_trigger_text("@viktorian review") == "@viktorian review"
+
+
 def test_free_response_chats_bypass_mention_requirement():
     adapter = _make_adapter(require_mention=True, free_response_chats=["-200"])
 
@@ -654,7 +712,11 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  group_allowed_chats:\n"
         "    - \"-100\"\n"
         "  allowed_topics:\n"
-        "    - 8\n",
+        "    - 8\n"
+        "  bot_room_bindings:\n"
+        "    \"-100\":\n"
+        "      room_id: room-1\n"
+        "      controller_handle: clio\n",
         encoding="utf-8",
     )
 
@@ -689,6 +751,9 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("allowed_topics") == [8]
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    assert tg_cfg.extra.get("bot_room_bindings") == {
+        "-100": {"room_id": "room-1", "controller_handle": "clio"}
+    }
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):

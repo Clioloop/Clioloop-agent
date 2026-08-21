@@ -70,6 +70,47 @@ Gateway commands:
 
 `/botroom send` runs one bounded orchestration and posts attributed visible replies. It avoids the noisy pattern where independent Telegram Bots all react to every group message.
 
+### Normal-chat Telegram room bindings
+
+A Telegram controller can bind one authorized group directly to a Bot Room so
+ordinary non-command messages enter the room without `/botroom` or an
+`@controller` trigger:
+
+```yaml
+telegram:
+  allowed_chats: ["-1001234567890"]
+  group_allowed_chats: ["-1001234567890"]
+  require_mention: true
+  exclusive_bot_mentions: true
+  bot_room_bindings:
+    "-1001234567890":
+      room_id: room-0123456789ab
+      controller_handle: clio
+```
+
+The binding is routing only and never bypasses user authorization, chat/topic
+allowlists, ignored threads, or exclusive mentions of a different Telegram
+bot. Telegram must still deliver plain group messages to the controller: make
+that controller a group administrator or disable its BotFather Privacy Mode.
+Other Telegram bot accounts should remain mention-gated.
+
+For a bound group:
+
+- plain text with no internal room handle selects the whole room;
+- an internal handle such as `@viktorian` selects only that profile for one
+  reply;
+- an exact mention of the controller Telegram username selects
+  `controller_handle` when configured;
+- multiple internal handles retain bounded cross-review and handoffs;
+- commands continue through the ordinary gateway command path;
+- supported cached images, PDF, plain-text, and Markdown attachments are copied
+  into recipient profiles through the existing room attachment safeguards.
+
+Use one room ID per Telegram group unless sharing a transcript is intentional.
+Telegram never delivers messages authored by one bot account to another, so
+cross-review always happens through the controller's profile-backed room rather
+than through Telegram bot-to-bot traffic.
+
 ## Desktop/TUI RPC
 
 The TUI gateway exposes:
