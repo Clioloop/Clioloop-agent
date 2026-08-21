@@ -102,6 +102,14 @@ _PROFILE_BOT_ENV_KEYS = frozenset(
 )
 
 
+def _reasoning_display_allowed(source: Any, configured: Any) -> bool:
+    """Hide reasoning presentation in shared chats without disabling reasoning."""
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    if chat_type in {"group", "supergroup", "forum", "channel"}:
+        return False
+    return bool(configured)
+
+
 def _profile_bot_delivery_env(target_home: Path) -> Dict[str, str]:
     """Build an allowlisted environment pinned to the target profile home."""
     child: Dict[str, str] = {}
@@ -9770,14 +9778,20 @@ class GatewayRunner:
             # first through the stream consumer and marked reasoning_streamed.
             try:
                 from gateway.display_config import resolve_display_setting as _rds
-                _show_reasoning_effective = _rds(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    getattr(self, "_show_reasoning", False),
+                _show_reasoning_effective = _reasoning_display_allowed(
+                    source,
+                    _rds(
+                        _load_gateway_config(),
+                        _platform_config_key(source.platform),
+                        "show_reasoning",
+                        getattr(self, "_show_reasoning", False),
+                    ),
                 )
             except Exception:
-                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+                _show_reasoning_effective = _reasoning_display_allowed(
+                    source,
+                    getattr(self, "_show_reasoning", False),
+                )
             if _show_reasoning_effective and not agent_result.get("reasoning_streamed"):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -10459,7 +10473,7 @@ class GatewayRunner:
     def _telegram_bot_room_binding_for_event(
         self,
         event: MessageEvent,
-    ) -> Optional[Dict[str, str]]:
+    ) -> Optional[Dict[str, Any]]:
         """Resolve a configured normal-chat Telegram group to a Bot Room."""
         source = getattr(event, "source", None)
         if source is None or source.platform != Platform.TELEGRAM:
@@ -10484,6 +10498,34 @@ class GatewayRunner:
             if re.search(pattern, text or "", flags=re.IGNORECASE):
                 return True
         return False
+
+    @staticmethod
+    def _rewrite_telegram_room_mentions(
+        text: str,
+        replacements: Mapping[str, str],
+    ) -> str:
+        """Rewrite standalone @mentions without matching email/command text."""
+        lookup: Dict[str, str] = {}
+        for raw_source, raw_target in replacements.items():
+            source = str(raw_source or "").strip().lstrip("@").lower()
+            target = str(raw_target or "").strip().lstrip("@")
+            if (
+                not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source, re.IGNORECASE)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", target, re.IGNORECASE)
+            ):
+                continue
+            lookup[source] = target
+        if not text or not lookup:
+            return text
+
+        alternatives = "|".join(
+            re.escape(source) for source in sorted(lookup, key=len, reverse=True)
+        )
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_@`/])@(?P<name>{alternatives})(?![A-Za-z0-9_-])",
+            re.IGNORECASE,
+        )
+        return pattern.sub(lambda match: f"@{lookup[match.group('name').lower()]}", text)
 
     async def _send_telegram_room_reply_as_profile(
         self,
@@ -10587,6 +10629,8 @@ class GatewayRunner:
         messages: Sequence[Mapping[str, Any]],
         chat_id: Any,
         thread_id: Any,
+        profile_bot_usernames: Optional[Mapping[str, str]] = None,
+        render_profile_bot_mentions: bool = False,
     ) -> tuple[List[str], bool]:
         """Deliver visible replies in order; return failures and superseded state."""
         from clio_bot_mode import get_room
@@ -10621,11 +10665,17 @@ class GatewayRunner:
             )
             delivered = False
             if valid_identity:
+                content = str(item.get("content") or "")
+                if render_profile_bot_mentions and profile_bot_usernames:
+                    content = self._rewrite_telegram_room_mentions(
+                        content,
+                        profile_bot_usernames,
+                    )
                 delivered = await self._send_telegram_room_reply_as_profile(
                     profile=profile,
                     chat_id=chat_id,
                     thread_id=thread_id,
-                    content=str(item.get("content") or ""),
+                    content=content,
                 )
             try:
                 latest = get_room(str(result.room_id))
@@ -10664,6 +10714,25 @@ class GatewayRunner:
             for member in room.get("members") or []
             if str(member.get("handle") or "").strip()
         ]
+        profile_bot_usernames = binding.get("profile_bot_usernames")
+        if not isinstance(profile_bot_usernames, dict):
+            profile_bot_usernames = {}
+        room_handles = {handle.lower() for handle in handles}
+        if any(str(handle).lower() not in room_handles for handle in profile_bot_usernames):
+            logger.warning(
+                "Invalid Telegram Bot Room username mapping: chat=%s room=%s",
+                source.chat_id,
+                room_id,
+            )
+            return "This Telegram group's Bot Council binding is invalid. Ask the operator to recreate or rebind the room."
+        if profile_bot_usernames:
+            message = self._rewrite_telegram_room_mentions(
+                message,
+                {
+                    str(username): str(handle)
+                    for handle, username in profile_bot_usernames.items()
+                },
+            )
         controller_handle = str(binding.get("controller_handle") or "").strip().lstrip("@").lower()
         adapter = self.adapters.get(Platform.TELEGRAM)
         mention_probe = getattr(adapter, "_message_mentions_bot", None)
@@ -10679,7 +10748,7 @@ class GatewayRunner:
         if (
             controller_was_mentioned
             and controller_handle in {handle.lower() for handle in handles}
-            and not self._text_mentions_room_handle(message, handles)
+            and not self._text_mentions_room_handle(message, [controller_handle])
         ):
             message = f"@{controller_handle} {message}".strip()
 
@@ -10744,6 +10813,10 @@ class GatewayRunner:
                     messages=visible,
                     chat_id=source.chat_id,
                     thread_id=source.thread_id,
+                    profile_bot_usernames=profile_bot_usernames,
+                    render_profile_bot_mentions=bool(
+                        binding.get("render_profile_bot_mentions")
+                    ),
                 )
                 if superseded:
                     return ""
@@ -18530,13 +18603,14 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
-            _show_reasoning_effective = bool(
+            _show_reasoning_effective = _reasoning_display_allowed(
+                source,
                 resolve_display_setting(
                     user_config,
                     platform_key,
                     "show_reasoning",
                     getattr(self, "_show_reasoning", False),
-                )
+                ),
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled

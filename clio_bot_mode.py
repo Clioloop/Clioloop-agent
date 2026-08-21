@@ -1508,6 +1508,21 @@ def _mentions(text: str, handles: Iterable[str]) -> List[str]:
     return found
 
 
+def _strip_room_mentions(text: str, handles: Iterable[str]) -> str:
+    """Remove room @handles from a standalone whole-room response."""
+    known = sorted({str(handle) for handle in handles if str(handle)}, key=len, reverse=True)
+    if not text or not known:
+        return text
+    alternatives = "|".join(re.escape(handle) for handle in known)
+    cleaned = re.sub(
+        rf"(?<![\w@])@(?:{alternatives})(?![A-Za-z0-9_-])[\s,:;\-]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
 def _normalize_new_value(text: str) -> str:
     return re.sub(r"\W+", " ", text.lower()).strip()
 
@@ -1702,7 +1717,7 @@ def _room_prompt(room: Mapping[str, Any], member: Mapping[str, str], transcript:
         f"You are @{member['handle']} in Clio team room {room['name']!r}.",
         f"Round {round_number}/{ROOM_MAX_ROUNDS}. Reply briefly only if you add new value.",
         "Reply with exactly PASS if you have nothing new. Mention @user only for a genuine user decision.",
-        "Mention another room handle to make that Bot eligible in the next round.",
+        "Mention another room handle only for a necessary explicit handoff. For a whole-room request, reply once with no @tags.",
     ]
     if thread_id:
         lines.append(f"Thread: {thread_id}")
@@ -1988,8 +2003,9 @@ def send_room_message(
     """Run a bounded serial room deliberation with epoch supersession.
 
     Only unseen room deltas are delivered to each member. Every attempt is
-    durably reflected in the private ``activity`` feed, while passes, duplicate
-    replies, failures, and timeouts remain absent from the visible transcript.
+    durably reflected in the private ``activity`` feed, while passes, repeated
+    normalized replies from the same Bot during this user send, failures, and
+    timeouts remain absent from the visible transcript.
     A newer user send changes the epoch; the old run checks that epoch before
     and after every Bot call and cannot land a stale reply.
     """
@@ -2044,17 +2060,18 @@ def send_room_message(
     members = list(room["members"])
     handles = [member["handle"] for member in members]
     direct = _mentions(message, handles)
-    # A user who names exactly one room handle asked for a private lane inside
-    # the room: only that Bot gets one turn. Plain messages and multi-handle
-    # messages keep the normal cross-review/handoff behavior.
-    single_target_only = len(direct) == 1 and "@everyone" not in message.lower()
+    whole_room_request = not direct
+    # A user who names exactly one room handle starts with only that Bot. An
+    # explicit Bot-to-Bot mention in its reply may still hand the work to a peer
+    # in the next bounded round; without such a mention the run settles here.
     eligible = set(handles if "@everyone" in message.lower() or not direct else direct)
     produced: List[Dict[str, Any]] = [user_record]
-    seen_values = {
-        _normalize_new_value(str(item.get("content") or ""))
-        for item in room.get("messages", [])[-50:]
-        if item.get("author") != "user"
-    }
+    # A repeated reply is noise only when the same Bot repeats it during this
+    # user send. Different Bots may independently reach the same conclusion,
+    # and a later user send must be able to request the same acknowledgement
+    # again. Qualifying the normalized text by the invocation's member address
+    # also keeps local and remote profiles with the same name independent.
+    visible_reply_keys: set[tuple[str, str, str]] = set()
     suppressed = 0
     visible_bot_count = 0
     rounds_run = 0
@@ -2175,7 +2192,13 @@ def send_room_message(
             else:
                 reply = str(raw_reply or "")
             reply = reply.strip()
+            if whole_room_request:
+                # Every member is already eligible. Remove redundant peer tags
+                # so each Bot contributes one bare reply and cannot create a
+                # noisy second round merely by naming another room member.
+                reply = _strip_room_mentions(reply, handles)
             normalized = _normalize_new_value(reply)
+            reply_key = (member["source"], member["profile"], normalized)
 
             if timed_out or elapsed > hard_timeout:
                 outcome = "timeout"
@@ -2187,7 +2210,7 @@ def send_room_message(
             elif is_hidden_pass(reply):
                 outcome = "pass"
                 visible = False
-            elif not normalized or normalized in seen_values:
+            elif not normalized or reply_key in visible_reply_keys:
                 outcome = "duplicate"
                 visible = False
             else:
@@ -2225,7 +2248,7 @@ def send_room_message(
                     suppressed += 1
                     continue
 
-                seen_values.add(normalized)
+                visible_reply_keys.add(reply_key)
                 record = {
                     "id": f"msg-{uuid.uuid4().hex[:12]}",
                     "seq": _max_seq(current.get("messages") or []) + 1,
@@ -2256,9 +2279,6 @@ def send_room_message(
         if state in {"superseded", "message_cap"}:
             break
         if round_added == 0:
-            state = "settled"
-            break
-        if single_target_only:
             state = "settled"
             break
         if not next_mentions:

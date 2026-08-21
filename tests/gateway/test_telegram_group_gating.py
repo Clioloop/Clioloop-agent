@@ -13,6 +13,7 @@ def _make_adapter(
     free_response_chats=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
+    ignored_chats=None,
     ignored_threads=None,
     allowed_topics=None,
     allow_from=None,
@@ -35,6 +36,10 @@ def _make_adapter(
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
         extra["exclusive_bot_mentions"] = exclusive_bot_mentions
+    if ignored_chats is not None:
+        extra["ignored_chats"] = ignored_chats
+    else:
+        extra["ignored_chats"] = []
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
     if allowed_topics is not None:
@@ -560,6 +565,111 @@ def test_bound_bot_room_plain_message_bypasses_require_mention():
     }
 
 
+def test_bot_room_binding_normalizes_profile_bot_usernames_and_render_flag():
+    adapter = _make_adapter(
+        bot_room_bindings={
+            "-200": {
+                "room_id": "room-1",
+                "controller_handle": "@Clio",
+                "delivery": "profile_bots",
+                "profile_bot_usernames": {
+                    "@Reviewer": "@Review_Profile_Bot",
+                },
+                "render_profile_bot_mentions": "true",
+            }
+        },
+    )
+
+    assert adapter.bot_room_binding_for_chat(-200) == {
+        "room_id": "room-1",
+        "controller_handle": "clio",
+        "delivery": "profile_bots",
+        "profile_bot_usernames": {"reviewer": "Review_Profile_Bot"},
+        "render_profile_bot_mentions": True,
+    }
+
+
+def test_bot_room_binding_rejects_malformed_or_ambiguous_profile_username_maps():
+    invalid_maps = [
+        ["not", "a", "mapping"],
+        {"reviewer": "not-a-telegram-bot"},
+        {"reviewer": "SameAliasBot", "other": "samealiasbot"},
+        {"reviewer": 123},
+    ]
+    for invalid in invalid_maps:
+        adapter = _make_adapter(
+            bot_room_bindings={
+                "-200": {
+                    "room_id": "room-1",
+                    "profile_bot_usernames": invalid,
+                }
+            },
+        )
+        assert adapter.bot_room_binding_for_chat(-200) is None
+
+
+def test_bound_room_mapped_profile_bot_mentions_pass_only_in_their_binding():
+    adapter = _make_adapter(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        bot_username="controller_bot",
+        bot_room_bindings={
+            "-200": {
+                "room_id": "room-1",
+                "profile_bot_usernames": {
+                    "reviewer": "Review_Profile_Bot",
+                },
+            }
+        },
+    )
+    mapped = "@Review_Profile_Bot inspect this"
+    mapped_entities = _mention_entities(mapped, ["@Review_Profile_Bot"])
+    unknown = "@Unknown_Profile_Bot inspect this"
+    unknown_entities = _mention_entities(unknown, ["@Unknown_Profile_Bot"])
+    mixed = "@Review_Profile_Bot @Unknown_Profile_Bot inspect this"
+    mixed_entities = _mention_entities(
+        mixed,
+        ["@Review_Profile_Bot", "@Unknown_Profile_Bot"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(mapped, chat_id=-200, entities=mapped_entities)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(mapped, chat_id=-201, entities=mapped_entities)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(unknown, chat_id=-200, entities=unknown_entities)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(mixed, chat_id=-200, entities=mixed_entities)
+    ) is False
+
+
+def test_bound_room_mapped_profile_bot_command_remains_exclusive():
+    adapter = _make_adapter(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        bot_username="controller_bot",
+        bot_room_bindings={
+            "-200": {
+                "room_id": "room-1",
+                "profile_bot_usernames": {
+                    "reviewer": "Review_Profile_Bot",
+                },
+            }
+        },
+    )
+    text = "/status@Review_Profile_Bot"
+    message = _group_message(
+        text,
+        chat_id=-200,
+        entities=[_bot_command_entity(text, text)],
+    )
+
+    assert adapter._should_process_message(message, is_command=True) is False
+
+
 def test_bound_bot_room_ignores_unknown_delivery_modes():
     adapter = _make_adapter(
         bot_room_bindings={"-200": {"room_id": "room-1", "delivery": "impersonate"}},
@@ -663,6 +773,21 @@ def test_guest_mode_mention_dropped_in_ignored_thread():
     assert adapter._should_process_message(mentioned) is False
 
 
+def test_ignored_chats_drop_group_messages_but_not_dms():
+    adapter = _make_adapter(
+        require_mention=False,
+        ignored_chats=["-200"],
+        observe_unmentioned_group_messages=True,
+    )
+
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200)) is False
+    assert adapter._should_process_message(_group_message("hello", chat_id=-201)) is True
+    assert adapter._should_process_message(_dm_message("hello")) is True
+    assert adapter._should_observe_unmentioned_group_message(
+        _group_message("hello", chat_id=-200)
+    ) is False
+
+
 def test_ignored_threads_drop_group_messages_before_other_gates():
     adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[31, "42"])
 
@@ -728,6 +853,8 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "    - \"-100\"\n"
         "  allowed_topics:\n"
         "    - 8\n"
+        "  ignored_chats:\n"
+        "    - \"-200\"\n"
         "  bot_room_bindings:\n"
         "    \"-100\":\n"
         "      room_id: room-1\n"
@@ -745,6 +872,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
     monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
     monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
+    monkeypatch.delenv("TELEGRAM_IGNORED_CHATS", raising=False)
 
     config = load_gateway_config()
 
@@ -758,12 +886,14 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
     assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
     assert __import__("os").environ["TELEGRAM_ALLOWED_TOPICS"] == "8"
+    assert __import__("os").environ["TELEGRAM_IGNORED_CHATS"] == "-200"
     tg_cfg = config.platforms.get(Platform.TELEGRAM)
     assert tg_cfg is not None
     assert tg_cfg.extra.get("guest_mode") is True
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert tg_cfg.extra.get("ignored_chats") == ["-200"]
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
     assert tg_cfg.extra.get("bot_room_bindings") == {

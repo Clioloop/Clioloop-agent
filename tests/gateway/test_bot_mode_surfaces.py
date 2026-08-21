@@ -228,6 +228,114 @@ async def test_bound_telegram_controller_mention_selects_only_controller(monkeyp
 
 
 @pytest.mark.anyio
+async def test_bound_telegram_profile_username_maps_to_internal_room_handle(monkeypatch):
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        clio_bot_mode,
+        "get_room",
+        lambda _room_id: {
+            "id": "room-1",
+            "members": [{"handle": "clio"}, {"handle": "reviewer"}],
+        },
+    )
+
+    def send(room_id, message, **_kwargs):
+        captured.update(room_id=room_id, message=message)
+        return RoomTurnResult(room_id, 1, 1, "settled", False, [], 0, [])
+
+    monkeypatch.setattr(clio_bot_mode, "send_room_message", send)
+    runner: Any = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {
+        Platform.TELEGRAM: SimpleNamespace(_message_mentions_bot=lambda _raw: False)
+    }
+
+    assert await runner._handle_bound_telegram_bot_room_message(
+        _telegram_group_event("@Review_Profile_Bot inspect this"),
+        {
+            "room_id": "room-1",
+            "profile_bot_usernames": {"reviewer": "Review_Profile_Bot"},
+        },
+    ) == ""
+    assert captured["message"] == "@reviewer inspect this"
+
+
+@pytest.mark.anyio
+async def test_bound_telegram_controller_and_profile_username_select_both(monkeypatch):
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        clio_bot_mode,
+        "get_room",
+        lambda _room_id: {
+            "id": "room-1",
+            "members": [{"handle": "clio"}, {"handle": "reviewer"}],
+        },
+    )
+
+    def send(room_id, message, **_kwargs):
+        captured.update(room_id=room_id, message=message)
+        return RoomTurnResult(room_id, 1, 1, "settled", False, [], 0, [])
+
+    monkeypatch.setattr(clio_bot_mode, "send_room_message", send)
+    runner: Any = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {
+        Platform.TELEGRAM: SimpleNamespace(_message_mentions_bot=lambda _raw: True)
+    }
+
+    assert await runner._handle_bound_telegram_bot_room_message(
+        _telegram_group_event("@Review_Profile_Bot investigate", raw_message=object()),
+        {
+            "room_id": "room-1",
+            "controller_handle": "clio",
+            "profile_bot_usernames": {"reviewer": "Review_Profile_Bot"},
+        },
+    ) == ""
+    assert captured["message"] == "@clio @reviewer investigate"
+
+
+@pytest.mark.anyio
+async def test_bound_telegram_stale_profile_username_mapping_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        clio_bot_mode,
+        "get_room",
+        lambda _room_id: {"id": "room-1", "members": [{"handle": "clio"}]},
+    )
+
+    def unexpected_send(*_args, **_kwargs):
+        raise AssertionError("invalid alias mapping must not fan out to the room")
+
+    monkeypatch.setattr(clio_bot_mode, "send_room_message", unexpected_send)
+    runner: Any = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {
+        Platform.TELEGRAM: SimpleNamespace(_message_mentions_bot=lambda _raw: False)
+    }
+
+    notice = await runner._handle_bound_telegram_bot_room_message(
+        _telegram_group_event("@Review_Profile_Bot inspect this"),
+        {
+            "room_id": "room-1",
+            "profile_bot_usernames": {"reviewer": "Review_Profile_Bot"},
+        },
+    )
+    assert "binding is invalid" in notice
+
+
+def test_telegram_room_mention_rewrite_is_boundary_safe():
+    runner: Any = GatewayRunner.__new__(GatewayRunner)
+    text = (
+        "email x@Review_Profile_Bot.example and /status@Review_Profile_Bot "
+        "then @Review_Profile_Bot"
+    )
+
+    assert runner._rewrite_telegram_room_mentions(
+        text,
+        {"Review_Profile_Bot": "reviewer"},
+    ) == (
+        "email x@Review_Profile_Bot.example and /status@Review_Profile_Bot "
+        "then @reviewer"
+    )
+
+
+@pytest.mark.anyio
 async def test_bound_telegram_room_suppresses_superseded_turn(monkeypatch):
     monkeypatch.setattr(
         clio_bot_mode,
@@ -352,8 +460,18 @@ async def test_bound_room_profile_delivery_posts_each_reply_as_its_own_bot(monke
         "settled",
         False,
         [
-            {"author": "clio", "profile": "default", "source": "local", "content": "First"},
-            {"author": "reviewer", "profile": "reviewer", "source": "local", "content": "Second"},
+            {
+                "author": "clio",
+                "profile": "default",
+                "source": "local",
+                "content": "@reviewer First",
+            },
+            {
+                "author": "reviewer",
+                "profile": "reviewer",
+                "source": "local",
+                "content": "@clio Second",
+            },
         ],
         0,
         [],
@@ -372,12 +490,23 @@ async def test_bound_room_profile_delivery_posts_each_reply_as_its_own_bot(monke
 
     result = await runner._handle_bound_telegram_bot_room_message(
         _telegram_group_event("review"),
-        {"room_id": "room-1", "delivery": "profile_bots"},
+        {
+            "room_id": "room-1",
+            "delivery": "profile_bots",
+            "profile_bot_usernames": {
+                "clio": "Controller_Profile_Bot",
+                "reviewer": "Review_Profile_Bot",
+            },
+            "render_profile_bot_mentions": True,
+        },
     )
 
     assert result == ""
     assert [item["profile"] for item in delivered] == ["default", "reviewer"]
-    assert [item["content"] for item in delivered] == ["First", "Second"]
+    assert [item["content"] for item in delivered] == [
+        "@Review_Profile_Bot First",
+        "@Controller_Profile_Bot Second",
+    ]
     assert all(item["chat_id"] == "-200" and item["thread_id"] == "9" for item in delivered)
 
 

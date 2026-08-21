@@ -108,9 +108,65 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
+_BOT_ROOM_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+_TELEGRAM_BOT_USERNAME_RE = re.compile(r"^[a-z0-9_]{2,29}bot$", re.IGNORECASE)
 
 
 MAX_COMMANDS_PER_SCOPE = 30
+
+
+def _normalize_profile_bot_usernames(raw: Any) -> Optional[Dict[str, str]]:
+    """Validate a binding-local internal-handle -> Telegram-username map.
+
+    An absent field becomes an empty map. Any malformed or ambiguous configured
+    map returns ``None`` so the complete room binding can fail closed instead of
+    accidentally fanning a direct mention out to every room member.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or len(raw) > 6:
+        return None
+
+    normalized: Dict[str, str] = {}
+    seen_usernames: set[str] = set()
+    for raw_handle, raw_username in raw.items():
+        if not isinstance(raw_handle, str) or not isinstance(raw_username, str):
+            return None
+        handle = raw_handle.strip().lstrip("@").lower()
+        username = raw_username.strip().lstrip("@")
+        username_key = username.lower()
+        if (
+            not _BOT_ROOM_HANDLE_RE.fullmatch(handle)
+            or not _TELEGRAM_BOT_USERNAME_RE.fullmatch(username)
+            or handle in normalized
+            or username_key in seen_usernames
+        ):
+            return None
+        normalized[handle] = username
+        seen_usernames.add(username_key)
+
+    # A Telegram username that is also another internal handle would make the
+    # same @token select two different members after canonicalization.
+    for handle, username in normalized.items():
+        username_key = username.lower()
+        if username_key in normalized and username_key != handle:
+            return None
+    return normalized
+
+
+def _strict_config_bool(raw: Any, *, default: bool = False) -> Optional[bool]:
+    """Parse a bool without treating the string ``"false"`` as truthy."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in {"true", "1", "yes", "on"}:
+            return True
+        if value in {"false", "0", "no", "off"}:
+            return False
+    return None
 
 
 def require_telegram_dependencies() -> None:
@@ -5073,12 +5129,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def bot_room_binding_for_chat(self, chat_id: Any) -> Optional[Dict[str, str]]:
+    def bot_room_binding_for_chat(self, chat_id: Any) -> Optional[Dict[str, Any]]:
         """Return the normalized automatic Bot Room route for a Telegram chat.
 
         Bindings are routing metadata only. Authorization, chat/topic
-        allowlists, ignored threads, and exclusive Telegram-bot mentions remain
-        independent hard gates.
+        allowlists, and ignored threads remain independent hard gates. An
+        exclusive mention of another Telegram Bot is accepted only when its
+        public username is mapped to a room handle in this exact binding.
         """
         raw = self.config.extra.get("bot_room_bindings")
         if isinstance(raw, str):
@@ -5103,16 +5160,52 @@ class TelegramAdapter(BasePlatformAdapter):
             room_id = str(value.get("room_id") or value.get("room") or "").strip()
             controller_handle = str(value.get("controller_handle") or "").strip().lstrip("@").lower()
             delivery = str(value.get("delivery") or "").strip().lower()
+            profile_bot_usernames = _normalize_profile_bot_usernames(
+                value.get("profile_bot_usernames")
+            )
+            render_profile_bot_mentions = _strict_config_bool(
+                value.get("render_profile_bot_mentions")
+            )
         else:
             room_id = str(value or "").strip()
             controller_handle = ""
             delivery = ""
+            profile_bot_usernames = {}
+            render_profile_bot_mentions = False
         if not room_id:
             return None
+        if (
+            profile_bot_usernames is None
+            or render_profile_bot_mentions is None
+            or (controller_handle and not _BOT_ROOM_HANDLE_RE.fullmatch(controller_handle))
+        ):
+            return None
+
+        controller_username = (
+            getattr(getattr(self, "_bot", None), "username", None) or ""
+        ).lstrip("@").lower()
+        if controller_username and controller_handle:
+            mapped_controller_handles = {
+                handle
+                for handle, username in profile_bot_usernames.items()
+                if username.lower() == controller_username
+            }
+            if mapped_controller_handles and mapped_controller_handles != {controller_handle}:
+                return None
         return {
             "room_id": room_id,
             **({"controller_handle": controller_handle} if controller_handle else {}),
             **({"delivery": delivery} if delivery == "profile_bots" else {}),
+            **(
+                {"profile_bot_usernames": profile_bot_usernames}
+                if profile_bot_usernames
+                else {}
+            ),
+            **(
+                {"render_profile_bot_mentions": True}
+                if render_profile_bot_mentions
+                else {}
+            ),
         }
 
     def _telegram_observe_allowed_chats(self) -> set[str]:
@@ -5141,6 +5234,15 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("allowed_topics")
         if raw is None:
             raw = os.getenv("TELEGRAM_ALLOWED_TOPICS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_ignored_chats(self) -> set[str]:
+        """Return group chat IDs this gateway must never process or observe."""
+        raw = self.config.extra.get("ignored_chats")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_IGNORED_CHATS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -5384,6 +5486,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return False
 
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if chat_id_str in self._telegram_ignored_chats():
+            return False
+
         thread_id = getattr(message, "message_thread_id", None)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
@@ -5398,7 +5504,6 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 return False
 
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
 
@@ -5624,6 +5729,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
 
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if chat_id_str in self._telegram_ignored_chats():
+            return False
+
         thread_id = getattr(message, "message_thread_id", None)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
@@ -5647,10 +5756,30 @@ class TelegramAdapter(BasePlatformAdapter):
                     return False
             return True
 
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        room_binding = self.bot_room_binding_for_chat(chat_id_str)
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
-            return False
+            profile_bot_usernames = (
+                room_binding.get("profile_bot_usernames")
+                if isinstance(room_binding, dict)
+                else None
+            )
+            mapped_usernames = {
+                str(username).lower()
+                for username in (profile_bot_usernames or {}).values()
+            }
+            mentioned_usernames = self._extract_bot_mention_usernames(message)
+            # A controller may receive ordinary user text addressed to a
+            # profile Bot only when that username is explicitly mapped in this
+            # exact room binding. Commands and mixed known/unknown Bot mentions
+            # retain Telegram's exclusive routing and fail closed.
+            if (
+                is_command
+                or not mapped_usernames
+                or not mentioned_usernames
+                or not mentioned_usernames.issubset(mapped_usernames)
+            ):
+                return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
         # is not called redundantly in the normal flow below.
@@ -5668,7 +5797,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # A configured room binding is an explicit operator decision that plain
         # user text in this authorized chat should enter the bounded Bot Room.
         # Commands retain their existing mention/menu routing semantics.
-        if not is_command and self.bot_room_binding_for_chat(chat_id_str):
+        if not is_command and room_binding:
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True

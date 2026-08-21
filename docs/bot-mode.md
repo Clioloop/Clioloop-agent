@@ -42,10 +42,17 @@ Rooms enforce:
 - serial turns;
 - at most 3 rounds;
 - at most 10 visible Bot messages per user send;
-- explicit mentions select eligible Bots, while no Bot mention selects the whole room;
-- `PASS`, `(pass)`, empty replies, duplicates, failures, and timeouts stay hidden;
+- explicit mentions select the Bots that start the run, while no Bot mention
+  selects the whole room;
+- `PASS`, `(pass)`, empty replies, failures, timeouts, and repeated normalized
+  replies from the same Bot within one user send stay hidden; identical replies
+  from different Bots or later user sends remain visible;
 - a fully silent round settles the run;
-- Bot mentions can pull members into the next round;
+- an explicitly mentioned Bot starts alone, but its own explicit mention of a
+  peer is a bounded handoff that can pull that peer into the next round;
+- a whole-room request gives every member one standalone turn; room @mentions
+  are removed from those replies so redundant tags cannot create a noisy second
+  round;
 - `@user` marks the room as needing human judgment;
 - each member receives only unseen room deltas through a per-member/thread watermark;
 - new input increments a cancellation epoch, preventing stale replies from landing;
@@ -87,22 +94,46 @@ telegram:
       room_id: room-0123456789ab
       controller_handle: clio
       delivery: profile_bots  # optional: post each reply from its profile Bot account
+      profile_bot_usernames:  # optional: internal room handle -> Telegram username
+        clio: ClioloopControllerBot
+        viktorian: ClioloopViktorianBot
+      render_profile_bot_mentions: true  # optional: make outbound @handles clickable
 ```
 
 The binding is routing only and never bypasses user authorization, chat/topic
-allowlists, ignored threads, or exclusive mentions of a different Telegram
-bot. Telegram must still deliver plain group messages to the controller: make
-that controller a group administrator or disable its BotFather Privacy Mode.
+allowlists, or ignored threads. Exclusive mentions of other Telegram bots stay
+blocked unless that public username is explicitly mapped to an internal room
+handle by `profile_bot_usernames` in this exact binding. Commands addressed to
+another Bot remain excluded. Telegram must still deliver plain group messages
+to the controller: make that controller a group administrator or disable its
+BotFather Privacy Mode.
 Other Telegram bot accounts should remain mention-gated. When
 `delivery: profile_bots` is enabled, every local room member Bot must also be a
 member of the Telegram group; it does not need administrator access or disabled
 Privacy Mode merely to send its own replies.
 
+If a profile Bot also runs its own Telegram gateway, exclude the
+controller-managed group in that profile so the same user message is not
+processed once independently and once through the Council:
+
+```yaml
+telegram:
+  ignored_chats: ["-1001234567890"]
+```
+
+This blocks only that profile gateway's group ingestion; DMs remain available,
+and the controller can still deliver Council replies through the profile's Bot
+token.
+
 For a bound group:
 
 - plain text with no internal room handle selects the whole room;
 - an internal handle such as `@viktorian` selects only that profile for one
-  reply;
+  initial turn; if that Bot explicitly mentions a peer, the peer can continue
+  the bounded handoff in the next round;
+- a configured public Telegram username such as `@ClioloopViktorianBot` is
+  canonicalized to its internal handle before room selection, so mentioning one
+  profile account still starts with only that profile;
 - an exact mention of the controller Telegram username selects
   `controller_handle` when configured;
 - multiple internal handles retain bounded cross-review and handoffs;
@@ -110,11 +141,24 @@ For a bound group:
 - supported cached images, PDF, plain-text, and Markdown attachments are copied
   into recipient profiles through the existing room attachment safeguards.
 
+Model reasoning remains enabled for inference and stored for valid provider
+replay, but reasoning presentation is always hidden in shared
+`group`/`forum`/`channel` chats. A profile may still display reasoning in its DMs
+when configured to do so.
+
 With `delivery: profile_bots`, internal cross-review still completes through the
 controller's profile-backed room, but each finalized visible reply is sent in
 room order using the author's profile-scoped Telegram token. The controller
 posts no duplicate aggregate message. If a profile account cannot deliver, the
 controller emits only a generic failure notice and never impersonates that Bot.
+When `render_profile_bot_mentions: true`, internal mentions in the outbound copy
+are replaced with their configured Telegram usernames so they are clickable;
+the canonical room transcript and handoff routing remain internal-handle based.
+
+`profile_bot_usernames` contains public routing metadata only—never Bot tokens.
+The mapping is not queried from Telegram at message time and must be updated if
+a BotFather username or internal room handle changes. Invalid or ambiguous maps
+fail closed rather than turning a direct mention into a whole-room request.
 
 Use one room ID per Telegram group unless sharing a transcript is intentional.
 Telegram never delivers messages authored by one bot account to another, so

@@ -1,8 +1,10 @@
 """Tests for live gateway reasoning followed by a separate answer block."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from gateway.reasoning_stream import ReasoningStreamBridge
+from gateway.run import _reasoning_display_allowed
 
 
 class _RecordingConsumer:
@@ -68,3 +70,10 @@ def test_empty_deltas_are_ignored() -> None:
 
     consumer.on_delta.assert_not_called()
     consumer.on_segment_break.assert_not_called()
+
+
+def test_reasoning_display_is_hidden_in_shared_chats_but_preserved_in_dms() -> None:
+    assert _reasoning_display_allowed(SimpleNamespace(chat_type="group"), True) is False
+    assert _reasoning_display_allowed(SimpleNamespace(chat_type="forum"), True) is False
+    assert _reasoning_display_allowed(SimpleNamespace(chat_type="dm"), True) is True
+    assert _reasoning_display_allowed(SimpleNamespace(chat_type="dm"), False) is False

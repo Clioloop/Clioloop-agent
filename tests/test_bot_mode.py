@@ -188,7 +188,7 @@ def test_local_dm_transport_never_shell_interpolates_message(bot_env, monkeypatc
     assert homes["alpha"] in query_path.parents
 
 
-def test_room_mentions_passes_duplicates_and_watermarks(bot_env):
+def test_room_mentions_passes_and_watermarks(bot_env):
     _homes, root = bot_env
     room = bots.create_room("Review", ["alpha", "beta"], root=root)
     prompts: list[tuple[str, str]] = []
@@ -224,28 +224,112 @@ def test_room_mentions_passes_duplicates_and_watermarks(bot_env):
     assert "check the update" in alpha_second_prompt
     assert "inspect this" not in alpha_second_prompt
 
-    def duplicate(_member, _prompt, _session_id, _timeout):
-        return "Alpha finding"
-
-    third = bots.send_room_message(room["id"], "Run all", responder=duplicate, root=root)
-    assert len(third.messages) == 1
-    assert third.suppressed == 2
 
 
-def test_single_direct_handle_is_one_bot_one_turn_even_when_reply_mentions_peer(bot_env):
+def test_identical_acknowledgements_are_visible_per_bot_and_user_send(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room(
+        "Acknowledgements",
+        ["alpha", "beta", "gamma", "delta", "epsilon"],
+        root=root,
+    )
+
+    def acknowledge(_member, _prompt, _session_id, _timeout):
+        return "ok"
+
+    first = bots.send_room_message(
+        room["id"],
+        "Everyone reply ok",
+        responder=acknowledge,
+        root=root,
+    )
+    second = bots.send_room_message(
+        room["id"],
+        "Everyone reply ok again",
+        responder=acknowledge,
+        root=root,
+    )
+
+    expected_authors = ["user", "alpha", "beta", "gamma", "delta", "epsilon"]
+    for result in (first, second):
+        assert [message["author"] for message in result.messages] == expected_authors
+        assert [message["content"] for message in result.messages[1:]] == ["ok"] * 5
+        assert result.suppressed == 0
+        assert result.rounds == 1
+    assert second.epoch > first.epoch
+
+
+def test_same_bot_normalized_repetition_within_one_send_is_hidden(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room("Repeat", ["alpha", "beta"], root=root)
+    alpha_calls = 0
+
+    def responder(member, _prompt, _session_id, _timeout):
+        nonlocal alpha_calls
+        if member["handle"] == "alpha":
+            alpha_calls += 1
+            return "Ready @alpha" if alpha_calls == 1 else "READY, @alpha!"
+        return "Beta independent check"
+
+    result = bots.send_room_message(
+        room["id"],
+        "@alpha @beta coordinate",
+        responder=responder,
+        root=root,
+    )
+
+    assert [message["author"] for message in result.messages] == ["user", "alpha", "beta"]
+    assert alpha_calls == 2
+    assert result.suppressed == 1
+    assert [
+        (item["member"], item["round"])
+        for item in result.activity or []
+        if item["state"] == "duplicate"
+    ] == [("alpha", 2)]
+
+
+def test_single_direct_handle_starts_with_one_bot_and_allows_explicit_peer_handoff(bot_env):
     _homes, root = bot_env
     room = bots.create_room("Direct", ["alpha", "beta"], root=root)
     calls = {"alpha": 0, "beta": 0}
 
     def responder(member, _prompt, _session_id, _timeout):
         calls[member["handle"]] += 1
-        if member["handle"] == "alpha":
-            return "I can answer this. @beta could also review."
-        return "Beta should not run."
+        if member["handle"] == "alpha" and calls["alpha"] == 1:
+            return "@beta Riddle: What has keys but no locks?"
+        if member["handle"] == "beta":
+            return "@alpha A piano."
+        return "@beta Correct—the answer is a piano."
 
     result = bots.send_room_message(
         room["id"],
-        "@alpha answer only from your profile",
+        "@alpha give beta a riddle and judge the answer",
+        responder=responder,
+        root=root,
+    )
+
+    assert calls == {"alpha": 2, "beta": 1}
+    assert [message["author"] for message in result.messages] == [
+        "user",
+        "alpha",
+        "beta",
+        "alpha",
+    ]
+    assert result.rounds == 3
+
+
+def test_single_direct_handle_without_peer_mention_stays_one_bot_one_turn(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room("Direct only", ["alpha", "beta"], root=root)
+    calls = {"alpha": 0, "beta": 0}
+
+    def responder(member, _prompt, _session_id, _timeout):
+        calls[member["handle"]] += 1
+        return "Alpha answered without a handoff."
+
+    result = bots.send_room_message(
+        room["id"],
+        "@alpha answer only",
         responder=responder,
         root=root,
     )
@@ -268,6 +352,33 @@ def test_plain_room_message_still_selects_all_members(bot_env):
 
     assert calls == {"alpha": 1, "beta": 1}
     assert [message["author"] for message in result.messages] == ["user", "alpha", "beta"]
+
+
+def test_plain_room_replies_are_bare_and_do_not_create_tag_driven_second_round(bot_env):
+    _homes, root = bot_env
+    room = bots.create_room("Bare replies", ["alpha", "beta"], root=root)
+    calls = {"alpha": 0, "beta": 0}
+
+    def responder(member, _prompt, _session_id, _timeout):
+        calls[member["handle"]] += 1
+        if member["handle"] == "alpha":
+            return "@beta Alpha joke"
+        return "@alpha Beta joke"
+
+    result = bots.send_room_message(
+        room["id"],
+        "Everyone tell me a joke",
+        responder=responder,
+        root=root,
+    )
+
+    assert calls == {"alpha": 1, "beta": 1}
+    assert [message["content"] for message in result.messages] == [
+        "Everyone tell me a joke",
+        "Alpha joke",
+        "Beta joke",
+    ]
+    assert result.rounds == 1
 
 
 def test_room_caps_rounds_and_needs_user(bot_env):
